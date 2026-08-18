@@ -302,9 +302,12 @@ fn default_openclaw_state_dir() -> OsString {
 #[cfg(not(windows))]
 fn default_openclaw_state_dir() -> OsString {
     if let Ok(home) = env::var("HOME") {
-        return OsString::from(format!("{}/.openclaw", home));
+        // Isolated from system OpenClaw's ~/.openclaw/. MC carries its own
+        // state, sessions, config, and extensions under ~/.miracle-claw/.
+        // This prevents config races when both run on the same machine.
+        return OsString::from(format!("{}/.miracle-claw", home));
     }
-    OsString::from("openclaw")
+    OsString::from("miracle-claw")
 }
 
 fn run(args: Args) -> Result<(), LauncherError> {

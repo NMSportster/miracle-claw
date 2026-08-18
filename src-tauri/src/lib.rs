@@ -4,13 +4,21 @@
 // First-run path (called once per process start, from setup()):
 //   1. Locate the bundled resources (Tauri sets TAURI_BUNDLE_RESOURCES_DIR,
 //      but in dev mode we look in src-tauri/resources/).
-//   2. Ensure the MAIC provider plugin is present in the user's
-//      openclaw extensions directory (idempotent — SHA-checked copy).
-//      ~/.openclaw/extensions/maic/ on *nix,
-//      %APPDATA%\MiracleClaw\extensions\maic\ on Windows.
-//   3. Patch the user's openclaw.json (idempotent deep-merge) so the plugin
-//      is in `pluginRoots` if not already.
+//   2. Ensure the MAIC provider plugin is present in MC's isolated state
+//      directory (idempotent — SHA-checked copy).
+//      ~/.miracle-claw/extensions/maic/  on *nix,
+//      %APPDATA%\MiracleClaw\extensions\maic\  on Windows.
+//      MC does NOT share state with the system OpenClaw install; we keep
+//      config, sessions, plugins, and logs under .miracle-claw/ to avoid
+//      races when both run on the same machine.
+//   3. Validate (read-only) the user's openclaw.json exists and parses.
+//      openclaw 2026.7.1+ auto-discovers plugins from <stateDir>/extensions/,
+//      so no plugin-path keys are needed in the config. Any leftover
+//      `pluginRoots` / `plugins.roots` keys from older openclaw versions
+//      are rejected — we warn, never mutate.
 //   4. Spawn miracle-claw-launcher with --gateway-port N as a sidecar.
+//      OPENCLAW_STATE_DIR is set to MC's state dir so the gateway boots
+//      against MC's isolated layout, not the system one.
 //   5. Poll TCP connect to 127.0.0.1:28789 until it accepts (15s cap).
 //      (openclaw accepts the connection immediately when the port is bound,
 //      so we don't need an HTTP roundtrip.)
@@ -115,8 +123,13 @@ fn launcher_exe_path(resources: &Path) -> PathBuf {
 // ----------------------------------------------------------------------------
 
 /// Returns the user's openclaw extensions directory.
-/// *nix:    $HOME/.openclaw/extensions/
+/// *nix:    $HOME/.miracle-claw/extensions/
 /// Windows: %APPDATA%\MiracleClaw\extensions\
+///
+/// NOTE: We intentionally do NOT share state with the system OpenClaw
+/// install at $HOME/.openclaw/. MC carries its own config, sessions,
+/// plugins, and logs. This avoids config races when both run on the
+/// same machine.
 fn openclaw_extensions_dir() -> PathBuf {
     #[cfg(windows)]
     {
@@ -127,10 +140,10 @@ fn openclaw_extensions_dir() -> PathBuf {
     #[cfg(not(windows))]
     {
         if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(".openclaw").join("extensions");
+            return PathBuf::from(home).join(".miracle-claw").join("extensions");
         }
     }
-    PathBuf::from("./.openclaw/extensions")
+    PathBuf::from("./.miracle-claw/extensions")
 }
 
 /// Returns the path to the user's openclaw.json.
