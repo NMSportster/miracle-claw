@@ -17,7 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Capture Lesson 428 (Tauri `bundle.resources` is explicit allowlist) — done.
 
 ### Things planned (require rebuild)
+- **Installer should kill running gateway before overwriting node.exe (Lesson 430).**
+  - Symptom: NSIS error "Error opening file for writing: node.exe" when installing
+    a hotfix over a running prior gateway. Root cause: Windows file lock on
+    `node.exe` while the gateway is still up.
+  - Fix: NSIS pre-step does `taskkill /F /IM miracle-claw.exe` then
+    `taskkill /F /IM node.exe` before the file copy. Show a clear error if the
+    kill fails.
 - ADeal green branding (splash, theme, system tray icon).
+  - Tray icon also solves Lesson 430 by giving the user a "Quit" affordance.
 - Code signing (Windows SmartScreen "Unknown publisher" → gone).
 - Auto-updater (manual reinstall for now).
 - Launcher → separate-crate refactor (currently a bin in the main crate).
