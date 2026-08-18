@@ -54,8 +54,8 @@
       "resources/node_modules",
       "resources/dist",
       "resources/maic-plugin",
-      "resources/src",
-      "resources/docs"
+      "resources/src/agents/templates",
+      "resources/docs/reference/templates"
     ],
     "windows": {
       "nsis": {
