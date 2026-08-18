@@ -68,6 +68,11 @@ struct FirstRunReport {
     maic_plugin_already_present: bool,
     openclaw_json_patched: bool,
     openclaw_json_already_patched: bool,
+    /// Lesson 431: did setup() successfully wire `models.providers.maic`?
+    /// false means the chat panel will fail with `missing-provider-auth`.
+    maic_provider_configured: bool,
+    /// Endpoint the MAIC provider is configured against (informational).
+    maic_provider_endpoint: String,
     launcher_spawned: bool,
     gateway_ready: bool,
     gateway_error: Option<String>,
@@ -379,6 +384,348 @@ fn migrate_legacy_mc_config(path: &Path) -> io::Result<bool> {
 }
 
 // ----------------------------------------------------------------------------
+// MAIC provider config bootstrap (Lesson 431)
+//
+// openclaw's gateway resolves the chat provider from cfg.models.providers[<id>].
+// The MAIC plugin (`<stateDir>/extensions/maic/`) supplies the `params` patch
+// at transport time but does NOT register any provider entry — that's the
+// user's job. Without it, the chat panel renders fine but the first chat turn
+// throws `missing-provider-auth` because openclaw tries to call the default
+// `openai` provider with no API key.
+//
+// MC's responsibility is to wire MAIC as the provider so a fresh install
+// (clean state dir) gets a working chat roundtrip out of the box. We do this
+// by deep-merging a `models.providers.maic` entry into openclaw.json.
+//
+// Sourcing priority (first non-empty wins, idempotent):
+//   1. Existing entry in <stateDir>/openclaw.json (user already configured
+//      it, or a prior MC run did). We do NOT overwrite a user-supplied
+//      apiKey/baseUrl even if env vars are set — explicit beats implicit.
+//   2. `MAIC_API_URL` + `MAIC_API_KEY` env vars (power-user override path).
+//   3. System openclaw's openclaw.json (David already has MAIC wired there;
+//      we copy the entry so MC's isolated state is consistent). The system
+//      path is $HOME/.openclaw/openclaw.json on *nix,
+//      %APPDATA%\openclaw\openclaw.json on Windows.
+//   4. None → log a clear remediation message and continue. The chat panel
+//      will render and fail loudly with the existing `missing-provider-auth`
+//      error rather than silently misconfiguring.
+//
+// Schema (openclaw 2026.7.1+, from dist/zod-schema.core-*.js):
+//   - models.providers[providerId].apiKey:   string (SecretInput)
+//   - models.providers[providerId].baseUrl:  string
+//   - models.providers[providerId].api:      string (e.g. "openai-completions")
+//   - models.providers[providerId].models:   array of { id, ... }
+//   - models.providers[providerId].params:   Record<string, unknown> (freeform;
+//     the MAIC plugin reads `params.tool_execution` and `params.<others>`)
+//
+// Why `params.tool_execution = "client"`:
+//   MAIC is a cascade router that runs server-side tools by default. To get
+//   tool_calls back so our client-side tools (read_file, write_file, etc.)
+//   can run in MC, MAIC must be told "the caller will execute tools." This
+//   flag is set in `params` (NOT top-level) because the MAIC plugin reads
+//   `ctx.config.models.providers.maic.params` at transport time and merges
+//   it into the outbound request body. See src-tauri/resources/maic-plugin/
+//   index.js: PROVIDER_ID = "maic", extraParamsForTransport().
+//
+// Default model id:
+//   `milagro-dev` is David's 14B generalist (the largest deployed local
+//   model). The MAIC backend has 14B, several 7B ternary tiers, and
+//   several cloud cascade endpoints; we surface the local default so the
+//   chat roundtrip is fully self-hosted on first run.
+//
+// Default endpoint:
+//   `https://maicserver.com` (Cloudflare-fronted). MEMORY.md line 351 /
+//   4493: Tauri-spawned sidecars run on Windows and CANNOT reach Tailscale
+//   IPs, so the Cloudflare endpoint is the only universally-reachable
+//   option for a fresh install.
+fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
+    const DEFAULT_ENDPOINT: &str = "https://maicserver.com";
+    const DEFAULT_API: &str = "openai-completions";
+    const DEFAULT_MODEL_ID: &str = "milagro-dev";
+    const PROVIDER_ID: &str = "maic";
+
+    let path = openclaw_json_path();
+
+    // Load (or initialize) the user's config. If the file doesn't exist yet,
+    // `ensure_openclaw_json_minimal` already wrote a minimal one in setup()
+    // step 2 — read it back.
+    let mut cfg: serde_json::Value = if path.is_file() {
+        let raw = fs::read_to_string(&path)?;
+        // If the file is empty or malformed, fall through to a fresh in-memory
+        // config. We don't want a corrupted openclaw.json to block provider
+        // bootstrapping.
+        serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Pull the existing provider entry (if any) WITHOUT creating one.
+    let existing = cfg
+        .get("models")
+        .and_then(|m| m.get("providers"))
+        .and_then(|p| p.get(PROVIDER_ID))
+        .cloned();
+
+    // If the user already has a complete provider entry (apiKey + baseUrl),
+    // we are done. This is the idempotency guarantee — re-running setup()
+    // never overwrites a working config.
+    if let Some(entry) = existing.as_ref() {
+        let has_key = entry
+            .get("apiKey")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        let has_url = entry
+            .get("baseUrl")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if has_key && has_url {
+            return Ok(MaicProviderBootstrap {
+                provider_configured: true,
+                provider_id: PROVIDER_ID.to_string(),
+                api_key_source: MaicKeySource::Existing,
+                endpoint: entry
+                    .get("baseUrl")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(DEFAULT_ENDPOINT)
+                    .to_string(),
+            });
+        }
+    }
+
+    // Resolve apiKey from env, then from system openclaw. Whichever is
+    // first non-empty wins.
+    let env_key = std::env::var("MAIC_API_KEY")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let env_url = std::env::var("MAIC_API_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let (key_source, resolved_key) = if let Some(k) = env_key.clone() {
+        (MaicKeySource::Env, Some(k))
+    } else {
+        match read_system_openclaw_maic_key() {
+            Ok(Some(k)) => (MaicKeySource::SystemOpenClaw, Some(k)),
+            Ok(None) => (MaicKeySource::None, None),
+            Err(e) => {
+                eprintln!(
+                    "[miracle-claw] could not read system openclaw for MAIC key fallback: {}",
+                    e
+                );
+                (MaicKeySource::None, None)
+            }
+        }
+    };
+
+    // If we still don't have a key, we can't ship a working config.
+    // Log a clear remediation message and leave the config alone — the
+    // chat panel will fail loudly with the existing `missing-provider-auth`
+    // error (which already cites the authStorePath + agentDir and the
+    // `openclaw agents add <id>` remediation). Don't guess.
+    let Some(resolved_key) = resolved_key else {
+        eprintln!(
+            "[miracle-claw] MAIC provider config: NOT configured (no MAIC_API_KEY env, no system openclaw MAIC key). Chat will fail with 'missing-provider-auth' until you set MAIC_API_KEY in the env or add an auth profile via 'openclaw agents add main'."
+        );
+        return Ok(MaicProviderBootstrap {
+            provider_configured: false,
+            provider_id: PROVIDER_ID.to_string(),
+            api_key_source: MaicKeySource::None,
+            endpoint: env_url.clone().unwrap_or_else(|| DEFAULT_ENDPOINT.to_string()),
+        });
+    };
+
+    let resolved_url = env_url
+        .clone()
+        .or_else(|| {
+            // Fall back to whatever URL the system openclaw already has
+            // configured — preserves the user's existing setup.
+            read_system_openclaw_maic_base_url().ok().flatten()
+        })
+        .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+
+    // Build the provider entry. We start from whatever existing fields the
+    // user already has (so we never delete a model the user added) and fill
+    // in the rest.
+    let mut provider_entry = existing.unwrap_or_else(|| serde_json::json!({}));
+    if !provider_entry.is_object() {
+        // Defensive: an array or scalar here would be a schema violation.
+        // Replace it with an object so the deep-merge below is well-defined.
+        provider_entry = serde_json::json!({});
+    }
+    let entry_obj = provider_entry.as_object_mut().unwrap();
+
+    entry_obj.entry("baseUrl".to_string()).or_insert(Value::String(resolved_url.clone()));
+    entry_obj.entry("apiKey".to_string()).or_insert(Value::String(resolved_key.clone()));
+    entry_obj.entry("api".to_string()).or_insert(Value::String(DEFAULT_API.to_string()));
+
+    // Models list — preserve any user additions, default to milagro-dev.
+    let models_arr = entry_obj
+        .entry("models".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if !models_arr.is_array() {
+        *models_arr = Value::Array(Vec::new());
+    }
+    let models = models_arr.as_array_mut().unwrap();
+    if models.is_empty() {
+        models.push(serde_json::json!({
+            "id": DEFAULT_MODEL_ID,
+            "name": "MAIC default (miracle-claw)",
+        }));
+    } else {
+        // Ensure the default model id is present even if the user added
+        // others (so the chat panel has a default model to pre-select).
+        let has_default = models
+            .iter()
+            .any(|m| m.get("id").and_then(|v| v.as_str()) == Some(DEFAULT_MODEL_ID));
+        if !has_default {
+            models.push(serde_json::json!({
+                "id": DEFAULT_MODEL_ID,
+                "name": "MAIC default (miracle-claw)",
+            }));
+        }
+    }
+
+    // params: MAIC plugin reads `params.tool_execution` and merges provider-
+    // level `params` into the outbound request body. We set
+    // `tool_execution: "client"` so the plugin tells MAIC to return
+    // tool_calls instead of executing them server-side.
+    let params_obj = entry_obj
+        .entry("params".to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !params_obj.is_object() {
+        *params_obj = Value::Object(Default::default());
+    }
+    let params = params_obj.as_object_mut().unwrap();
+    params.entry("tool_execution".to_string()).or_insert(Value::String("client".to_string()));
+
+    // Deep-merge into `cfg.models.providers[PROVIDER_ID]`. We don't touch
+    // any other provider entries the user has configured.
+    if !cfg.is_object() {
+        cfg = serde_json::json!({});
+    }
+    let cfg_obj = cfg.as_object_mut().unwrap();
+    let models_obj = cfg_obj
+        .entry("models".to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !models_obj.is_object() {
+        *models_obj = Value::Object(Default::default());
+    }
+    let models = models_obj.as_object_mut().unwrap();
+    let providers_obj = models
+        .entry("providers".to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !providers_obj.is_object() {
+        *providers_obj = Value::Object(Default::default());
+    }
+    let providers = providers_obj.as_object_mut().unwrap();
+    providers.insert(PROVIDER_ID.to_string(), provider_entry);
+
+    // Serialize back. We preserve the user's other fields exactly (no
+    // schema-strip pass) — openclaw's gateway does its own validation
+    // and we only added keys we know are valid.
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let serialized = serde_json::to_string_pretty(&cfg)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize: {e}")))?;
+    fs::write(&path, serialized)?;
+
+    eprintln!(
+        "[miracle-claw] MAIC provider config: wrote models.providers.{} (apiKey from {:?}, endpoint={})",
+        PROVIDER_ID, key_source, resolved_url
+    );
+
+    Ok(MaicProviderBootstrap {
+        provider_configured: true,
+        provider_id: PROVIDER_ID.to_string(),
+        api_key_source: key_source,
+        endpoint: resolved_url,
+    })
+}
+
+#[derive(Debug)]
+enum MaicKeySource {
+    Env,
+    SystemOpenClaw,
+    Existing,
+    None,
+}
+
+#[derive(Debug)]
+struct MaicProviderBootstrap {
+    provider_configured: bool,
+    /// Always "maic" today. Reserved for future multi-provider support.
+    #[allow(dead_code)]
+    provider_id: String,
+    api_key_source: MaicKeySource,
+    endpoint: String,
+}
+
+/// Path to system openclaw's openclaw.json (separate from MC's isolated
+/// state). Returns None if HOME/APPDATA aren't set (very unusual).
+fn system_openclaw_json_path() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        if let Ok(roam) = std::env::var("APPDATA") {
+            return Some(PathBuf::from(roam).join("openclaw").join("openclaw.json"));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return Some(PathBuf::from(home).join(".openclaw").join("openclaw.json"));
+        }
+    }
+    None
+}
+
+fn read_system_openclaw_maic_key() -> io::Result<Option<String>> {
+    let Some(path) = system_openclaw_json_path() else {
+        return Ok(None);
+    };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&path)?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse: {e}")))?;
+    let key = parsed
+        .get("models")
+        .and_then(|m| m.get("providers"))
+        .and_then(|p| p.get("maic"))
+        .and_then(|m| m.get("apiKey"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    Ok(key)
+}
+
+fn read_system_openclaw_maic_base_url() -> io::Result<Option<String>> {
+    let Some(path) = system_openclaw_json_path() else {
+        return Ok(None);
+    };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&path)?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse: {e}")))?;
+    let url = parsed
+        .get("models")
+        .and_then(|m| m.get("providers"))
+        .and_then(|p| p.get("maic"))
+        .and_then(|m| m.get("baseUrl"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    Ok(url)
+}
+
+// ----------------------------------------------------------------------------
 // Health poll: TCP connect to 127.0.0.1:28789 until the port is bound.
 // (openclaw accepts the connection the moment the port is bound; we don't
 // need HTTP semantics — the webview's first GET will validate auth/MAIC.)
@@ -412,11 +759,40 @@ fn first_run_report(state: tauri::State<'_, AppState>) -> FirstRunReport {
     let launcher_spawned = state.launcher_child.lock().unwrap().is_some();
     let gateway_ready =
         TcpStream::connect(format!("127.0.0.1:{}", OPENCLAW_PORT)).is_ok();
+    // Read back what ensure_maic_provider_config() wrote so the chat panel
+    // can show whether MAIC is wired. Default to "not configured" if the
+    // config file is missing or unparseable.
+    let (maic_provider_configured, maic_provider_endpoint) =
+        match fs::read_to_string(openclaw_json_path()) {
+            Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+                Ok(v) => {
+                    let entry = v
+                        .get("models")
+                        .and_then(|m| m.get("providers"))
+                        .and_then(|p| p.get("maic"));
+                    let has_key = entry
+                        .and_then(|e| e.get("apiKey"))
+                        .and_then(|k| k.as_str())
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false);
+                    let endpoint = entry
+                        .and_then(|e| e.get("baseUrl"))
+                        .and_then(|u| u.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    (has_key, endpoint)
+                }
+                Err(_) => (false, String::new()),
+            },
+            Err(_) => (false, String::new()),
+        };
     FirstRunReport {
         maic_plugin_installed: false,
         maic_plugin_already_present: false,
         openclaw_json_patched: false,
         openclaw_json_already_patched: false,
+        maic_provider_configured,
+        maic_provider_endpoint,
         launcher_spawned,
         gateway_ready,
         gateway_error: None,
@@ -455,7 +831,21 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     //    exists, even empty — that's the user's domain).
     ensure_openclaw_json_minimal()?;
 
-    // 3. Sanity-check openclaw.json (read-only — do NOT mutate the user's
+    // 3. Wire MAIC as the agent provider (Lesson 431).
+    //    openclaw's chat panel renders without a provider entry, but the
+    //    first chat turn throws `missing-provider-auth` because the default
+    //    `openai` provider has no API key. The MAIC plugin only injects a
+    //    transport-time patch — it does NOT register a provider entry.
+    //    We deep-merge `models.providers.maic` into openclaw.json so a
+    //    fresh install has a working chat roundtrip out of the box. Idempotent
+    //    — if the user already configured MAIC, we leave it alone.
+    let maic_bootstrap = ensure_maic_provider_config()?;
+    eprintln!(
+        "[miracle-claw] MAIC provider bootstrap: configured={}, endpoint={}, key_source={:?}",
+        maic_bootstrap.provider_configured, maic_bootstrap.endpoint, maic_bootstrap.api_key_source
+    );
+
+    // 4. Sanity-check openclaw.json (read-only — do NOT mutate the user's
     //    config; openclaw 2026.7.1+ auto-discovers plugins from <stateDir>/extensions).
     match check_openclaw_json() {
         Ok(()) => eprintln!("[miracle-claw] openclaw.json: ok"),
