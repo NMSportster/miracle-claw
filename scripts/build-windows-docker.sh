@@ -79,6 +79,20 @@ DOCKER_ENV=(
     -e TAURI_BUILD_TARGET=x86_64-pc-windows-msvc
 )
 
+# CRITICAL: re-stage src-tauri/resources/ with the WINDOWS Node binary before
+# the cross-compile runs. If we don't, bundle-runtime.sh's default --target
+# host (Linux) leaves a 0-byte node.exe placeholder + a 124MB Linux ELF, and
+# the installer fails at first run with "%1 is not a valid Win32 application"
+# (os error 193). The --force flag re-downloads the Windows Node tarball even
+# if the Linux one is cached.
+echo ">>> Re-staging src-tauri/resources/ with --target windows Node..."
+if ! bash "$REPO_ROOT/scripts/bundle-runtime.sh" --target windows --force; then
+    echo "FATAL: bundle-runtime.sh --target windows failed" >&2
+    exit 1
+fi
+echo ">>> bundle-runtime.sh complete. resources/node.exe:"
+file "$RESOURCES_DIR/node.exe" 2>/dev/null || true
+
 DOCKER_VOLUMES=(
     -v "$REPO_ROOT:/io"
     -v "$HOME/.cargo/registry:/usr/local/cargo/registry"

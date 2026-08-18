@@ -208,8 +208,29 @@ fi
 TMP_NODE="$(mktemp -d)"
 case "$NODE_TRIPLE" in
     win-x64)
-        unzip -q "$NODE_TARBALL" -d "$TMP_NODE"
+        # Try `unzip` first; fall back to python3 zipfile if unzip isn't
+        # installed (Linux sandboxes/Docker images sometimes omit it).
+        if command -v unzip >/dev/null 2>&1; then
+            unzip -q "$NODE_TARBALL" -d "$TMP_NODE"
+        else
+            python3 -c "
+import zipfile, sys
+with zipfile.ZipFile(sys.argv[1]) as z:
+    z.extractall(sys.argv[2])
+" "$NODE_TARBALL" "$TMP_NODE"
+        fi
         mv "$TMP_NODE"/node-v${NODE_VERSION}-win-x64/node.exe "$RESOURCES_DIR/node.exe"
+        # Don't ship node-dist/ (~150MB Linux ELF) when targeting Windows. The
+        # launcher's resource resolution checks `resources/node.exe` first on
+        # Windows; node-dist/ is only needed for dev builds on Linux/macOS.
+        # (Also avoids Tauri's bundle.resources failing on a path that
+        # shouldn't be in the installer at all.)
+        # Tauri's bundle.resources also lists `resources/node` (the no-ext
+        # entry). On Windows builds we touch a 0-byte placeholder so the
+        # pre-flight validation passes; the placeholder gets copied into the
+        # installer as a dead-weight file (Tauri's bundler doesn't validate
+        # that resource files are actual executables on the target).
+        touch "$RESOURCES_DIR/node"
         ;;
     linux-x64)
         tar -xJf "$NODE_TARBALL" -C "$TMP_NODE"
