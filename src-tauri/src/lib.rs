@@ -304,11 +304,30 @@ fn check_openclaw_json() -> io::Result<()> {
 ///   - `gateway.bind` + `gateway.auth` are the defaults the launcher passes;
 ///     openclaw reads them from the config if present
 ///
-/// We DO NOT touch an existing openclaw.json — even an empty file. The user
-/// owns that path; if they deleted it, that's their decision.
+/// We DO NOT touch an existing openclaw.json — except for one auto-migration:
+/// if the existing file was written by an older MC that shipped the legacy
+/// flat shape `gateway.auth: "none"`, we rewrite it. MC is the only thing
+/// that could have written that exact shape (users wouldn't type it), so
+/// fixing it is safe and avoids forcing a reinstall to recover from a known
+/// MC-shipped bug.
+///
+/// Schema (openclaw 2026.7.1+, from dist/zod-schema-*.js):
+///   - `gateway.mode` ∈ {"local", "remote"}
+///   - `gateway.bind` ∈ {"auto", "lan", "loopback", "custom", "tailnet"}
+///   - `gateway.auth.mode` ∈ {"none", "token", "password", "trusted-proxy"}
+///   - `gateway.auth` itself is `.strict()` — extra keys (like the legacy
+///     flat `"none"`) are rejected with "Invalid input".
 fn ensure_openclaw_json_minimal() -> io::Result<()> {
     let path = openclaw_json_path();
     if path.is_file() {
+        // Auto-migrate: if the existing file was written by an older MC
+        // with the legacy flat `gateway.auth: "none"` shape, rewrite it.
+        if let Ok(true) = migrate_legacy_mc_config(&path) {
+            eprintln!(
+                "[miracle-claw] migrated legacy openclaw.json (gateway.auth: \"none\" → nested object) at {}",
+                path.display()
+            );
+        }
         return Ok(());
     }
     if let Some(parent) = path.parent() {
@@ -319,7 +338,9 @@ fn ensure_openclaw_json_minimal() -> io::Result<()> {
         "gateway": {
             "mode": "local",
             "bind": "loopback",
-            "auth": "none"
+            "auth": {
+                "mode": "none"
+            }
         }
     });
     let serialized = serde_json::to_string_pretty(&minimal)
@@ -330,6 +351,31 @@ fn ensure_openclaw_json_minimal() -> io::Result<()> {
         path.display()
     );
     Ok(())
+}
+
+/// Detect the legacy MC-shipped shape and rewrite it. Returns Ok(true) if
+/// the file was rewritten, Ok(false) otherwise. Failures are non-fatal
+/// (best-effort migration).
+fn migrate_legacy_mc_config(path: &Path) -> io::Result<bool> {
+    let raw = fs::read_to_string(path)?;
+    let mut parsed: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse: {e}")))?;
+    let Some(gateway) = parsed.get_mut("gateway").and_then(|v| v.as_object_mut()) else {
+        return Ok(false);
+    };
+    // Legacy shape: `gateway.auth` is a string. Modern shape: it's an object
+    // with a `mode` field. The string form is always the bug MC shipped.
+    if let Some(auth_value) = gateway.get("auth") {
+        if auth_value.is_string() {
+            let mode = auth_value.as_str().unwrap_or("none");
+            gateway.insert("auth".to_string(), serde_json::json!({ "mode": mode }));
+            let serialized = serde_json::to_string_pretty(&parsed)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize: {e}")))?;
+            fs::write(path, serialized)?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 // ----------------------------------------------------------------------------
