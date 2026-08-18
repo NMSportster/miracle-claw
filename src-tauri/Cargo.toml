@@ -14,15 +14,35 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "miracle-claw"
 path = "src/main.rs"
 
+# Sidecar: spawned by miracle-claw via tauri-plugin-shell sidecar model.
+# Lives in a separate bin entry so Tauri's capability file can declare an
+# allowlist with `name: "miracle-claw-launcher"`, and so this binary can be
+# tested/built independently of the Tauri webview process.
+[[bin]]
+name = "miracle-claw-launcher"
+path = "src/launcher.rs"
+
 [build-dependencies]
-tauri-build = { version = "2.0", features = [] }
+tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
-tauri = { version = "2.0", features = [] }
-tauri-plugin-shell = "2.0"
+# Pinned to exact versions to keep Tauri runtime + plugin in lockstep between
+# dev builds and Windows MSVC cross-compile builds. Float = "2.0" was the
+# original scaffold; we tighten here.
+tauri = { version = "=2.11.5", features = [] }
+tauri-plugin-shell = "=2.3.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+# --------------------------------------------------------------------
+# Dependency audit checklist (Lesson 351):
+#   - All three version strings (Cargo.toml, tauri.conf.json, package.json)
+#     read `1.0.0`. Bump together when shipping.
+#   - tauri + tauri-plugin-shell + tauri-build pinned to exact patches above.
+#   - serde 1.x + serde_json 1.x are stable; float is fine.
+# --------------------------------------------------------------------

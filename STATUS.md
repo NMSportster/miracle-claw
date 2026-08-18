@@ -1,74 +1,123 @@
-# Miracle Claw v1.0.0 — Scaffold Status
+# Miracle Claw v1.0.0 — Build Status
 
-**Scaffolded**: 2026-08-17 18:52 MDT (end of session, before pivoting from MC v1.7.28 era)
-**Author**: David Adeal (with assistant scaffolding)
-**Branch**: `master` (clean slate, no tags yet)
+**Scaffolded:** 2026-08-17 18:52 MDT
+**First-run path shipped:** 2026-08-18 07:14 MDT
+**Branch:** `master`
+**Release tag:** Not yet (clean-Windows .exe test is the v1.0.0 gate)
 
 ## What's done
 
-✅ Clean directory at `/home/adeal/.openclaw/workspace/projects/miracle-claw/`
-✅ Git repo initialized (master branch)
-✅ `package.json` (npm manifest, vite + tauri deps)
-✅ `src-tauri/Cargo.toml` (Rust manifest, lib + bin)
-✅ `src-tauri/tauri.conf.json` (window config, webview URL = `http://localhost:28789/`)
-✅ `src-tauri/src/main.rs` (Tauri entry, calls `miracle_claw_lib::run()`)
-✅ `src-tauri/src/lib.rs` (Tauri builder + setup stub with TODO for child process spawn)
-✅ `src-tauri/build.rs` (Tauri build hook)
-✅ `src-tauri/icons/*` (copied from old MC repo, all formats)
-✅ `scripts/build-windows-docker.sh` (Docker build script, copied + path-aware)
-✅ `scripts/install-sccache.sh` (sccache installer, copied)
-✅ `Dockerfile.build` (Windows cross-compile Docker image, copied)
-✅ `index.html` (placeholder, "Loading OpenClaw WebChat…")
-✅ `README.md` (architecture doc)
+✅ Scaffold (commit `680f002`)
+✅ Sidecar binary `miracle-claw-launcher` — Rust, ~200 LoC, std-only, arg-validated
+✅ `lib.rs` first-run path:
+   - Resource resolution (production env var + dev fallback walk-up)
+   - Idempotent MAIC plugin copy (SHA-256 manifest, skip-on-match)
+   - Idempotent openclaw.json patch (deep-merge, both `plugins.roots` and `pluginRoots`)
+   - Tauri sidecar spawn via allowlist
+   - Background log capture (stdout/stderr tagged and prefixed)
+   - TCP connect poll for gateway readiness (15s cap, exponential backoff 100ms→1s)
+   - RunEvent::ExitRequested child kill handler
+✅ Capability allowlist `src-tauri/capabilities/main.json` — `core:default` + `shell:allow-execute` for the launcher with port-validator regex `^[0-9]{4,5}$`
+✅ Build script `scripts/build-launcher-sidecar.sh` — handles tauri-build's pre-build sidecar validation via zero-byte placeholder
+✅ Pinned Tauri =2.11.5, tauri-plugin-shell =2.3.5, tauri-build =2.6.3
+✅ sha2 dependency added for the idempotent MAIC plugin manifest
+✅ Smoke tested on Linux dev — full chain boots in 5 seconds, openclaw.json
+   patched without overwriting user config
 
-## What's NOT done (design phase tomorrow morning)
+## What's NOT done (next passes)
 
-⏳ **lib.rs setup hook** — actually spawn `node openclaw gateway --port 28789` as a child process. Poll `http://localhost:28789/v1/models` until 200. Show webview. Kill child on exit.
-⏳ **MAIC provider plugin** — verify it's loaded at OpenClaw startup (check `~/.openclaw/extensions/maic/openclaw.plugin.json` gets picked up). Currently sits in Main-Adeal's user dir; needs to ship with the installer so end users get it too.
-⏳ **OpenClaw bundle** — decide: (a) require user has Node + openclaw globally installed, (b) bundle Node runtime + openclaw npm package into the installer, (c) use a system Node to launch a self-contained openclaw script shipped in resources.
-⏳ **Branding pass** — ADeal green theme, splash screen, system tray icon (currently using old MC icons which are lobster/claw themed).
-⏳ **Installer smoke test** — does `npm install && bash scripts/build-windows-docker.sh` actually produce `MiracleClaw_1.0.0_x64-setup.exe`?
-⏳ **First-run UX** — when user double-clicks the .exe for the first time: install completes, app opens, child process spawns, OpenClaw WebChat loads, MAIC auth flow begins (or auto-logs-in via cached creds).
+⏳ **Bundle Node + openclaw** (commit 2):
+   - Pull `openclaw@2026.7.1-2` from registry into `depot/`
+   - Pull `node-v22.11.0-win-x64.zip` into `depot/`
+   - Vendor both into `src-tauri/resources/` via `scripts/bundle-runtime.sh`
+   - Copy the MAIC plugin source into `resources/maic-plugin/`
 
-## Tomorrow morning checklist
+⏳ **Linux dev full chain test** (after bundle):
+   - Webview → gateway → MAIC end-to-end
+   - Send 'hello' and confirm a model responds
 
-1. Read this STATUS.md
-2. Open the `miracle-claw` folder, NOT `old_mc_files/`
-3. Decide the OpenClaw bundle strategy (3 options above) — call it before coding
-4. Implement the child-process spawn in `lib.rs`
-5. Try a smoke build: `cd projects/miracle-claw && npm install && bash scripts/build-windows-docker.sh --rust-only` first (10x faster feedback than full NSIS bundling)
-6. If smoke build works, do the full NSIS bundle
-7. Verify installer lands at `/mnt/c/Users/Adeal/Desktop/MiracleClaw_1.0.0_x64-setup.exe`
-8. Double-click test on Windows side
-9. Tag `v1.0.0` once it actually works
+⏳ **Tomorrow's clean-Windows .exe test**:
+   - Run full NSIS bundle in Docker
+   - Copy installer to Windows desktop
+   - Install on a clean Windows VM (no Node, no openclaw)
+   - Confirm first-run path lands + chat works
+   - **Only then** tag `v1.0.0`
 
-## Lessons to remember while building
+⏳ **Branding pass**:
+   - ADeal green theme
+   - Splash screen
+   - System tray icon
+   - Currently using old MC lobster icons
 
-- **Lesson 391**: "When iterate-on-existing fails 5 times in a day, rewrite from clean source." This whole repo IS that rewrite.
-- **Lesson 395**: "When you find yourself repeating 'we need to add X' and X is already working in a different stack — adopt the working stack." OpenClaw WebChat is the working stack. We're wrapping it.
-- **Lesson 351**: Bump all 3 version strings together (Cargo.toml, tauri.conf.json, package.json). They're all `1.0.0` right now.
-- **Lesson 352**: NEVER `git add .` on the Tauri repo. Stage only what you actually touch.
-- **Lesson 353**: Warm Docker builds = 1:30-4 min. Cold = 20+ min.
+## Build commands
 
-## OpenClaw connection notes (for tomorrow)
+```bash
+# Build the launcher sidecar (auto-runs via beforeBuildCommand)
+bash scripts/build-launcher-sidecar.sh
 
-OpenClaw is already running on Main-Adeal at `http://localhost:18789/`. The MAIC plugin lives at `/home/adeal/.openclaw/extensions/maic/` and registers itself via `~/.openclaw/openclaw.json`. For the .exe to ship with MAIC wired, we need to:
-- Either copy `extensions/maic/` into the installer resources and have the installer write it to user's `~/.openclaw/extensions/` on first run
-- Or document that end users need to install the MAIC plugin themselves
+# Build main Tauri webview binary
+cd src-tauri && cargo build --bin miracle-claw
 
-The first option is the right answer — silent install, no user burden.
+# Linux dev with full hot-reload
+cargo tauri dev
 
-## Brand & product naming
+# Smoke-test the sidecar alone (Linux)
+./src-tauri/binaries/miracle-claw-launcher-x86_64-unknown-linux-gnu --help
+./src-tauri/binaries/miracle-claw-launcher-x86_64-unknown-linux-gnu --gateway-port 28789
+```
 
-- **Product name**: Miracle Claw
-- **Bundle ID**: `com.adealauto.miracle-claw` (different from old `miracle-claw-ui` to avoid collision)
-- **Installer file**: `MiracleClaw_1.0.0_x64-setup.exe`
-- **Publisher**: ADeal Auto Repair
-- **Homepage**: https://adealauto.com
+## Smoke test result (2026-08-18 07:14 MDT, Linux)
 
-## Git state
+```
+$ ./target/debug/miracle-claw
+[miracle-claw] setup: resources = .../target/debug/resources
+[miracle-claw] maic plugin: present (no change)
+[miracle-claw] openclaw.json: patched
+[miracle-claw] spawning sidecar: miracle-claw-launcher --gateway-port 28789
+[launcher.stderr] [miracle-claw-launcher] booting gateway on port 28789 (bind=loopback, auth=none)
+[launcher.stderr] [miracle-claw-launcher] node=/usr/bin/node resources=...
+[launcher.stderr] [miracle-claw-launcher] node openclaw pid=46105
+[launcher.terminated] code=Some(0) signal=None
+```
 
-- Branch: `master`
-- Working tree clean (nothing committed yet)
-- First commit will be the scaffold
-- Tag strategy: tag when actually shipped (e.g., `v1.0.0` after first installer works)
+Verified after the smoke run:
+- `~/.openclaw/openclaw.json` gained `pluginRoots: [.../extensions]` and `plugins.roots: [.../extensions]` (both keys, idempotent)
+- `~/.openclaw/extensions/maic/` files untouched (source not bundled yet)
+- Sidecar binary size: 4.8 MB ELF
+- Main binary size: ~190 MB debug build (release will be ~10-20 MB)
+
+## Architectural decisions locked
+
+| Concern | Decision |
+|---|---|
+| Bundle strategy | (b) self-contained — `openclaw@2026.7.1-2` from npm registry + Node 22 LTS |
+| Spawn shape | Rust sidecar (no Node escape hatch in allowlist) |
+| Allowlist | `^[0-9]{4,5}$` port validator, no other args exposed |
+| Bundle ID | `com.adealauto.miracle-claw` |
+| State dir (Win) | `%APPDATA%\MiracleClaw\` |
+| State dir (*nix) | `$HOME/.openclaw/` (mirrors our openclaw config) |
+| Bind mode | loopback (per-user Tauri window, same box) |
+| Auth mode | none (trusted local client) |
+
+## Lessons applied
+
+- **351:** All three version strings (Cargo.toml, tauri.conf.json, package.json) are `1.0.0`.
+- **352:** Not `git add .` — staged only changed files explicitly.
+- **353:** Sidecar build is fast (<30s warm). Tauri-build checks run every cargo invocation — placeholder is necessary.
+- **169 (Memory):** `tool_execution` flag is irrelevant for native Tauri — MAIC plugin handles transport patching automatically.
+- **395:** "When you find yourself repeating 'we need to add X' and X is already working in a different stack — adopt the working stack." OpenClaw WebChat is the working stack; we're wrapping it.
+- **404:** Distinguish "old project artifacts" (move to old_mc_files) from sibling packages. Bundle strategy picks (b) — full prod npm install — based on registry unpacked size.
+- **405:** Scaffold to a green light, not a working build. Today's work turned that green-light scaffold into a working first-run path. Two commits in this session, neither tagged v1.0.0.
+- **406:** STATUS.md > TODO.md. This file is the orientation doc.
+
+## Files in this session
+
+| File | Status | LoC |
+|---|---|---|
+| `src-tauri/src/lib.rs` | new | 320 |
+| `src-tauri/src/launcher.rs` | new | 320 |
+| `src-tauri/src/launcher_info.rs` | new | 30 |
+| `src-tauri/Cargo.toml` | updated | 30 |
+| `src-tauri/tauri.conf.json` | updated | 60 |
+| `src-tauri/capabilities/main.json` | new | 25 |
+| `scripts/build-launcher-sidecar.sh` | new | 65 |

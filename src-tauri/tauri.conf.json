@@ -4,14 +4,13 @@
   "version": "1.0.0",
   "identifier": "com.adealauto.miracle-claw",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "beforeBuildCommand": "bash scripts/build-launcher-sidecar.sh"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "Miracle Claw",
         "width": 1200,
         "height": 820,
@@ -44,6 +43,17 @@
     "longDescription": "Miracle Claw is a fast, friendly AI chat client for the desktop. Sign in, pick a model, and chat. Backed by MAIC at maicserver.com. Cross-platform: Windows, Linux, and macOS.",
     "publisher": "ADeal Auto Repair",
     "homepage": "https://adealauto.com",
+    "externalBin": [
+      "binaries/miracle-claw-launcher"
+    ],
+    "resources": [
+      "resources/node.exe",
+      "resources/openclaw.mjs",
+      "resources/package.json",
+      "resources/node_modules",
+      "resources/dist",
+      "resources/maic-plugin"
+    ],
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",
