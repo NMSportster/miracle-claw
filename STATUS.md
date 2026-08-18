@@ -187,7 +187,18 @@ Verified after the smoke run:
     - **Copied to:** `/mnt/c/Users/Adeal/Desktop/MiracleClaw_1.0.0_x64-setup.exe`
     - **Extracted node.exe check:** PE32+ executable for MS Windows 6.00 (console), x86-64, 83 MB — real Node 22.23.2 ✓
     - **No node-dist/:** Linux ELF extracted tree removed (saves ~150 MB) ✓
-  - **v5 installer (CURRENT, 16:22 MDT, hotfix-2):** 55 MB, MD5 `49adfa6b198a5cb3906021ce32f2be08`, SHA256 `dab5d0ed16ec0de5c9107a87eb4230aa89628a08ddd07dfd30a5d44daa66c48d`
+  - **v5 installer (hotfix-2, 16:22 MDT):** 55 MB, MD5 `49adfa6b198a5cb3906021ce32f2be08`, SHA256 `dab5d0ed16ec0de5c9107a87eb4230aa89628a08ddd07dfd30a5d44daa66c48d` — SUPERSEDED by v6.
+  - **v6 installer (CURRENT, 16:53 MDT, hotfix-3):** 53 MB, MD5 `7fa3a977fb1517c2d9d10fdd7b4cdb36`, SHA256 `6f9f66f785b2613b21ea37baaef53dc337a51a6fe1121b015ada262b68dff89c`
+    - **Bug:** v5 shipped 31,903 files because we listed whole `resources/src` and `resources/docs` directories. The runtime only needs files from `src/agents/templates/` and `docs/reference/templates/`, so v5 carried 723 extra files (mostly docs i18n .json) we don't actually need.
+    - **Fix:** Narrow `bundle.resources` from `resources/src` + `resources/docs` to `resources/src/agents/templates` + `resources/docs/reference/templates`. Same template files, fewer attachments.
+    - **Verified payload (7z extraction):**
+      - `resources/src/agents/templates/HEARTBEAT.md` ✓
+      - `resources/docs/reference/templates/AGENTS.md` ✓ (plus SOUL/USER/IDENTITY/TOOLS/BOOTSTRAP/BOOT and .dev.md variants = 13 files)
+      - 31,180 files in payload (vs v5's 31,903 — 723 files / ~1 MB less)
+      - `resources/node.exe` = PE32+ Windows x86-64, 83 MB ✓
+      - `miracle-claw.exe` = PE32+ x86-64, 11 MB, migrate string present ✓
+      - `miracle-claw-launcher.exe` = PE32+ x86-64, 325 KB, contains `--allow-unconfigured` ✓
+    - **Tradeoff:** No tradeoff. v6 is strictly better than v5 (smaller, same functionality). The only reason v5 exists is that we built it before realizing we could narrow the bundle.
     - **Bug:** David got chat error "Missing workspace template: AGENTS.md (...resources\src\agents\templates\AGENTS.md). Ensure workspace templates are packaged." The runtime's resolveWorkspaceTemplateDir walks up from `openclaw.mjs`, finds `package.json` (name=openclaw) at `<install>/resources/package.json`, then looks for `<packageRoot>/src/agents/templates` and `<packageRoot>/docs/reference/templates`. Both paths existed in `src-tauri/resources/` on the build host but were NOT in the installer payload because Tauri's `bundle.resources` is an explicit allowlist.
     - **Fix:** Added `"resources/src"` and `"resources/docs"` to `bundle.resources` in `tauri.conf.json`.
     - **Verified payload (7z extraction):**
