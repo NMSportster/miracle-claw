@@ -53,7 +53,9 @@
       "resources/package.json",
       "resources/node_modules",
       "resources/dist",
-      "resources/maic-plugin"
+      "resources/maic-plugin",
+      "resources/src",
+      "resources/docs"
     ],
     "windows": {
       "nsis": {
