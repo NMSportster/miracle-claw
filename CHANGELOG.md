@@ -8,15 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — v1.0.1 polish queue
 
 ### Things planned (no rebuild required)
-- David: re-test chat on v6 installer (currently on Desktop). Expected log lines:
-  - `[miracle-claw] migrated legacy openclaw.json ...` (if v4 already wrote bad config)
-  - `[miracle-claw] gateway READY on port 28789`
-  - Chat sends/receives successfully (no "Missing workspace template" error)
-- Tag v1.0.1 once David confirms v6 installer fully loads.
-- Formalize Lesson 427 in MEMORY.md (audit user-facing strings at v1.0.0 GA) — done.
-- Capture Lesson 428 (Tauri `bundle.resources` is explicit allowlist) — done.
+- David: pick a workaround for the `missing-provider-auth` error (Lesson 431):
+  - **Option A**: from `C:\Program Files\MiracleClaw\resources\`, run
+    `openclaw agents add main` and answer the prompts (provider = `maic`,
+    paste MAIC API key).
+  - **Option B**: copy the portable static auth profiles from system openclaw at
+    `C:\Users\Adeal\AppData\Roaming\openclaw\agents\main\agent\` (NOT the
+    sqlite) into MC's isolated agentDir at
+    `C:\Users\Adeal\AppData\Roaming\MiracleClaw\agents\main\agent\`.
+  - Confirm chat sends/receives without errors.
+- Tag v1.0.1 once David confirms chat roundtrip works on v6.
+- Lessons 431 (provider config gap) and 432 (chat roundtrip is the release gate)
+  captured in MEMORY.md.
+- Unified 8-step pre-flight checklist (Lesson 432 corollary) committed to
+  MEMORY.md; future MC releases must run it before tagging.
 
 ### Things planned (require rebuild)
+- **Wire MAIC as the agent provider in first-run (Lesson 431).**
+  - Symptom: chat errors with `No API key found for provider "openai"`
+    (provider defaults to `openai` because we don't write `agents.providers.maic`).
+  - Root cause: MC's setup() installs the MAIC plugin but doesn't write the
+    agent provider config. Plugin registry and provider config are independent.
+  - Fix: setup() gains a third config-write step — write
+    `agents.providers.maic = {endpoint, defaultModel: 'milagro-dev', apiKey}`
+    via the same deepMerge helper used for gateway config. Source API key from
+    system openclaw's existing auth profile (auto-import with consent), env var
+    `MAIC_API_KEY`, or first-run UI prompt.
 - **Installer should kill running gateway before overwriting node.exe (Lesson 430).**
   - Symptom: NSIS error "Error opening file for writing: node.exe" when installing
     a hotfix over a running prior gateway. Root cause: Windows file lock on
@@ -131,7 +148,7 @@ match the installable state. v5 is the installable state.
 | v3 | 54 MB | `6f84425e3e944807c812616e8057f234` | FAILED | `gateway.auth: Invalid input` (flat string) |
 | v4 | 54 MB | `7d82f00ea24b9c80f7ee7fa935ea84f8` | tagged but broken | gateway starts, but chat errors on missing templates |
 | v5 | 55 MB | `49adfa6b198a5cb3906021ce32f2be08` | **SUPERSEDED** | + bundle `resources/src` + `resources/docs` (Lesson 428); shipped 737 unused files |
-| v6 | 53 MB | `7fa3a977fb1517c2d9d10fdd7b4cdb36` | **CURRENT** (on David's Desktop) | narrowed bundle.resources to template subdirs only; saves 723 files / ~1 MB |
+| v6 | 53 MB | `7fa3a977fb1517c2d9d10fdd7b4cdb36` | **INSTALLED** (17:09 MDT) | narrowed bundle.resources; install successful; chat hits `missing-provider-auth` (Lesson 431) |
 
 ### Lessons captured this release
 - **Lesson 423:** `bundle-runtime.sh` must be invoked with `--target windows --force` in Windows Docker build path.
