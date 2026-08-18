@@ -3,7 +3,7 @@
 # scripts/build-windows-docker.sh
 # ============================================================================
 #
-# Build a Windows NSIS installer for Miracle Claw UI using the cross-compile
+# Build a Windows NSIS installer for Miracle Claw using the cross-compile
 # Docker image. Output goes to dist-installers/windows/.
 #
 # Usage:
@@ -26,7 +26,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-IMAGE_NAME="miracle-claw-ui-build"
+IMAGE_NAME="miracle-claw-build"
 DOCKERFILE="Dockerfile.build"
 OUTPUT_DIR="$REPO_ROOT/dist-installers/windows"
 SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache}"
@@ -83,14 +83,14 @@ DOCKER_VOLUMES=(
     -v "$HOME/.cargo/registry:/usr/local/cargo/registry"
     -v "$HOME/.cargo/git:/usr/local/cargo/git"
     -v "$SCCACHE_DIR:/usr/local/cargo/sccache"
-    -v "miracle-claw-ui-xwin-cache:/usr/local/cargo/xwin-cache"
+    -v "miracle-claw-xwin-cache:/usr/local/cargo/xwin-cache"
 )
 
 if $RUST_ONLY; then
     echo ">>> Rust-only build (compiles the .exe, no NSIS bundling)"
-    CMD='cd /io/src-tauri && cargo xwin build --release --target x86_64-pc-windows-msvc --bin miracle-claw-ui'
+    CMD='cd /io/src-tauri && cargo xwin build --release --target x86_64-pc-windows-msvc --bin miracle-claw'
 elif $BUNDLE_ONLY; then
-    EXE_PATH="$REPO_ROOT/src-tauri/target/x86_64-pc-windows-msvc/release/miracle-claw-ui.exe"
+    EXE_PATH="$REPO_ROOT/src-tauri/target/x86_64-pc-windows-msvc/release/miracle-claw.exe"
     if [[ ! -f "$EXE_PATH" ]]; then
         echo "ERROR: --bundle-only requires an existing $EXE_PATH" >&2
         exit 1
@@ -130,7 +130,7 @@ if [[ -d "$BUNDLE_SRC" && -n "$(ls -A "$BUNDLE_SRC" 2>/dev/null)" ]]; then
     # (read from tauri.conf.json) instead. See Lesson 229 in MEMORY.md.
     TAURI_VERSION=$(grep -oE '"version": *"[^"]+"' "$REPO_ROOT/src-tauri/tauri.conf.json" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
     APP_SUFFIX=$(grep -E 'const APP_VERSION' "$REPO_ROOT/src-tauri/src/chat.rs" | grep -oE '\+[0-9]+' | head -1)
-    LATEST_INSTALLER="$OUTPUT_DIR/Miracle Claw_${TAURI_VERSION}_x64-setup.exe"
+    LATEST_INSTALLER="$OUTPUT_DIR/MiracleClaw_${TAURI_VERSION}_x64-setup.exe"
     if [[ -n "$TAURI_VERSION" && -n "$APP_SUFFIX" && -f "$LATEST_INSTALLER" ]]; then
         DESKTOP_NAME="MiracleClaw_${TAURI_VERSION}${APP_SUFFIX}_x64-setup.exe"
         DESKTOP_PATH="/mnt/c/Users/Adeal/Desktop/${DESKTOP_NAME}"
@@ -146,7 +146,7 @@ else
         echo ""
         echo "================================================================="
         echo "  --rust-only: Rust binary built at:"
-        echo "  src-tauri/target/x86_64-pc-windows-msvc/release/miracle-claw-ui.exe"
+        echo "  src-tauri/target/x86_64-pc-windows-msvc/release/miracle-claw.exe"
         echo "  Run again without --rust-only to bundle into an installer."
         echo "================================================================="
     else

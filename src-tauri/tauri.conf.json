@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Miracle Claw",
+  "productName": "MiracleClaw",
   "version": "1.0.0",
   "identifier": "com.adealauto.miracle-claw",
   "build": {
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Miracle Claw",
+        "title": "MiracleClaw",
         "width": 1200,
         "height": 820,
         "minWidth": 800,
