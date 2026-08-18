@@ -76,6 +76,7 @@ DOCKER_ENV=(
     -e CARGO_NET_GIT_FETCH_WITH_CLI=true
     -e SCCACHE_DIR=/usr/local/cargo/sccache
     -e XWIN_CACHE_DIR=/usr/local/cargo/xwin-cache
+    -e TAURI_BUILD_TARGET=x86_64-pc-windows-msvc
 )
 
 DOCKER_VOLUMES=(
@@ -129,10 +130,9 @@ if [[ -d "$BUNDLE_SRC" && -n "$(ls -A "$BUNDLE_SRC" 2>/dev/null)" ]]; then
     # v1.7.10 filenames. Match the actual TAURI_VERSION we just built
     # (read from tauri.conf.json) instead. See Lesson 229 in MEMORY.md.
     TAURI_VERSION=$(grep -oE '"version": *"[^"]+"' "$REPO_ROOT/src-tauri/tauri.conf.json" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-    APP_SUFFIX=$(grep -E 'const APP_VERSION' "$REPO_ROOT/src-tauri/src/chat.rs" | grep -oE '\+[0-9]+' | head -1)
     LATEST_INSTALLER="$OUTPUT_DIR/MiracleClaw_${TAURI_VERSION}_x64-setup.exe"
-    if [[ -n "$TAURI_VERSION" && -n "$APP_SUFFIX" && -f "$LATEST_INSTALLER" ]]; then
-        DESKTOP_NAME="MiracleClaw_${TAURI_VERSION}${APP_SUFFIX}_x64-setup.exe"
+    if [[ -n "$TAURI_VERSION" && -f "$LATEST_INSTALLER" ]]; then
+        DESKTOP_NAME="MiracleClaw_${TAURI_VERSION}_x64-setup.exe"
         DESKTOP_PATH="/mnt/c/Users/Adeal/Desktop/${DESKTOP_NAME}"
         if cp -v "$LATEST_INSTALLER" "$DESKTOP_PATH" 2>/dev/null; then
             echo "  Desktop installer: $DESKTOP_PATH"

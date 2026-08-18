@@ -15,12 +15,21 @@ FROM messense/cargo-xwin:latest AS toolchain
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Add Node.js 20 + NSIS via apt
+# Add Node.js 20 + NSIS + GTK dev headers via apt
+# (GTK is needed because the launcher sidecar's Cargo.toml transitively
+# pulls in tauri → webkit → gtk-sys → gdk-sys during cargo build for the
+# host Linux triple. We could split the launcher into its own crate to
+# avoid this, but it's cheaper to just install libgtk-3-dev + libwebkit2gtk-4.1-dev.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     gnupg \
     nsis \
+    libgtk-3-dev \
+    libwebkit2gtk-4.1-dev \
+    libayatana-appindicator3-dev \
+    librsvg2-dev \
+    libsoup-3.0-dev \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \

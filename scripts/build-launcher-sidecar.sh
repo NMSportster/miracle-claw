@@ -24,9 +24,19 @@ SRC_DIR="$REPO_ROOT/src-tauri"
 BINARIES_DIR="$SRC_DIR/binaries"
 mkdir -p "$BINARIES_DIR"
 
-TARGET_TRIPLE="$(rustc --print host-tuple)"
+# If we're inside the Docker build image (cargo-xwin + nsis present), we're
+# building for Windows MSVC. Otherwise, we use the host triple for dev.
+if [[ -n "${TAURI_BUILD_TARGET:-}" ]]; then
+    TARGET_TRIPLE="$TAURI_BUILD_TARGET"
+elif [[ "$(uname -s 2>/dev/null)" == "Linux" ]] && command -v cargo-xwin >/dev/null 2>&1; then
+    TARGET_TRIPLE="x86_64-pc-windows-msvc"
+else
+    TARGET_TRIPLE="$(rustc --print host-tuple)"
+fi
+# File extension is determined by the TARGET, not the host (we may be
+# cross-compiling for Windows from a Linux Docker container).
 EXT=""
-[[ "$(uname -s 2>/dev/null || echo Windows)" == "Windows" || "${OS:-}" == "Windows_NT" ]] && EXT=".exe"
+[[ "$TARGET_TRIPLE" == *windows* ]] && EXT=".exe"
 
 LAUNCHER_NAME="miracle-claw-launcher"
 LAUNCHER_TARGET="$BINARIES_DIR/${LAUNCHER_NAME}-${TARGET_TRIPLE}${EXT}"
@@ -36,21 +46,45 @@ LAUNCHER_TARGET="$BINARIES_DIR/${LAUNCHER_NAME}-${TARGET_TRIPLE}${EXT}"
 # expected filename so the validate passes before our real launcher is
 # compiled; the launcher build immediately overwrites it. This avoids
 # touching every cargo invocation to disable tauri-build.
+#
+# Important: tauri-build validates against the HOST triple too (because the
+# lib build script runs even when we're cross-compiling the bin). So we
+# stage BOTH the host-triple placeholder AND the target-triple placeholder.
+#
+# Also: when the target is Windows, Tauri expects the .exe suffix; when the
+# target is *nix, no suffix. So we compute the expected file name per-triple
+# rather than reusing $EXT globally.
+HOST_TRIPLE="$(rustc --print host-tuple)"
+host_ext=""
+[[ "$HOST_TRIPLE" == *windows* ]] && host_ext=".exe"
+target_ext=""
+[[ "$TARGET_TRIPLE" == *windows* ]] && target_ext=".exe"
 mkdir -p "$BINARIES_DIR"
 [ -e "$LAUNCHER_TARGET" ] || touch "$LAUNCHER_TARGET"
+[ -e "$BINARIES_DIR/${LAUNCHER_NAME}-${HOST_TRIPLE}${host_ext}" ] || touch "$BINARIES_DIR/${LAUNCHER_NAME}-${HOST_TRIPLE}${host_ext}"
 
-# Build the launcher. --quiet keeps the log clean; --manifest-path avoids
-# any future workspace confusion. We pass --target by host triple so the
-# resulting binary matches Tauri's expectation on the local dev box.
+# Build the launcher. --quiet keeps the log clean. Use `cargo xwin` when
+# cross-compiling for MSVC (provides the link.exe wrapper + MSVC SDK); use
+# plain cargo for the host triple.
 echo "[build-launcher-sidecar] target triple: $TARGET_TRIPLE"
 echo "[build-launcher-sidecar] building $LAUNCHER_NAME..."
-( cd "$SRC_DIR" && cargo build --bin "$LAUNCHER_NAME" --quiet )
+if [[ "$TARGET_TRIPLE" == "$HOST_TRIPLE" ]]; then
+    ( cd "$SRC_DIR" && cargo build --bin "$LAUNCHER_NAME" --quiet )
+else
+    ( cd "$SRC_DIR" && cargo xwin build --bin "$LAUNCHER_NAME" --target "$TARGET_TRIPLE" --quiet )
+fi
 
-# Locate the cargo-built binary. Cargo's default profile puts it at
-# target/<profile>/<binary-name>; for host triples it's the same dir.
+# Locate the cargo-built binary. For cross-compile targets, cargo puts it at
+# target/<target>/<profile>/<binary-name>; for host triples it's
+# target/<profile>/<binary-name>.
 PROFILE="debug"
-[ -x "$SRC_DIR/target/release/$LAUNCHER_NAME$EXT" ] && PROFILE="release"
-BUILT="$SRC_DIR/target/$PROFILE/${LAUNCHER_NAME}${EXT}"
+if [[ "$TARGET_TRIPLE" == "$(rustc --print host-tuple)" ]]; then
+    [ -x "$SRC_DIR/target/release/$LAUNCHER_NAME$EXT" ] && PROFILE="release"
+    BUILT="$SRC_DIR/target/$PROFILE/${LAUNCHER_NAME}${EXT}"
+else
+    [ -x "$SRC_DIR/target/$TARGET_TRIPLE/release/$LAUNCHER_NAME$EXT" ] && PROFILE="release"
+    BUILT="$SRC_DIR/target/$TARGET_TRIPLE/$PROFILE/${LAUNCHER_NAME}${EXT}"
+fi
 
 if [ ! -f "$BUILT" ]; then
     echo "[build-launcher-sidecar] error: built launcher not found at $BUILT" >&2
