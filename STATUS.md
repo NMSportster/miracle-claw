@@ -172,7 +172,7 @@ Verified after the smoke run:
     - Bug: openclaw rejected `gateway.auth: "none"` (flat string) with "Invalid input"
     - openclaw 2026.7.1+ validates `gateway.auth` as a `.strict()` object with a `mode` field; the flat string form is no longer accepted
     - Root cause: I wrote `"auth": "none"` when the schema wants `"auth": { "mode": "none" }`
-  - **v4 installer (CURRENT):** 54 MB, MD5 `7d82f00ea24b9c80f7ee7fa935ea84f8`, SHA256 `6e9483a03fa5d505eaf8336929633197d7b0d7681638ccd3e92339fbe966d200`
+  - **v4 installer (16:04 MDT, hotfix):** 54 MB, MD5 `7d82f00ea24b9c80f7ee7fa935ea84f8`, SHA256 `6e9483a03fa5d505eaf8336929633197d7b0d7681638ccd3e92339fbe966d200`
     - **Two fixes:**
       - New minimal config uses nested object shape: `gateway: { mode: 'local', bind: 'loopback', auth: { mode: 'none' } }`
       - Added `migrate_legacy_mc_config()` that auto-rewrites any existing v3-style flat-string config to the new shape. MC is the only thing that would have written the legacy shape, so the rewrite is safe.
@@ -187,6 +187,17 @@ Verified after the smoke run:
     - **Copied to:** `/mnt/c/Users/Adeal/Desktop/MiracleClaw_1.0.0_x64-setup.exe`
     - **Extracted node.exe check:** PE32+ executable for MS Windows 6.00 (console), x86-64, 83 MB — real Node 22.23.2 ✓
     - **No node-dist/:** Linux ELF extracted tree removed (saves ~150 MB) ✓
+  - **v5 installer (CURRENT, 16:22 MDT, hotfix-2):** 55 MB, MD5 `49adfa6b198a5cb3906021ce32f2be08`, SHA256 `dab5d0ed16ec0de5c9107a87eb4230aa89628a08ddd07dfd30a5d44daa66c48d`
+    - **Bug:** David got chat error "Missing workspace template: AGENTS.md (...resources\src\agents\templates\AGENTS.md). Ensure workspace templates are packaged." The runtime's resolveWorkspaceTemplateDir walks up from `openclaw.mjs`, finds `package.json` (name=openclaw) at `<install>/resources/package.json`, then looks for `<packageRoot>/src/agents/templates` and `<packageRoot>/docs/reference/templates`. Both paths existed in `src-tauri/resources/` on the build host but were NOT in the installer payload because Tauri's `bundle.resources` is an explicit allowlist.
+    - **Fix:** Added `"resources/src"` and `"resources/docs"` to `bundle.resources` in `tauri.conf.json`.
+    - **Verified payload (7z extraction):**
+      - `resources/src/agents/templates/HEARTBEAT.md` ✓
+      - `resources/docs/reference/templates/AGENTS.md` ✓ (plus SOUL/USER/IDENTITY/TOOLS/BOOTSTRAP/BOOT and .dev.md variants = 13 files)
+      - 31,903 files in payload (was 31,166 in v4 — gained 737 files, mostly docs i18n)
+      - `resources/node.exe` = PE32+ Windows x86-64, 83 MB ✓
+      - `miracle-claw.exe` = PE32+ x86-64, 11 MB, migrate string present ✓
+      - `miracle-claw-launcher.exe` = PE32+ x86-64, 325 KB, contains `--allow-unconfigured` ✓
+    - **Tradeoff:** ships ~750 docs files (mostly i18n .json) we don't strictly need. Adds ~1 MB to installer. v1.0.1 can shrink by listing only the two template subdirectories explicitly (`resources/src/agents/templates` and `resources/docs/reference/templates`).
     - **Built by:** `scripts/build-windows-docker.sh` via Docker image `miracle-claw-build:latest` (cargo-xwin + NSIS + GTK dev headers)
     - **Cross-compile:** `cargo-xwin --target x86_64-pc-windows-msvc` → `miracle-claw.exe` (11 MB) + `miracle-claw-launcher.exe` (318 KB) + bundled Node 22.23.2 Win32 + `openclaw@2026.7.1-2` + MAIC plugin v0.1.0
     - **Build time:** ~22 min (rebuild — Tauri-build re-validated bundle.resources and forced cargo re-run after bundle-runtime.sh wiped + re-staged resources/)
