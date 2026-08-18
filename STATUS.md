@@ -2,6 +2,7 @@
 
 **Scaffolded:** 2026-08-17 18:52 MDT
 **First-run path shipped:** 2026-08-18 07:14 MDT
+**Runtime bundled:** 2026-08-18 08:05 MDT
 **Branch:** `master`
 **Release tag:** Not yet (clean-Windows .exe test is the v1.0.0 gate)
 
@@ -12,7 +13,8 @@
 ✅ `lib.rs` first-run path:
    - Resource resolution (production env var + dev fallback walk-up)
    - Idempotent MAIC plugin copy (SHA-256 manifest, skip-on-match)
-   - Idempotent openclaw.json patch (deep-merge, both `plugins.roots` and `pluginRoots`)
+   - `ensure_maic_manifest_compat` backfills `configSchema` on the plugin manifest after copy (openclaw 2026.7.1+ requires it)
+   - Read-only `check_openclaw_json` (warn-only; openclaw 2026.7.1+ rejects the old `plugins.roots` and `pluginRoots` root keys — plugins auto-discover from `<stateDir>/extensions/`)
    - Tauri sidecar spawn via allowlist
    - Background log capture (stdout/stderr tagged and prefixed)
    - TCP connect poll for gateway readiness (15s cap, exponential backoff 100ms→1s)
@@ -23,6 +25,15 @@
 ✅ sha2 dependency added for the idempotent MAIC plugin manifest
 ✅ Smoke tested on Linux dev — full chain boots in 5 seconds, openclaw.json
    patched without overwriting user config
+✅ **Runtime bundled** (commit `76d9be1`):
+   - `scripts/bundle-runtime.sh` — idempotent, builds `src-tauri/resources/` from npm registry + Node 22.23.2 tarballs
+   - Node 22.23.2 (matches openclaw `engines: >=22.22.3 <23`)
+   - `openclaw@2026.7.1-2` + `node_modules` (270 packages, **flat layout via `pnpm --config.nodeLinker=hoisted`** — essential for Tauri's bundler, which strips pnpm's symlink-tree)
+   - `resources/node` (copied binary) + `resources/node.exe` (Windows placeholder for tauri-build pre-flight)
+   - `resources/maic-plugin/` (4 files) pre-staged so the SHA-checked copy actually fires on real installs
+   - `resources/{package.json, openclaw.mjs, dist, docs, skills, scripts, patches, src, LICENSE, CHANGELOG, README, THIRD_PARTY_NOTICES, BUNDLE_VERSION}` — full bundled install
+   - Total: ~678M on disk (Node 204M + node_modules 248M + dist 96M + rest 130M)
+   - Verified: `nohup ./node openclaw.mjs gateway --port 28812 --bind loopback --auth none` boots clean, HTTP server listening, WebSocket connects, 9 manage-plugins loaded, MAIC detected by doctor as "managed npm plugin package"
 
 ## What's NOT done (next passes)
 
