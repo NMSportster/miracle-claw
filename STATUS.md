@@ -147,3 +147,11 @@ Verified after the smoke run:
 | `src-tauri/tauri.conf.json` | updated | 60 |
 | `src-tauri/capabilities/main.json` | new | 25 |
 | `scripts/build-launcher-sidecar.sh` | new | 65 |
+
+## MAIC plugin updates
+
+- 2026-08-18 — bumped to 0.1.0 (verified on HomeBot gateway: agent model `maic/milagro-oc-minimax`, 9 plugins loaded incl. MAIC, `/v1/models` 200 OK)
+  - depot/maic-plugin/VERSION = 0.1.0
+  - depot/maic-plugin/SHA256SUMS = 4 files
+  - /home/steeler/.openclaw/extensions/maic/ on steeler, in place
+  - Handoff note: /home/steeler/notes/miracle-claw-handoff/README.md
