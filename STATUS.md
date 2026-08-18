@@ -155,3 +155,28 @@ Verified after the smoke run:
   - depot/maic-plugin/SHA256SUMS = 4 files
   - /home/steeler/.openclaw/extensions/maic/ on steeler, in place
   - Handoff note: /home/steeler/notes/miracle-claw-handoff/README.md
+
+## v1.0.0 installer built — release gate pending
+
+- 2026-08-18 ~09:37 MDT — `MiracleClaw_1.0.0_x64-setup.exe` produced
+  - **Size:** 60 MB NSIS self-extracting installer (Nullsoft v3.11-1)
+  - **MD5:** `c2ebe2cc39030564b0760955858d4cd0`
+  - **Type:** PE32 i386, 7 sections, requires admin elevation
+  - **Path:** `dist-installers/windows/MiracleClaw_1.0.0_x64-setup.exe`
+  - **Copied to:** `/mnt/c/Users/Adeal/Desktop/MiracleClaw_1.0.0_x64-setup.exe` (ready for David's clean-Windows install test)
+  - **Built by:** `scripts/build-windows-docker.sh` via Docker image `miracle-claw-build:latest` (cargo-xwin + NSIS + GTK dev headers)
+  - **Cross-compile:** `cargo-xwin --target x86_64-pc-windows-msvc` → `miracle-claw.exe` (11 MB) + bundled Node 22.23.2 + `openclaw@2026.7.1-2` + MAIC plugin v0.1.0
+  - **Build time:** ~15 min cold (with sccache warm cache), 60s NSIS makensis final compression
+  - **productName aligned:** "MiracleClaw" (no space) per David's v1.7.x convention
+
+- **Release gate:** clean-Windows install test (see `docs/CLEAN-WINDOWS-INSTALL-TEST.md`)
+  - Test steps: 7-step verification (installer runs → app opens → chat works → state dir isolated → MAIC plugin found → uninstall clean)
+  - **Pending:** David runs the install on his Windows box (Tailscale will let him install from `\\wsl$\Main-Adeal\...\MiracleClaw_1.0.0_x64-setup.exe` or just copy from desktop)
+  - **Tag trigger:** v1.0.0 tagged once David confirms all 7 pass criteria green
+
+## Lessons added this session (Day 2 — installer build)
+
+- **Lesson 419:** Cross-compile the Tauri sidecar for the **target** triple, not the host. `cargo build --bin launcher --target x86_64-pc-windows-msvc` fails with `linker link.exe not found`; you need `cargo xwin build --bin launcher --target x86_64-pc-windows-msvc` for the MSVC SDK wrapper. Also: tauri-build validates `externalBin` against the host triple too (because the lib build.rs runs even when cross-compiling the bin), so stage BOTH a host-triple placeholder AND a target-triple placeholder before `beforeBuildCommand` runs.
+- **Lesson 420:** File extension on the launcher placeholder is determined by the **target triple**, not the host. When cross-compiling for Windows from a Linux Docker container, the placeholder must be `miracle-claw-launcher-x86_64-pc-windows-msvc.exe` (with `.exe`), not just `...-msvc` (without).
+- **Lesson 421:** When the launcher's `[dependencies]` is shared with the main binary's tauri dep tree (cargo workspace has only one Cargo.toml), the launcher's Linux-host build pulls in GTK headers too (tauri → webkit → gtk → gdk). Install `libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev` in the Docker image even though the launcher is conceptually std-only. Proper fix would be to split the launcher into its own crate; libs are cheaper.
+- **Lesson 422:** `scripts/build-windows-docker.sh`'s "auto-copy to Desktop" path silently no-ops when `chat.rs` doesn't exist (was reading `const APP_VERSION` for the `+N` build suffix). Drop the suffix lookup when shipping clean `MAJOR.MINOR.PATCH` tags.
