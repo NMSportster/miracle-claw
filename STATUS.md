@@ -164,8 +164,19 @@ Verified after the smoke run:
     - Symptom on Windows: launcher spawn fails with os error 193 (not a valid Win32 application)
     - Root cause: `bundle-runtime.sh` was invoked with default `--target host` (Linux); the script's `touch "$RESOURCES_DIR/node.exe"` placeholder was what got shipped
     - See Lesson 423
-  - **v2 installer (CURRENT):** 54 MB, MD5 `30e1f5b126b559e6e5cf00f80cbabf59`, SHA256 `fd316b091fc6680ec52e1f53acb2b61ca2aa001c9e08b270c80153d8ff9d9611`
-    - **Size:** 54 MB NSIS self-extracting installer (Nullsoft v3.11-1, 7 sections)
+  - **v2 installer (FAILED second-run):** 54 MB, MD5 `30e1f5b126b559e6e5cf00f80cbabf59`, SHA256 `fd316b091fc6680ec52e1f53acb2b61ca2aa001c9e08b270c80153d8ff9d9611`
+    - Bug: openclaw's gateway refused to start with exit code 78 ("Missing config. Run openclaw setup or set gateway.mode=local (or pass --allow-unconfigured)")
+    - First-run on a fresh Windows box has no openclaw.json yet, so the gateway bails
+    - Root cause: MC's setup() didn't pre-write an openclaw.json, and the launcher didn't pass `--allow-unconfigured`
+  - **v3 installer (CURRENT):** 54 MB, MD5 `6f84425e3e944807c812616e8057f234`, SHA256 `c9fbf5fbdb8541da2538b07a926edcd5d35b8c345686e5b1093e208891a17ada`
+    - **Two-layer fix:**
+      - `lib.rs setup()` now pre-writes a minimal valid `openclaw.json` at `%APPDATA%\MiracleClaw\openclaw.json` with `gateway.mode=local`, `bind=loopback`, `auth=none`. Skips if user already has one.
+      - `launcher.rs build_node_command()` passes `--allow-unconfigured` to openclaw as a belt to that suspenders (in case pre-write failed: file locked by antivirus, disk full, etc.)
+    - **Verified payload:**
+      - `resources/node.exe` = PE32+ Windows x86-64, 87 MB ✓
+      - `resources/node` = 0-byte placeholder ✓
+      - `miracle-claw.exe` = PE32+ x86-64, 11 MB ✓
+      - `miracle-claw-launcher.exe` = PE32+ x86-64, 325 KB, contains `--allow-unconfigured` ✓
     - **Type:** PE32 i386, requires admin elevation
     - **Path:** `dist-installers/windows/MiracleClaw_1.0.0_x64-setup.exe`
     - **Copied to:** `/mnt/c/Users/Adeal/Desktop/MiracleClaw_1.0.0_x64-setup.exe`
