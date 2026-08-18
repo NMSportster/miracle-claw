@@ -148,6 +148,20 @@ if [[ -d "$BUNDLE_SRC" && -n "$(ls -A "$BUNDLE_SRC" 2>/dev/null)" ]]; then
     if [[ -n "$TAURI_VERSION" && -f "$LATEST_INSTALLER" ]]; then
         DESKTOP_NAME="MiracleClaw_${TAURI_VERSION}_x64-setup.exe"
         DESKTOP_PATH="/mnt/c/Users/Adeal/Desktop/${DESKTOP_NAME}"
+        # Lesson 429: if the Desktop installer already exists with a different
+        # MD5, archive it with the MD5 hash in the filename so we don't lose
+        # version history when iterating hotfixes without a version bump.
+        if [[ -f "$DESKTOP_PATH" ]]; then
+            EXISTING_MD5=$(md5sum "$DESKTOP_PATH" 2>/dev/null | awk '{print $1}')
+            NEW_MD5=$(md5sum "$LATEST_INSTALLER" 2>/dev/null | awk '{print $1}')
+            if [[ "$EXISTING_MD5" != "$NEW_MD5" ]]; then
+                ARCHIVE_NAME="MiracleClaw_${TAURI_VERSION}_${EXISTING_MD5:0:8}_x64-setup.exe"
+                ARCHIVE_PATH="/mnt/c/Users/Adeal/Desktop/${ARCHIVE_NAME}"
+                if mv -v "$DESKTOP_PATH" "$ARCHIVE_PATH" 2>/dev/null; then
+                    echo "  Archived previous installer → $ARCHIVE_NAME"
+                fi
+            fi
+        fi
         if cp -v "$LATEST_INSTALLER" "$DESKTOP_PATH" 2>/dev/null; then
             echo "  Desktop installer: $DESKTOP_PATH"
             md5sum "$DESKTOP_PATH" 2>/dev/null
