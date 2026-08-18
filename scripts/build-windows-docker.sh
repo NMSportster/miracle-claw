@@ -91,7 +91,7 @@ if ! bash "$REPO_ROOT/scripts/bundle-runtime.sh" --target windows --force; then
     exit 1
 fi
 echo ">>> bundle-runtime.sh complete. resources/node.exe:"
-file "$RESOURCES_DIR/node.exe" 2>/dev/null || true
+file "$REPO_ROOT/src-tauri/resources/node.exe" || true
 
 DOCKER_VOLUMES=(
     -v "$REPO_ROOT:/io"
