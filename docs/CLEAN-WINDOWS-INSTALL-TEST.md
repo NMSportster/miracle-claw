@@ -7,9 +7,9 @@ runtime preinstalled) and produce a working desktop app.
 ## Installer
 
 - **File:** `dist-installers/windows/MiracleClaw_1.0.0_x64-setup.exe`
-- **Size:** 54 MB
-- **MD5:** `7d82f00ea24b9c80f7ee7fa935ea84f8` (v4 — the v1.0.0 release build)
-- **SHA256:** `6e9483a03fa5d505eaf8336929633197d7b0d7681638ccd3e92339fbe966d200`
+- **Size:** 55 MB
+- **MD5:** `49adfa6b198a5cb3906021ce32f2be08` (v5 — the v1.0.0 hotfix build)
+- **SHA256:** `dab5d0ed16ec0de5c9107a87eb4230aa89628a08ddd07dfd30a5d44daa66c48d`
 - **Type:** NSIS self-extracting installer (Nullsoft v3.11-1), 7 sections,
   requires admin elevation
 - **Bundled in installer:**
