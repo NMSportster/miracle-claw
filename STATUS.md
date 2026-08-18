@@ -3,6 +3,7 @@
 **Scaffolded:** 2026-08-17 18:52 MDT
 **First-run path shipped:** 2026-08-18 07:14 MDT
 **Runtime bundled:** 2026-08-18 08:05 MDT
+**State dir isolated:** 2026-08-18 08:13 MDT
 **Branch:** `master`
 **Release tag:** Not yet (clean-Windows .exe test is the v1.0.0 gate)
 
@@ -37,18 +38,20 @@
 
 ## What's NOT done (next passes)
 
-⏳ **Bundle Node + openclaw** (commit 2):
-   - Pull `openclaw@2026.7.1-2` from registry into `depot/`
-   - Pull `node-v22.11.0-win-x64.zip` into `depot/`
-   - Vendor both into `src-tauri/resources/` via `scripts/bundle-runtime.sh`
-   - Copy the MAIC plugin source into `resources/maic-plugin/`
+✅ Copy the MAIC plugin source into `resources/maic-plugin/`
+✅ **State dir isolation** (commit `4b5e369`):
+   - Linux: `~/.openclaw/` → `~/.miracle-claw/`
+   - Windows: `%APPDATA%\MiracleClaw` (unchanged)
+   - Smoke tested on Linux dev: gateway boots clean in isolated dir, system openclaw untouched
+   - openclaw auto-migrates exec-approvals on first boot — existing users keep their history
 
-⏳ **Linux dev full chain test** (after bundle):
-   - Webview → gateway → MAIC end-to-end
-   - Send 'hello' and confirm a model responds
+⏳ **Linux dev full chain test** (after bundle, partial):
+   - Webview → gateway ✅ (verified via curl to gateway port)
+   - MAIC plugin load ✅ (doctor detects "1 managed npm plugin package")
+   - End-to-end chat send 'hello' ⏳ (not yet — needs Tauri webview launch)
 
 ⏳ **Tomorrow's clean-Windows .exe test**:
-   - Run full NSIS bundle in Docker
+   - Run full NSIS bundle in Docker (see skill: tauri-windows-cross-compile)
    - Copy installer to Windows desktop
    - Install on a clean Windows VM (no Node, no openclaw)
    - Confirm first-run path lands + chat works
@@ -75,6 +78,18 @@ cargo tauri dev
 # Smoke-test the sidecar alone (Linux)
 ./src-tauri/binaries/miracle-claw-launcher-x86_64-unknown-linux-gnu --help
 ./src-tauri/binaries/miracle-claw-launcher-x86_64-unknown-linux-gnu --gateway-port 28789
+```
+
+## Smoke test result (2026-08-18 08:13 MDT, Linux, isolated state dir)
+
+```bash
+cd src-tauri/resources && \
+  OPENCLAW_STATE_DIR=/home/adeal/.miracle-claw ./node openclaw.mjs gateway \
+    --port 28814 --bind loopback --auth none --allow-unconfigured
+# → "[state-migrations] Auto-migrated legacy state"
+# → "[gateway] agent runtime plugins pre-warmed in 106ms"
+# → http server listening on 28814
+# → ~/.openclaw/ untouched, ~/.miracle-claw/ populated cleanly
 ```
 
 ## Smoke test result (2026-08-18 07:14 MDT, Linux)
@@ -106,7 +121,7 @@ Verified after the smoke run:
 | Allowlist | `^[0-9]{4,5}$` port validator, no other args exposed |
 | Bundle ID | `com.adealauto.miracle-claw` |
 | State dir (Win) | `%APPDATA%\MiracleClaw\` |
-| State dir (*nix) | `$HOME/.openclaw/` (mirrors our openclaw config) |
+| State dir (*nix) | `$HOME/.miracle-claw/` (isolated from system openclaw at `~/.openclaw/`) |
 | Bind mode | loopback (per-user Tauri window, same box) |
 | Auth mode | none (trusted local client) |
 
