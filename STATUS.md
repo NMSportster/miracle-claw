@@ -168,15 +168,20 @@ Verified after the smoke run:
     - Bug: openclaw's gateway refused to start with exit code 78 ("Missing config. Run openclaw setup or set gateway.mode=local (or pass --allow-unconfigured)")
     - First-run on a fresh Windows box has no openclaw.json yet, so the gateway bails
     - Root cause: MC's setup() didn't pre-write an openclaw.json, and the launcher didn't pass `--allow-unconfigured`
-  - **v3 installer (CURRENT):** 54 MB, MD5 `6f84425e3e944807c812616e8057f234`, SHA256 `c9fbf5fbdb8541da2538b07a926edcd5d35b8c345686e5b1093e208891a17ada`
-    - **Two-layer fix:**
-      - `lib.rs setup()` now pre-writes a minimal valid `openclaw.json` at `%APPDATA%\MiracleClaw\openclaw.json` with `gateway.mode=local`, `bind=loopback`, `auth=none`. Skips if user already has one.
-      - `launcher.rs build_node_command()` passes `--allow-unconfigured` to openclaw as a belt to that suspenders (in case pre-write failed: file locked by antivirus, disk full, etc.)
+  - **v3 installer (FAILED third-run):** 54 MB, MD5 `6f84425e3e944807c812616e8057f234`, SHA256 `c9fbf5fbdb8541da2538b07a926edcd5d35b8c345686e5b1093e208891a17ada`
+    - Bug: openclaw rejected `gateway.auth: "none"` (flat string) with "Invalid input"
+    - openclaw 2026.7.1+ validates `gateway.auth` as a `.strict()` object with a `mode` field; the flat string form is no longer accepted
+    - Root cause: I wrote `"auth": "none"` when the schema wants `"auth": { "mode": "none" }`
+  - **v4 installer (CURRENT):** 54 MB, MD5 `7d82f00ea24b9c80f7ee7fa935ea84f8`, SHA256 `6e9483a03fa5d505eaf8336929633197d7b0d7681638ccd3e92339fbe966d200`
+    - **Two fixes:**
+      - New minimal config uses nested object shape: `gateway: { mode: 'local', bind: 'loopback', auth: { mode: 'none' } }`
+      - Added `migrate_legacy_mc_config()` that auto-rewrites any existing v3-style flat-string config to the new shape. MC is the only thing that would have written the legacy shape, so the rewrite is safe.
     - **Verified payload:**
       - `resources/node.exe` = PE32+ Windows x86-64, 87 MB ✓
       - `resources/node` = 0-byte placeholder ✓
       - `miracle-claw.exe` = PE32+ x86-64, 11 MB ✓
       - `miracle-claw-launcher.exe` = PE32+ x86-64, 325 KB, contains `--allow-unconfigured` ✓
+      - migrate string present: `[miracle-claw] migrated legacy openclaw.json ...` ✓
     - **Type:** PE32 i386, requires admin elevation
     - **Path:** `dist-installers/windows/MiracleClaw_1.0.0_x64-setup.exe`
     - **Copied to:** `/mnt/c/Users/Adeal/Desktop/MiracleClaw_1.0.0_x64-setup.exe`
