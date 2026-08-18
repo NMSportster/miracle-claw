@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Miracle Claw",
+  "version": "1.0.0",
+  "identifier": "com.adealauto.miracle-claw",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Miracle Claw",
+        "width": 1200,
+        "height": 820,
+        "minWidth": 800,
+        "minHeight": 560,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "visible": true,
+        "decorations": true,
+        "url": "http://localhost:28789/"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' http://localhost:28789; style-src 'self' http://localhost:28789 'unsafe-inline'; img-src 'self' data: http://localhost:28789; font-src 'self' data: http://localhost:28789; connect-src 'self' http://localhost:28789 ws://localhost:28789 ipc: https://ipc.localhost https://maicserver.com https://ollama.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none';"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Miracle Claw desktop chat — talk to MAIC models in a native window",
+    "longDescription": "Miracle Claw is a fast, friendly AI chat client for the desktop. Sign in, pick a model, and chat. Backed by MAIC at maicserver.com. Cross-platform: Windows, Linux, and macOS.",
+    "publisher": "ADeal Auto Repair",
+    "homepage": "https://adealauto.com",
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "installMode": "perMachine",
+        "languages": ["English"],
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

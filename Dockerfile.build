@@ -1,0 +1,47 @@
+# ============================================================================
+# Dockerfile.build — Cross-compile Miracle Claw UI for Windows from Linux
+# ============================================================================
+#
+# OUTPUT: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+#
+# Base image: messense/cargo-xwin (pre-built: rustup, cargo, cargo-xwin,
+# clang, lld, wine, Windows target).
+#
+# Adds: Node.js 20 (for vite build), nsis (makensis) via apt, sccache
+# (host-staged via scripts/install-sccache.sh).
+# ============================================================================
+
+FROM messense/cargo-xwin:latest AS toolchain
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Add Node.js 20 + NSIS via apt
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    gnupg \
+    nsis \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && node --version && npm --version \
+    && which makensis && makensis -VERSION 2>&1 | head -1
+
+# Install sccache (staged from host via scripts/install-sccache.sh)
+# chmod 755 explicitly so the binary is executable regardless of source perms
+COPY .docker-sccache/sccache /tmp/sccache-stage
+RUN install -m 0755 /tmp/sccache-stage /usr/local/bin/sccache \
+    && rm /tmp/sccache-stage \
+    && /usr/local/bin/sccache --version
+
+# Configure cargo to use sccache
+RUN mkdir -p /usr/local/cargo/sccache /root/.cargo \
+    && printf '[build]\nrustc-wrapper = "/usr/local/bin/sccache"\n' \
+       > /root/.cargo/config.toml
+
+WORKDIR /io
+
+CMD ["npm", "run", "tauri", "--", "build", \
+     "--runner", "cargo-xwin", \
+     "--target", "x86_64-pc-windows-msvc", \
+     "--bundles", "nsis"]
