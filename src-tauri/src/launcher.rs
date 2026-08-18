@@ -275,6 +275,11 @@ fn build_node_command(args: &Args, node_bin: &Path, resources: &Path) -> Command
         .arg(&args.auth)
         .env("OPENCLAW_STATE_DIR", default_openclaw_state_dir())
         .env("NODE_PATH", &node_path)
+        // Run from resources dir so the bundled `node` symlink (Linux dev)
+        // resolves and openclaw's relative imports (skills/, dist/) find their
+        // siblings. Absolute paths we pass (openclaw.mjs) would still work
+        // without this, but openclaw resolves some paths relative to cwd.
+        .current_dir(resources)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());

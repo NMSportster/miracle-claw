@@ -29,7 +29,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::{Manager, RunEvent};
 use tauri_plugin_shell::process::CommandEvent;
@@ -179,9 +179,37 @@ fn copy_maic_plugin_if_needed(
             fs::copy(&sp, dest_dir.join(name))?;
         }
     }
+    // Backfill configSchema on the manifest so openclaw 2026.7.1+ validates it.
+    ensure_maic_manifest_compat(&dest_dir)?;
     fs::write(manifest, src_hashes)?;
 
     Ok((CopyResult::Installed, dest_dir))
+}
+
+// Ensure the MAIC plugin manifest declares the `configSchema` field that
+// openclaw 2026.7.1+ enforces during gateway validation. Older openclaw
+// versions tolerated its absence; new ones reject the plugin outright.
+// We backfill on copy to keep the user-installed plugin valid no matter
+// which openclaw version it was originally installed under.
+fn ensure_maic_manifest_compat(target: &Path) -> io::Result<()> {
+    let manifest = target.join("openclaw.plugin.json");
+    if !manifest.is_file() {
+        return Ok(());
+    }
+    let raw = fs::read_to_string(&manifest)?;
+    let mut parsed: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse manifest: {e}")))?;
+    if parsed.get("configSchema").is_some() {
+        return Ok(());
+    }
+    parsed["configSchema"] = serde_json::json!({
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {}
+    });
+    let serialized = serde_json::to_string_pretty(&parsed)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize manifest: {e}")))?;
+    fs::write(&manifest, serialized)
 }
 
 fn compute_hashes_manifest(dir: &Path) -> io::Result<String> {
@@ -206,79 +234,47 @@ fn sha256_file(p: &Path) -> io::Result<String> {
 }
 
 // ----------------------------------------------------------------------------
-// openclaw.json patch (idempotent deep merge)
+// openclaw.json sanity check (read-only)
 // ----------------------------------------------------------------------------
+//
+// openclaw 2026.7.1+ discovers plugins automatically from <stateDir>/extensions/.
+// No openclaw.json key is needed or accepted. We deliberately do NOT modify the
+// user's openclaw.json — touching it risks invalidating their config schema.
+//
+// The previous version of this function patched in `plugins.roots` AND
+// `pluginRoots` keys. openclaw 2026.7.1 rejects both as invalid input. Removing
+// the patch keeps us out of trouble; the launcher still sets OPENCLAW_STATE_DIR
+// and we still copy the MAIC plugin into <stateDir>/extensions/maic/.
+//
+// We do still VERIFY that the user's config file is parseable JSON (cheap
+// preflight), and warn (stderr only) if it's empty or malformed. This catches
+// the "I edited my config and broke it" case without making it worse.
 
-fn ensure_maic_in_openclaw_json() -> io::Result<bool> {
+fn check_openclaw_json() -> io::Result<()> {
     let path = openclaw_json_path();
     if !path.is_file() {
-        let initial = json!({
-            "plugins": {
-                "roots": [path_to_json_string(&openclaw_extensions_dir())]
-            },
-            "pluginRoots": [path_to_json_string(&openclaw_extensions_dir())]
-        });
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+        // No config file yet — that's fine, openclaw will create defaults.
+        return Ok(());
+    }
+    match fs::read_to_string(&path) {
+        Ok(raw) if raw.trim().is_empty() => {
+            eprintln!(
+                "[miracle-claw] WARNING: openclaw.json exists but is empty; gateway will use defaults"
+            );
+            Ok(())
         }
-        fs::write(&path, serde_json::to_string_pretty(&initial).unwrap())?;
-        return Ok(true);
+        Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                eprintln!(
+                    "[miracle-claw] WARNING: openclaw.json is not valid JSON: {} — gateway may fail",
+                    e
+                );
+                Ok(())
+            }
+        },
+        Err(e) => Err(e),
     }
-
-    let raw = fs::read_to_string(&path)?;
-    let mut config: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
-    let extensions_path = openclaw_extensions_dir();
-    let extensions_str = path_to_json_string(&extensions_path);
-
-    let mut patched = false;
-
-    // Key path 1: plugins.roots (older openclaw).
-    if config.get("plugins").is_none() {
-        config["plugins"] = json!({});
-        patched = true;
-    }
-    let roots = config["plugins"]
-        .as_object_mut()
-        .unwrap()
-        .entry("roots".to_string())
-        .or_insert_with(|| json!([]));
-    if let Some(arr) = roots.as_array_mut() {
-        if !arr.iter().any(|v| v.as_str() == Some(&extensions_str)) {
-            arr.push(json!(extensions_str.clone()));
-            patched = true;
-        }
-    } else {
-        *roots = json!([extensions_str.clone()]);
-        patched = true;
-    }
-
-    // Key path 2: pluginRoots (newer openclaw).
-    let plugin_roots = config
-        .as_object_mut()
-        .unwrap()
-        .entry("pluginRoots".to_string())
-        .or_insert_with(|| json!([]));
-    if let Some(arr) = plugin_roots.as_array_mut() {
-        if !arr.iter().any(|v| v.as_str() == Some(&extensions_str)) {
-            arr.push(json!(extensions_str));
-            patched = true;
-        }
-    } else {
-        *plugin_roots = json!([extensions_str]);
-        patched = true;
-    }
-
-    if patched {
-        fs::write(&path, serde_json::to_string_pretty(&config).unwrap())?;
-    }
-    Ok(patched)
-}
-
-fn path_to_json_string(p: &Path) -> String {
-    // JSON doesn't allow backslashes; expand to forward slashes so config
-    // files are portable between Win and *nix reading (and the `json!` macro
-    // never chokes on a Windows path).
-    p.to_string_lossy().replace('\\', "/")
 }
 
 // ----------------------------------------------------------------------------
@@ -347,11 +343,11 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => eprintln!("[miracle-claw] maic plugin install error: {}", e),
     }
 
-    // 2. Patch openclaw.json if needed.
-    match ensure_maic_in_openclaw_json() {
-        Ok(true) => eprintln!("[miracle-claw] openclaw.json: patched"),
-        Ok(false) => eprintln!("[miracle-claw] openclaw.json: already patched"),
-        Err(e) => eprintln!("[miracle-claw] openclaw.json patch error: {}", e),
+    // 2. Sanity-check openclaw.json (read-only — do NOT mutate the user's
+    //    config; openclaw 2026.7.1+ auto-discovers plugins from <stateDir>/extensions).
+    match check_openclaw_json() {
+        Ok(()) => eprintln!("[miracle-claw] openclaw.json: ok"),
+        Err(e) => eprintln!("[miracle-claw] openclaw.json read error: {}", e),
     }
 
     // 3. Spawn launcher sidecar.
