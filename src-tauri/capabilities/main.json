@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Miracle Claw main window — spawn the launcher sidecar to boot the OpenClaw gateway, then host the OpenClaw WebChat at localhost:28789/. The launcher sidecar is the only executable the webview is permitted to invoke; the bundled Node + openclaw bundle is kept off the permission boundary by being exec'd FROM the launcher rather than directly.",
+  "description": "Miracle Claw main window — spawn the launcher sidecar to boot the bundled chat gateway, then host the chat UI at localhost:28789/. The launcher sidecar is the only executable the webview is permitted to invoke; the bundled Node runtime is kept off the permission boundary by being exec'd FROM the launcher rather than directly.",
   "windows": ["main"],
   "permissions": [
     "core:default",

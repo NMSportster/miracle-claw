@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Miracle Claw — desktop chat shell wrapping OpenClaw WebChat + MAIC",
+  "description": "Miracle Claw — ADeal Auto Repair's desktop chat client for MAIC models",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

@@ -1,18 +1,17 @@
-# Miracle Claw v2 — Tauri wrapper around OpenClaw WebChat + MAIC plugin
+# Miracle Claw — ADeal Auto Repair's desktop chat client for MAIC
 Created 2026-08-17 by David. Old MC code lives in ../old_mc_files/.
 
 ## What goes here
 - Tauri Rust shell (wraps webview)
 - `miracle-claw-launcher` sidecar (Rust, ~200 LoC, std-only) that owns the
-  lookup of the bundled Node runtime + openclaw and execs
-  `node openclaw.mjs gateway ...`
+  lookup of the bundled Node runtime + chat gateway bundle and execs it
 - ADeal branding (icons, splash, colors)
 - NSIS installer config
 
 ## What does NOT go here
-- Chat logic. OpenClaw does that.
+- Chat logic. The bundled chat gateway does that.
 - MAIC client wiring. The MAIC plugin does that.
-- Tool call dispatch. OpenClaw + MAIC plugin do that.
+- Tool call dispatch. The MAIC plugin does that.
 
 ## Architecture
 ```

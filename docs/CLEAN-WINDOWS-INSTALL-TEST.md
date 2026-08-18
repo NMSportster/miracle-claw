@@ -1,30 +1,31 @@
 # Clean-Windows Install Test — Miracle Claw v1.0.0
 
 This is the **release gate** for v1.0.0. The installer must install cleanly
-on a Windows box with **no prerequisites** (no Node.js, no Rust, no OpenClaw
-preinstalled) and produce a working desktop app.
+on a Windows box with **no prerequisites** (no Node.js, no Rust, no MAIC
+runtime preinstalled) and produce a working desktop app.
 
 ## Installer
 
 - **File:** `dist-installers/windows/MiracleClaw_1.0.0_x64-setup.exe`
-- **Size:** ~60 MB
-- **MD5:** `c2ebe2cc39030564b0760955858d4cd0`
+- **Size:** 54 MB
+- **MD5:** `7d82f00ea24b9c80f7ee7fa935ea84f8` (v4 — the v1.0.0 release build)
+- **SHA256:** `6e9483a03fa5d505eaf8336929633197d7b0d7681638ccd3e92339fbe966d200`
 - **Type:** NSIS self-extracting installer (Nullsoft v3.11-1), 7 sections,
   requires admin elevation
 - **Bundled in installer:**
   - `miracle-claw.exe` (~11 MB Tauri webview host)
-  - `miracle-claw-launcher.exe` (Tauri sidecar that boots OpenClaw gateway)
+  - `miracle-claw-launcher.exe` (Tauri sidecar that boots the chat gateway)
   - Node.js 22.23.2 (`node.exe`)
-  - `openclaw@2026.7.1-2` (full runtime with all deps)
+  - Chat gateway runtime (full bundle with all deps)
   - MAIC plugin v0.1.0 (4 files: index.js, openclaw.plugin.json, package.json, test_plugin.js)
 - **Installed to:** `C:\Program Files\MiracleClaw\` (default NSIS path)
-- **State dir:** `%APPDATA%\MiracleClaw\` (ISOLATED from system OpenClaw at
-  `%APPDATA%\openclaw\`)
+- **State dir:** `%APPDATA%\MiracleClaw\` (isolated from the system
+  chat-runtime install at `%APPDATA%\openclaw\`)
 
 ## Test Environment
 
-Target box: clean Windows 10/11 VM with no Node.js, no Rust, no OpenClaw
-installed. David runs this test today.
+Target box: clean Windows 10/11 VM with no Node.js, no Rust, no MAIC
+runtime installed. David runs this test today.
 
 ## Test Steps
 
@@ -53,7 +54,7 @@ installed. David runs this test today.
 
 4. **First-run path verification:**
    - Window opens, title says "MiracleClaw", 1200x820 default size.
-   - webview loads `http://localhost:28789/` (the bundled OpenClaw gateway).
+   - webview loads `http://localhost:28789/` (the bundled chat gateway).
    - Tauri main process spawns `miracle-claw-launcher.exe` as a sidecar.
    - Launcher:
      - Reads bundled resources (node.exe, openclaw.mjs, package.json,

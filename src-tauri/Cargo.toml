@@ -1,7 +1,7 @@
 [package]
 name = "miracle-claw"
 version = "1.0.0"
-description = "Miracle Claw — desktop chat shell wrapping OpenClaw WebChat + MAIC"
+description = "Miracle Claw — ADeal Auto Repair's desktop chat client for MAIC models"
 authors = ["ADeal Auto Repair"]
 edition = "2021"
 rust-version = "1.77"
