@@ -5,7 +5,7 @@
 **Runtime bundled:** 2026-08-18 08:05 MDT
 **State dir isolated:** 2026-08-18 08:13 MDT
 **Branch:** `master`
-**Release tag:** Not yet (clean-Windows .exe test is the v1.0.0 gate)
+**Release tag:** ✅ `v1.0.0` (tagged 2026-08-18 15:37 MDT at commit `48f5810`)
 
 ## What's done
 
@@ -194,9 +194,30 @@ Verified after the smoke run:
 
 - **Release gate:** clean-Windows install test (see `docs/CLEAN-WINDOWS-INSTALL-TEST.md`)
   - Test steps: 7-step verification (installer runs → app opens → chat works → state dir isolated → MAIC plugin found → uninstall clean)
-  - **First run (failed):** Node died on install (David reported); fix landed in commits `e66b8ad` + `b5b7eab`
-  - **Re-run:** David to install `C:\Users\Adeal\Desktop\MiracleClaw_1.0.0_x64-setup.exe` (v2, MD5 `30e1f5b126b559e6e5cf00f80cbabf59`) and report back each of the 7 steps
-  - **Tag trigger:** v1.0.0 tagged once David confirms all 7 pass criteria green
+  - **First run (failed, v1):** Node died on install (David reported); fix landed in commits `e66b8ad` + `b5b7eab`
+  - **Second run (failed, v2):** openclaw exit 78 "Missing config"; fix landed in commit `dcc6f5e` (pre-write + --allow-unconfigured)
+  - **Third run (failed, v3):** "gateway.auth: Invalid input" (flat string shape rejected by openclaw 2026.7.1+); fix landed in commit `204bf39` (nested object + auto-migrate)
+  - **Fourth run (PASSED, v4):** ✅ installer unpacked → migrate log fired → gateway READY on port 28789 → webview loaded chat → confirmed at 15:36 MDT
+  - **Tag trigger:** ✅ **v1.0.0 tagged 2026-08-18 15:37 MDT at commit `48f5810`** — David confirmed v4 installer fully loads: chat rendered at http://localhost:28789/
+
+### v1.0.0 TAGGED 🎉 (15:37 MDT, commit 48f5810)
+
+David confirmed v4 installer on clean Windows box:
+- installer unpacked cleanly
+- `[miracle-claw] migrated legacy openclaw.json ...` log line fired
+- gateway READY on port 28789
+- webview loaded http://localhost:28789/
+- chat rendered
+
+The 17-commit v1.0.0 release covers 3 install-test cycles:
+- v1 → FAILED (0-byte node.exe, Linux-staged)
+- v2 → FAILED (openclaw exit 78, missing config)
+- v3 → FAILED (gateway.auth: Invalid input, flat string shape)
+- v4 → PASSED (nested {mode:'none'} + auto-migrate legacy configs)
+
+Lessons 423/424/425/426 captured in MEMORY.md. v1.0.0 is the release of record.
+
+Next: v1.0.1 backlog (ADeal green branding, code signing, auto-updater, launcher separate-crate refactor).
 
 ## Lessons added this session (Day 2 — installer build)
 
