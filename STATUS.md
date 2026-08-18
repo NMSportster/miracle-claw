@@ -158,20 +158,28 @@ Verified after the smoke run:
 
 ## v1.0.0 installer built — release gate pending
 
-- 2026-08-18 ~09:37 MDT — `MiracleClaw_1.0.0_x64-setup.exe` produced
-  - **Size:** 60 MB NSIS self-extracting installer (Nullsoft v3.11-1)
-  - **MD5:** `c2ebe2cc39030564b0760955858d4cd0`
-  - **Type:** PE32 i386, 7 sections, requires admin elevation
-  - **Path:** `dist-installers/windows/MiracleClaw_1.0.0_x64-setup.exe`
-  - **Copied to:** `/mnt/c/Users/Adeal/Desktop/MiracleClaw_1.0.0_x64-setup.exe` (ready for David's clean-Windows install test)
-  - **Built by:** `scripts/build-windows-docker.sh` via Docker image `miracle-claw-build:latest` (cargo-xwin + NSIS + GTK dev headers)
-  - **Cross-compile:** `cargo-xwin --target x86_64-pc-windows-msvc` → `miracle-claw.exe` (11 MB) + bundled Node 22.23.2 + `openclaw@2026.7.1-2` + MAIC plugin v0.1.0
-  - **Build time:** ~15 min cold (with sccache warm cache), 60s NSIS makensis final compression
-  - **productName aligned:** "MiracleClaw" (no space) per David's v1.7.x convention
+- 2026-08-18 ~09:37 MDT — **REBUILT 13:24 MDT** after David's release-gate fail
+  - **v1 installer (FAILED):** 60 MB, MD5 `c2ebe2cc39030564b0760955858d4cd0`
+    - Bug: shipped 0-byte `node.exe` placeholder + 124 MB Linux ELF
+    - Symptom on Windows: launcher spawn fails with os error 193 (not a valid Win32 application)
+    - Root cause: `bundle-runtime.sh` was invoked with default `--target host` (Linux); the script's `touch "$RESOURCES_DIR/node.exe"` placeholder was what got shipped
+    - See Lesson 423
+  - **v2 installer (CURRENT):** 54 MB, MD5 `30e1f5b126b559e6e5cf00f80cbabf59`, SHA256 `fd316b091fc6680ec52e1f53acb2b61ca2aa001c9e08b270c80153d8ff9d9611`
+    - **Size:** 54 MB NSIS self-extracting installer (Nullsoft v3.11-1, 7 sections)
+    - **Type:** PE32 i386, requires admin elevation
+    - **Path:** `dist-installers/windows/MiracleClaw_1.0.0_x64-setup.exe`
+    - **Copied to:** `/mnt/c/Users/Adeal/Desktop/MiracleClaw_1.0.0_x64-setup.exe`
+    - **Extracted node.exe check:** PE32+ executable for MS Windows 6.00 (console), x86-64, 83 MB — real Node 22.23.2 ✓
+    - **No node-dist/:** Linux ELF extracted tree removed (saves ~150 MB) ✓
+    - **Built by:** `scripts/build-windows-docker.sh` via Docker image `miracle-claw-build:latest` (cargo-xwin + NSIS + GTK dev headers)
+    - **Cross-compile:** `cargo-xwin --target x86_64-pc-windows-msvc` → `miracle-claw.exe` (11 MB) + `miracle-claw-launcher.exe` (318 KB) + bundled Node 22.23.2 Win32 + `openclaw@2026.7.1-2` + MAIC plugin v0.1.0
+    - **Build time:** ~22 min (rebuild — Tauri-build re-validated bundle.resources and forced cargo re-run after bundle-runtime.sh wiped + re-staged resources/)
+    - **productName aligned:** "MiracleClaw" (no space) per David's v1.7.x convention
 
 - **Release gate:** clean-Windows install test (see `docs/CLEAN-WINDOWS-INSTALL-TEST.md`)
   - Test steps: 7-step verification (installer runs → app opens → chat works → state dir isolated → MAIC plugin found → uninstall clean)
-  - **Pending:** David runs the install on his Windows box (Tailscale will let him install from `\\wsl$\Main-Adeal\...\MiracleClaw_1.0.0_x64-setup.exe` or just copy from desktop)
+  - **First run (failed):** Node died on install (David reported); fix landed in commits `e66b8ad` + `b5b7eab`
+  - **Re-run:** David to install `C:\Users\Adeal\Desktop\MiracleClaw_1.0.0_x64-setup.exe` (v2, MD5 `30e1f5b126b559e6e5cf00f80cbabf59`) and report back each of the 7 steps
   - **Tag trigger:** v1.0.0 tagged once David confirms all 7 pass criteria green
 
 ## Lessons added this session (Day 2 — installer build)
@@ -180,3 +188,4 @@ Verified after the smoke run:
 - **Lesson 420:** File extension on the launcher placeholder is determined by the **target triple**, not the host. When cross-compiling for Windows from a Linux Docker container, the placeholder must be `miracle-claw-launcher-x86_64-pc-windows-msvc.exe` (with `.exe`), not just `...-msvc` (without).
 - **Lesson 421:** When the launcher's `[dependencies]` is shared with the main binary's tauri dep tree (cargo workspace has only one Cargo.toml), the launcher's Linux-host build pulls in GTK headers too (tauri → webkit → gtk → gdk). Install `libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev` in the Docker image even though the launcher is conceptually std-only. Proper fix would be to split the launcher into its own crate; libs are cheaper.
 - **Lesson 422:** `scripts/build-windows-docker.sh`'s "auto-copy to Desktop" path silently no-ops when `chat.rs` doesn't exist (was reading `const APP_VERSION` for the `+N` build suffix). Drop the suffix lookup when shipping clean `MAJOR.MINOR.PATCH` tags.
+- **Lesson 423:** `scripts/bundle-runtime.sh`'s default `--target host` is a footgun for cross-compile builds. If you run it once on Linux dev, `resources/node.exe` is a 0-byte placeholder via `touch`, and that placeholder gets shipped in the Windows installer. The script's comment says "placeholder so tauri-build's pre-flight validation passes" — but Tauri's pre-flight is the only thing that placeholder is good for. **Fix:** `scripts/build-windows-docker.sh` must invoke `bundle-runtime.sh --target windows --force` BEFORE the `npm run tauri -- build` runs (which we now do). Without `--force`, the Linux-tarball cache makes the script skip downloading the Windows Node. Without `--target windows`, the Linux ELF gets copied as `resources/node` (124 MB). Also: when `--target windows`, don't ship the Linux `node-dist/` subtree (~150 MB dead weight) and use `python3 -m zipfile` as a fallback when `unzip` isn't installed (some Linux sandboxes / Docker base images omit it).
