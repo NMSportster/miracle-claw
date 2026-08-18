@@ -273,6 +273,13 @@ fn build_node_command(args: &Args, node_bin: &Path, resources: &Path) -> Command
         .arg(&args.bind)
         .arg("--auth")
         .arg(&args.auth)
+        // First-run defense in depth: openclaw's gateway refuses to start
+        // with exit code 78 ("Missing config") on a fresh install where no
+        // openclaw.json exists. lib.rs setup() pre-writes a minimal valid
+        // config before spawning us; this flag is the belt to that
+        // suspenders in case the pre-write failed (file locked, antivirus,
+        // disk full). The user's config still wins when it exists.
+        .arg("--allow-unconfigured")
         .env("OPENCLAW_STATE_DIR", default_openclaw_state_dir())
         .env("NODE_PATH", &node_path)
         // Run from resources dir so the bundled `node` symlink (Linux dev)

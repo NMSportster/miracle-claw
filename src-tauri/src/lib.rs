@@ -11,18 +11,21 @@
 //      MC does NOT share state with the system OpenClaw install; we keep
 //      config, sessions, plugins, and logs under .miracle-claw/ to avoid
 //      races when both run on the same machine.
-//   3. Validate (read-only) the user's openclaw.json exists and parses.
+//   3. Pre-write a minimal openclaw.json at <stateDir>/openclaw.json if one
+//      doesn't exist. openclaw's gateway refuses to start on a fresh install
+//      (exit 78, "Missing config") without this file.
+//   4. Validate (read-only) the user's openclaw.json exists and parses.
 //      openclaw 2026.7.1+ auto-discovers plugins from <stateDir>/extensions/,
 //      so no plugin-path keys are needed in the config. Any leftover
 //      `pluginRoots` / `plugins.roots` keys from older openclaw versions
 //      are rejected — we warn, never mutate.
-//   4. Spawn miracle-claw-launcher with --gateway-port N as a sidecar.
+//   5. Spawn miracle-claw-launcher with --gateway-port N as a sidecar.
 //      OPENCLAW_STATE_DIR is set to MC's state dir so the gateway boots
 //      against MC's isolated layout, not the system one.
-//   5. Poll TCP connect to 127.0.0.1:28789 until it accepts (15s cap).
+//   6. Poll TCP connect to 127.0.0.1:28789 until it accepts (15s cap).
 //      (openclaw accepts the connection immediately when the port is bound,
 //      so we don't need an HTTP roundtrip.)
-//   6. Register RunEvent::ExitRequested to kill the launcher cleanly.
+//   7. Register RunEvent::ExitRequested to kill the launcher cleanly.
 //
 // Architecture doc: README.md
 // ============================================================================
@@ -290,6 +293,45 @@ fn check_openclaw_json() -> io::Result<()> {
     }
 }
 
+/// Pre-write a minimal openclaw.json if one doesn't exist. openclaw's gateway
+/// refuses to start with exit code 78 on a fresh install where no config file
+/// is present at <stateDir>/openclaw.json. We avoid the `--allow-unconfigured`
+/// flag (which exists but is intended for headless CI, not for end users) by
+/// providing a real, valid config the user can edit later.
+///
+/// The schema matches openclaw 2026.7.1+:
+///   - `gateway.mode = "local"` tells the gateway it's a local install
+///   - `gateway.bind` + `gateway.auth` are the defaults the launcher passes;
+///     openclaw reads them from the config if present
+///
+/// We DO NOT touch an existing openclaw.json — even an empty file. The user
+/// owns that path; if they deleted it, that's their decision.
+fn ensure_openclaw_json_minimal() -> io::Result<()> {
+    let path = openclaw_json_path();
+    if path.is_file() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let minimal = serde_json::json!({
+        "$schema": "https://openclaw.dev/schema/v1/openclaw.config.schema.json",
+        "gateway": {
+            "mode": "local",
+            "bind": "loopback",
+            "auth": "none"
+        }
+    });
+    let serialized = serde_json::to_string_pretty(&minimal)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize config: {e}")))?;
+    fs::write(&path, serialized)?;
+    eprintln!(
+        "[miracle-claw] wrote minimal openclaw.json to {} (first-run bootstrap)",
+        path.display()
+    );
+    Ok(())
+}
+
 // ----------------------------------------------------------------------------
 // Health poll: TCP connect to 127.0.0.1:28789 until the port is bound.
 // (openclaw accepts the connection the moment the port is bound; we don't
@@ -356,14 +398,25 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => eprintln!("[miracle-claw] maic plugin install error: {}", e),
     }
 
-    // 2. Sanity-check openclaw.json (read-only — do NOT mutate the user's
+    // 2. Ensure openclaw.json exists. openclaw's gateway refuses to start with
+    //    exit code 78 ("Missing config. Run openclaw setup or set
+    //    gateway.mode=local (or pass --allow-unconfigured)") when no config
+    //    file is present at <stateDir>/openclaw.json. First install on a fresh
+    //    Windows box has no openclaw.json — we pre-write a minimal valid one
+    //    so the user doesn't need to run `openclaw setup` manually.
+    //
+    //    We don't touch an existing user-edited config (skip if the file
+    //    exists, even empty — that's the user's domain).
+    ensure_openclaw_json_minimal()?;
+
+    // 3. Sanity-check openclaw.json (read-only — do NOT mutate the user's
     //    config; openclaw 2026.7.1+ auto-discovers plugins from <stateDir>/extensions).
     match check_openclaw_json() {
         Ok(()) => eprintln!("[miracle-claw] openclaw.json: ok"),
         Err(e) => eprintln!("[miracle-claw] openclaw.json read error: {}", e),
     }
 
-    // 3. Spawn launcher sidecar.
+    // 4. Spawn launcher sidecar.
     let shell = app_handle.shell();
     let port_str = OPENCLAW_PORT.to_string();
     let launcher_name = launcher_binary_name().to_string();
