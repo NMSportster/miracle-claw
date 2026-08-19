@@ -558,9 +558,16 @@ match the installable state. v5 is the installable state.
 
 ### Installer
 - **File:** `dist-installers/windows/MiracleClaw_1.0.5_x64-setup.exe`
-- **MD5:** TBD (after rebuild)
-- **Size:** TBD
+- **MD5:** `10b06dc7e61ca21a70ec5b5a81602a09`
+- **Size:** 56,712,789 bytes (~54 MB)
 - **Path on David's desktop:** `C:\Users\Adeal\Desktop\MiracleClaw_1.0.5_x64-setup.exe`
+
+### Binary verification
+- Extracted via `7z x`: bundled `miracle-claw.exe` contains the
+  eprintln string `[miracle-claw] Lesson 451: migrated baseUrl`
+  — confirms the fix is in the shipped binary (Rust release strips
+  function symbols, so the eprintln string is the canonical
+  end-to-end marker).
 
 ### Test plan
 1. `taskkill /F /IM miracle-claw.exe /T; taskkill /F /IM node.exe /T`
@@ -578,4 +585,4 @@ match the installable state. v5 is the installable state.
 8. Modal closes, chat UI loads
 9. **Send a chat message → expect response** (no more "model not found").
 
-[v1.0.5-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.4-rc1...TBD
+[v1.0.5-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.4-rc1...593d4d1
