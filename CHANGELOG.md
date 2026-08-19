@@ -431,9 +431,9 @@ match the installable state. v5 is the installable state.
 
 ### Installer
 - **File:** `dist-installers/windows/MiracleClaw_1.0.3_x64-setup.exe`
-- **MD5:** TBD (after rebuild)
-- **Size:** TBD
-- **Path on David's desktop:** `C:\Users\Adeal\Desktop\MiracleClaw_1.0.3_x64-setup.exe` (after rebuild)
+- **MD5:** `0f91d5483ac36e6b909693594bc2685d`
+- **Size:** 56,733,265 bytes (~54 MB)
+- **Path on David's desktop:** `C:\Users\Adeal\Desktop\MiracleClaw_1.0.3_x64-setup.exe`
 
 ### Test plan (Lesson 432 chat roundtrip — release gate)
 1. `taskkill /F /IM miracle-claw.exe /T; taskkill /F /IM node.exe /T` (clean state)
