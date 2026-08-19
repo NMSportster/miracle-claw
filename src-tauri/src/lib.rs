@@ -1033,23 +1033,31 @@ fn needs_maic_login_from_state(_provider_endpoint: &str) -> bool {
 }
 
 // ----------------------------------------------------------------------------
-// Tauri command: maic_login (Lesson 444)
+// Tauri command: maic_login (Lesson 444, fixed endpoint)
 //
 // Called by the first-run login modal. POSTs {email, password} to
-// `MAIC_API_URL/v1/auth/login`, returns the JWT, then triggers a re-bootstrap
-// of the MAIC provider config (with MAIC_API_KEY now set in the parent
-// process's env). After this returns successfully, the chat panel will
-// unblock because openclaw.json now has a real apiKey.
+// `MAIC_API_URL/v1/users/login` (the consumer-facing endpoint — NOT
+// `/v1/auth/login`, which is the dashboard's name+password endpoint), returns
+// the JWT, then triggers a re-bootstrap of the MAIC provider config (with
+// MAIC_API_KEY now set in the parent process's env). After this returns
+// successfully, the chat panel will unblock because openclaw.json now has a
+// real apiKey.
 //
 // On failure, returns the error message verbatim so the login modal can
 // surface it. Errors do NOT leak the password back to the frontend.
+//
+// Lesson 447 (post-v1.0.1): the first implementation called `/v1/auth/login`
+// which is the Milagro dashboard's name+password endpoint, returning 422
+// "Field required: name" for any {email, password} body. The fix is to call
+// the consumer endpoint `/v1/users/login` instead. Schema is identical to
+// `api__routes__users__LoginIn` (email + password, optional totp/recovery_code).
 // ----------------------------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Debug)]
 struct MaicLoginInfo {
     /// JWT bearer token — also known as MAIC_API_KEY in the provider config.
     token: String,
-    /// User email returned by /v1/auth/login (may equal the input).
+    /// User email returned by /v1/users/login (may equal the input).
     email: String,
     /// Resolved tier: 'free', 'pro', 'pro_plus', 'team', 'enterprise' (or
     /// whatever the server returns). Free tier is the default.
@@ -1080,11 +1088,12 @@ fn maic_login(email: String, password: String) -> Result<MaicLoginInfo, String> 
     })
     .to_string();
 
-    let response_body = http_post_json_with_tls_fallback(&endpoint, "/v1/auth/login", &body)
+    let response_body = http_post_json_with_tls_fallback(&endpoint, "/v1/users/login", &body)
         .map_err(|e| format!("Login request failed: {}", e))?;
 
     // The endpoint returns { token, user: {email, tier, ...} } on success.
-    // Older /v1/users/login paths return { token }. We accept both.
+    // We accept both the wrapped form (production) and the bare { token } form
+    // (legacy / older docs).
     let parsed: serde_json::Value = serde_json::from_str(&response_body)
         .map_err(|e| format!("Login response could not be parsed: {}", e))?;
 

@@ -258,7 +258,7 @@ match the installable state. v5 is the installable state.
 ### Fixed
 - **Lesson 430 (NSIS file lock) — `MiracleClaw_*_x64-setup.exe` overwrites an existing MC install without an Abort/Retry/Ignore dialog.** Symptom (David 19:01 MDT): trying to install v9 over v8 while MC was running gave NSIS error "Error opening file for writing: node.exe" — Tauri killed `miracle-claw.exe` via `CheckIfAppIsRunning`, but the orphaned `node.exe` child kept its file handle. Fix: custom NSIS template wired in via `tauri.conf.json: bundle.windows.nsis.template`. The `NSIS_HOOK_PREINSTALL` macro (recognized by Tauri's installer.nsi at line 641) runs BEFORE `CheckIfAppIsRunning` and force-kills both `node.exe` and `miracle-claw.exe`. `nsExec::ExecToLog` swallows error codes so installs without a running MC proceed normally. `Sleep 2000` gives the OS time to release file handles.
 
-- **Lesson 444 (first-run login UI) — opaque `missing-provider-auth` error on a fresh customer machine.** Symptom: MAIC provider config was wired to a `SecretRef` for `MAIC_API_KEY`, but on a fresh install the env var isn't set and the customer has no idea how to proceed. Fix: when no MAIC key is found at bootstrap time, `ensure_maic_provider_config()` returns `provider_configured: false` + `api_key_source: LoginRequired` + early-returns BEFORE `fs::write()` (critical Lesson 444 bug fix — initial impl had the early-return AFTER `fs::write()`, which would have written a half-populated provider entry to disk). The customer's `openclaw.json` stays clean. MC's frontend detects `needs_maic_login: true` via `first_run_report` and renders an email/password form. On submit, `maic_login(email, password)` POSTs to `https://maicserver.com/v1/auth/login` (via `ureq`, sync, ships with rustls-tls — no tokio weight), parses the JWT, sets `process.env.MAIC_API_KEY = token`, RE-RUNS `ensure_maic_provider_config()` to bake the JWT as a literal in `openclaw.json`, and the frontend redirects to `http://localhost:28789/`.
+- **Lesson 444 (first-run login UI) — opaque `missing-provider-auth` error on a fresh customer machine.** Symptom: MAIC provider config was wired to a `SecretRef` for `MAIC_API_KEY`, but on a fresh install the env var isn't set and the customer has no idea how to proceed. Fix: when no MAIC key is found at bootstrap time, `ensure_maic_provider_config()` returns `provider_configured: false` + `api_key_source: LoginRequired` + early-returns BEFORE `fs::write()` (critical Lesson 444 bug fix — initial impl had the early-return AFTER `fs::write()`, which would have written a half-populated provider entry to disk). The customer's `openclaw.json` stays clean. MC's frontend detects `needs_maic_login: true` via `first_run_report` and renders an email/password form. On submit, `maic_login(email, password)` POSTs to `https://maicserver.com/v1/users/login` (via `ureq`, sync, ships with rustls-tls — no tokio weight), parses the JWT, sets `process.env.MAIC_API_KEY = token`, RE-RUNS `ensure_maic_provider_config()` to bake the JWT as a literal in `openclaw.json`, and the frontend redirects to `http://localhost:28789/`.
 
 ### Added
 - **Frontend stack (vanilla HTML/JS, no framework):**
@@ -318,3 +318,39 @@ match the installable state. v5 is the installable state.
 10. Send a chat message → expect response from MAIC (Lesson 432 — actual release gate)
 
 [v1.0.1-rc2]: https://github.com/adealauto/miracle-claw/compare/v1.0.1-rc1...47640b1
+
+## [v1.0.2-rc1] — 2026-08-18 21:05 MDT (commit `TBD`)
+
+### Fixed
+- **Lesson 447 (login endpoint wrong) — first-run login modal hit `/v1/auth/login` (Milagro dashboard) instead of `/v1/users/login` (consumer).** Symptom (David 21:14 MDT, real `championnm@yahoo.com` install): login form submit returned `HTTP 422 — {"detail":[{"type":"missing","loc":["body","name"],"msg":"Field required","input":{"email":"...","password":"..."}}]}`. Root cause: MAIC has TWO login endpoints with different schemas:
+  - `POST /v1/auth/login` → `api__routes__dashboard__LoginIn` (required: `name` + `password`) — used by the Milagro dashboard, NOT consumer apps
+  - `POST /v1/users/login` → `api__routes__users__LoginIn` (required: `email` + `password`, optional totp/recovery_code) — used by consumer apps like Miracle Claw
+  The Lesson 444 implementation called the dashboard endpoint, which rejected `{email, password}` with 422 "Field required: name". Fix: change the path in `maic_login` to `/v1/users/login`. Response shape (`{token, user:{email,tier,...}}`) is identical to what the parser already handled, so no other changes needed. Six unit tests still pass.
+
+### Verified
+- `cargo check --bin miracle-claw` — clean, no warnings
+- `cargo test --lib` — 6/6 pass (`is_empty_api_key_literal_and_ref`, `env_var_key_writes_literal_string`, `existing_entry_with_secret_ref_is_preserved`, `no_env_var_returns_login_required_and_writes_no_provider`, `idempotency_no_duplication`, `tool_execution_param_pinned_to_client`)
+- Live endpoint probe via curl:
+  - `POST /v1/users/login` with `{email, password}` returns 200 `{token, user:{email,tier:"free",...}}` ✓
+  - `POST /v1/auth/login` with `{email, password}` returns 422 `{detail:[{type:missing, loc:[body,name], ...}]}` (regression check confirming the original bug)
+  - `POST /v1/users/signup` with 12+ char alphanumeric password returns 200 `{token, user:{...}}` (free tier)
+
+### Installer
+- **File:** `dist-installers/windows/MiracleClaw_1.0.2_x64-setup.exe`
+- **MD5:** TBD (after rebuild)
+- **Size:** TBD
+- **Path on David's desktop:** `C:\Users\Adeal\Desktop\MiracleClaw_1.0.2_x64-setup.exe` (after rebuild)
+
+### Test plan (Lesson 432 chat roundtrip — release gate)
+1. `taskkill /F /IM miracle-claw.exe /T; taskkill /F /IM node.exe /T` (clean state)
+2. Uninstall any existing MC via Settings → Apps (or `rm -rf "%LOCALAPPDATA%\Programs\MiracleClaw"`)
+3. Run v1.0.2 installer from Desktop (no upgrade-over-install)
+4. Verify NO Abort/Retry/Ignore dialog appears (Lesson 430 fix)
+5. Launch `miracle-claw.exe` → expect login modal to appear (Lesson 444 fix)
+6. Enter `championnm@yahoo.com` (David's real account) + password → submit
+7. Verify NO 422 error (Lesson 447 fix)
+8. Verify JWT baked into `openclaw.json` as literal string under `models.providers.maic.apiKey`
+9. Modal closes, chat UI loads at `http://localhost:28789/`
+10. Send a chat message → expect response from MAIC (Lesson 432 — actual release gate)
+
+[v1.0.2-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.1-rc2...TBD
