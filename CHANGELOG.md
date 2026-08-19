@@ -319,7 +319,7 @@ match the installable state. v5 is the installable state.
 
 [v1.0.1-rc2]: https://github.com/adealauto/miracle-claw/compare/v1.0.1-rc1...47640b1
 
-## [v1.0.2-rc1] — 2026-08-18 21:05 MDT (commit `TBD`)
+## [v1.0.2-rc1] — 2026-08-18 21:05 MDT (commit `bbb1ff0`)
 
 ### Fixed
 - **Lesson 447 (login endpoint wrong) — first-run login modal hit `/v1/auth/login` (Milagro dashboard) instead of `/v1/users/login` (consumer).** Symptom (David 21:14 MDT, real `championnm@yahoo.com` install): login form submit returned `HTTP 422 — {"detail":[{"type":"missing","loc":["body","name"],"msg":"Field required","input":{"email":"...","password":"..."}}]}`. Root cause: MAIC has TWO login endpoints with different schemas:
@@ -353,4 +353,4 @@ match the installable state. v5 is the installable state.
 9. Modal closes, chat UI loads at `http://localhost:28789/`
 10. Send a chat message → expect response from MAIC (Lesson 432 — actual release gate)
 
-[v1.0.2-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.1-rc2...TBD
+[v1.0.2-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.1-rc2...bbb1ff0
