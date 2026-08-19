@@ -1263,18 +1263,57 @@ fn wait_for_gateway_ready(port: u16, timeout: Duration) -> Result<(), String> {
     let mut backoff = Duration::from_millis(100);
     let max_backoff = Duration::from_millis(1000);
     let addrs = format!("127.0.0.1:{}", port);
+    let poll_timeout = Duration::from_millis(500); // per-iteration TCP connect ceiling
 
+    log_to_file(&format!(
+        "wait_for_gateway_ready: start port={} timeout={:?}",
+        port, timeout
+    ));
+
+    let mut iter: u32 = 0;
     while Instant::now() < deadline {
-        if TcpStream::connect(addrs.as_str()).is_ok() {
-            return Ok(());
+        iter += 1;
+        let started = Instant::now();
+        // Use connect_timeout so a single iteration cannot block past
+        // poll_timeout. Without this, TcpStream::connect against an unbound
+        // port on Windows blocks for the OS-default TCP retry timeout
+        // (~21s) — which would consume our 15s outer deadline in one
+        // iteration and prevent polling the actual bind.
+        let conn_result = TcpStream::connect_timeout(
+            &addrs.parse().map_err(|e| format!("invalid addr: {e}"))?,
+            poll_timeout,
+        );
+        let elapsed = started.elapsed();
+        match conn_result {
+            Ok(_stream) => {
+                log_to_file(&format!(
+                    "wait_for_gateway_ready: TCP connect succeeded iter={} elapsed={:?}",
+                    iter, elapsed
+                ));
+                return Ok(());
+            }
+            Err(e) => {
+                // Don't spam the log — only the last failure and every 10th
+                if iter == 1 || iter % 10 == 0 || Instant::now() + backoff >= deadline {
+                    log_to_file(&format!(
+                        "wait_for_gateway_ready: TCP connect failed iter={} elapsed={:?} err={}",
+                        iter, elapsed, e
+                    ));
+                }
+            }
         }
         thread::sleep(backoff);
         backoff = std::cmp::min(backoff * 2, max_backoff);
     }
-    Err(format!(
+    let err_msg = format!(
         "gateway did not bind port {} within {:?}",
         port, timeout
-    ))
+    );
+    log_to_file(&format!(
+        "wait_for_gateway_ready: TIMEOUT after {} iters; {}",
+        iter, err_msg
+    ));
+    Err(err_msg)
 }
 
 // ----------------------------------------------------------------------------
@@ -1860,13 +1899,31 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // we defer the spawn to `start_gateway_after_login` (called from the
     // frontend after a successful `maic_login`).
     if maic_bootstrap.provider_configured {
+        log_to_file(&format!(
+            "setup(): spawn_launcher_and_wait start (provider_configured=true)"
+        ));
         match spawn_launcher_and_wait(&app_handle, OPENCLAW_PORT, Duration::from_secs(15)) {
-            Ok(()) => eprintln!("[miracle-claw] gateway READY on port {}", OPENCLAW_PORT),
-            Err(e) => eprintln!("[miracle-claw] gateway NOT ready: {}", e),
+            Ok(()) => {
+                eprintln!("[miracle-claw] gateway READY on port {}", OPENCLAW_PORT);
+                log_to_file(&format!(
+                    "setup(): spawn_launcher_and_wait Ok — gateway READY port={}",
+                    OPENCLAW_PORT
+                ));
+            }
+            Err(e) => {
+                eprintln!("[miracle-claw] gateway NOT ready: {}", e);
+                log_to_file(&format!(
+                    "setup(): spawn_launcher_and_wait Err — {}",
+                    e
+                ));
+            }
         }
     } else {
         eprintln!(
             "[miracle-claw] LoginRequired — deferring launcher spawn until maic_login completes"
+        );
+        log_to_file(
+            "setup(): LoginRequired — deferring launcher spawn until maic_login completes",
         );
     }
 
@@ -1874,6 +1931,61 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     //    The webview loads as soon as the renderer fires; nothing to do here.
 
     Ok(())
+}
+
+/// v1.0.9-rc2 (David 13:32 MDT): write a diagnostic line to a file in
+/// %APPDATA%\MiracleClaw\miracle-claw.log so we can post-mortem investigate
+/// when the GUI app's stderr isn't captured (Tauri on Windows doesn't
+/// surface stderr to the user). Best-effort: failures are swallowed.
+///
+/// We append every call so the log is append-only across sessions. Old
+/// lines stay; size is bounded by occasional manual cleanup. For v1.0.9
+/// this is a diagnostic tool, not a long-term log.
+fn log_to_file(msg: &str) {
+    use std::io::Write;
+
+    let line = format!(
+        "[{}] {}\n",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        msg
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(roam) = std::env::var("APPDATA") {
+            let dir = std::path::PathBuf::from(roam).join("MiracleClaw");
+            let _ = std::fs::create_dir_all(&dir);
+            let path = dir.join("miracle-claw.log");
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let _ = f.write_all(line.as_bytes());
+                let _ = f.flush();
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let dir = std::path::PathBuf::from(home).join(".miracle-claw");
+            let _ = std::fs::create_dir_all(&dir);
+            let path = dir.join("miracle-claw.log");
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let _ = f.write_all(line.as_bytes());
+                let _ = f.flush();
+            }
+        }
+    }
 }
 
 /// v1.0.9 (Lesson 462): kill any orphaned openclaw.mjs / node.exe holding
@@ -1911,7 +2023,11 @@ fn kill_orphan_holding_port(port: u16) -> Result<(), String> {
         let netstat = Command::new("netstat")
             .args(["-ano"])
             .output()
-            .map_err(|e| format!("netstat failed: {e}"))?;
+            .map_err(|e| {
+                let msg = format!("netstat failed: {e}");
+                log_to_file(&msg);
+                msg
+            })?;
         let stdout = String::from_utf8_lossy(&netstat.stdout);
 
         let port_marker = format!(":{}", port);
@@ -1938,6 +2054,13 @@ fn kill_orphan_holding_port(port: u16) -> Result<(), String> {
             }
         }
 
+        log_to_file(&format!(
+            "Lesson 462: scanned port {} — found {} orphan(s): {:?}",
+            port,
+            orphan_pids.len(),
+            orphan_pids
+        ));
+
         if orphan_pids.is_empty() {
             return Ok(());
         }
@@ -1958,6 +2081,10 @@ fn kill_orphan_holding_port(port: u16) -> Result<(), String> {
                 .output();
             match kill {
                 Ok(out) if out.status.success() => {
+                    log_to_file(&format!(
+                        "Lesson 462: killed orphan pid {} (port {})",
+                        pid, port
+                    ));
                     eprintln!(
                         "[miracle-claw] Lesson 462: killed orphan pid {} (port {})",
                         pid, port
@@ -1965,6 +2092,11 @@ fn kill_orphan_holding_port(port: u16) -> Result<(), String> {
                 }
                 Ok(out) => {
                     let stderr = String::from_utf8_lossy(&out.stderr);
+                    log_to_file(&format!(
+                        "Lesson 462: taskkill pid {} failed: {}",
+                        pid,
+                        stderr.trim()
+                    ));
                     eprintln!(
                         "[miracle-claw] Lesson 462: taskkill pid {} failed: {}",
                         pid,
@@ -1972,6 +2104,10 @@ fn kill_orphan_holding_port(port: u16) -> Result<(), String> {
                     );
                 }
                 Err(e) => {
+                    log_to_file(&format!(
+                        "Lesson 462: taskkill invocation failed: {}",
+                        e
+                    ));
                     eprintln!(
                         "[miracle-claw] Lesson 462: taskkill invocation failed: {}",
                         e
@@ -1983,6 +2119,29 @@ fn kill_orphan_holding_port(port: u16) -> Result<(), String> {
         // Give the OS a moment to release the port. 500ms is enough on
         // Windows in practice; if we see flakes in testing we'll bump it.
         std::thread::sleep(std::time::Duration::from_millis(500));
+
+        // v1.0.9-rc2 (David 13:32 MDT): verify the kill actually worked.
+        // If the port is STILL bound after the kill+sleep, the kill failed
+        // and we should report that loudly instead of silently proceeding.
+        let verify = Command::new("netstat")
+            .args(["-ano"])
+            .output();
+        if let Ok(out) = verify {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let still_bound: Vec<&str> = stdout
+                .lines()
+                .filter(|l| l.contains("LISTENING") && l.contains(&port_marker))
+                .collect();
+            if !still_bound.is_empty() {
+                let msg = format!(
+                    "Lesson 462 VERIFY FAILED: port {} still bound after kill attempt. Lines: {:?}",
+                    port, still_bound
+                );
+                log_to_file(&msg);
+                eprintln!("[miracle-claw] {}", msg);
+                return Err(msg);
+            }
+        }
         Ok(())
     }
 
@@ -2118,11 +2277,16 @@ fn spawn_launcher_and_wait(
         "[miracle-claw] spawning sidecar: {} --gateway-port {}",
         launcher_name, port_str
     );
+    log_to_file(&format!(
+        "spawn_launcher_and_wait: about to sidecar-spawn {} --gateway-port {}",
+        launcher_name, port_str
+    ));
     let spawned = shell
         .sidecar(launcher_name.clone())
         .and_then(|cmd| cmd.args(["--gateway-port", &port_str]).spawn())
         .map_err(|e| {
             eprintln!("[miracle-claw] sidecar spawn failed: {}", e);
+            log_to_file(&format!("sidecar spawn failed: {}", e));
             format!("sidecar spawn failed: {e}")
         })?;
 
@@ -2141,11 +2305,20 @@ fn spawn_launcher_and_wait(
                     eprint!("[launcher.stderr] {}", String::from_utf8_lossy(&bytes));
                     let _ = std::io::stderr().flush();
                 }
-                CommandEvent::Error(e) => eprintln!("[launcher.error] {}", e),
-                CommandEvent::Terminated(payload) => eprintln!(
-                    "[launcher.terminated] code={:?} signal={:?}",
-                    payload.code, payload.signal
-                ),
+                CommandEvent::Error(e) => {
+                    log_to_file(&format!("launcher.error: {}", e));
+                    eprintln!("[launcher.error] {}", e);
+                }
+                CommandEvent::Terminated(payload) => {
+                    log_to_file(&format!(
+                        "launcher.terminated code={:?} signal={:?}",
+                        payload.code, payload.signal
+                    ));
+                    eprintln!(
+                        "[launcher.terminated] code={:?} signal={:?}",
+                        payload.code, payload.signal
+                    );
+                }
                 _ => {}
             }
         }
@@ -2186,6 +2359,9 @@ fn start_gateway_after_login(
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
     if !key_present {
+        log_to_file(
+            "start_gateway_after_login: rejected — MAIC_API_KEY not set (frontend called before maic_login)",
+        );
         return Err(
             "start_gateway_after_login called before MAIC_API_KEY was set; \
              frontend must call maic_login first."
@@ -2197,10 +2373,21 @@ fn start_gateway_after_login(
     // defensive against repeated calls), kill it before spawning a new one.
     if let Some(prev) = state.launcher_child.lock().unwrap().take() {
         eprintln!("[miracle-claw] killing previous launcher before respawn");
+        log_to_file(
+            "start_gateway_after_login: killing previous launcher handle before respawn",
+        );
         let _ = prev.kill();
     }
 
-    spawn_launcher_and_wait(&app_handle, OPENCLAW_PORT, Duration::from_secs(15))
+    log_to_file(
+        "start_gateway_after_login: spawn_launcher_and_wait start (after login)",
+    );
+    let result = spawn_launcher_and_wait(&app_handle, OPENCLAW_PORT, Duration::from_secs(15));
+    log_to_file(&format!(
+        "start_gateway_after_login: spawn_launcher_and_wait returned {:?}",
+        result.as_ref().map(|_| "Ok").map_err(|e| e.as_str())
+    ));
+    result
 }
 
 /// Tauri command: openclaw_open_window (Lesson 461).

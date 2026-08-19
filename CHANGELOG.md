@@ -1028,3 +1028,64 @@ These are **layered defenses**, not alternatives:
 - v1.1.0 dashboard pivot (`notes/V1.1.0-DASHBOARD-PLAN.md`) — still deferred.
 - Pre-build version-check guard in `build-windows-docker.sh` (Lesson 459 follow-up) — v1.0.x polish.
 - YoClaw skills-folder port — v1.1.x.
+
+---
+
+## [v1.0.9-rc2] — 2026-08-19 13:35 MDT (diagnostic rc)
+
+### Lesson 462 follow-up — Why did rc1's orphan-killer not prevent the rc1 test failure?
+
+**Symptom (David 13:30 MDT, after rc1 install + test)**: David installed v1.0.9-rc1, clicked OpenClaw tile, and got the **same error** as before:
+
+```
+Could not open OpenClaw: gateway did not bind port 28789 within 15s.
+Please restart the app...
+```
+
+Sidecar log showed the FIRST `setup()`-spawned launcher **successfully bound port 28789** (`[gateway] http server listening` ~4.6s after spawn) and reached `[gateway] ready` ~5s after spawn — but MC reported "NOT ready" anyway. Then a SECOND launcher was spawned (presumably by `start_gateway_after_login` after the dashboard tile was re-clicked), the orphan-killer found the first launcher still running as pid 13916, killed it, and the second launcher is currently bound to `127.0.0.1:28789`.
+
+The contradiction: **the gateway bound within 15s, but `wait_for_gateway_ready` returned Err anyway.** We have no way to debug from the sidecar log alone — Tauri 2 GUI apps on Windows **discard stderr** (no console attached), so all `eprintln!` output between `setup()` and `start_gateway_after_login` is invisible to the user.
+
+### Fix — file-based diagnostic logging + per-iteration TCP timeout
+
+Two changes to `wait_for_gateway_ready` and the surrounding call sites:
+
+**1. New `log_to_file(msg)` helper** — writes `msg` (prefixed with a Unix epoch timestamp) to:
+- Windows: `%APPDATA%\MiracleClaw\miracle-claw.log`
+- Linux/macOS: `$HOME/.miracle-claw/miracle-claw.log`
+
+Append-only, best-effort (failures swallowed — this is a diagnostic, not a critical log). **This is the post-mortem channel** when stderr is gone.
+
+**2. `wait_for_gateway_ready` now uses `TcpStream::connect_timeout`** instead of bare `TcpStream::connect`. Per-iteration ceiling: 500ms. **This is the actual fix for the symptom:**
+
+Bare `TcpStream::connect` against an unbound port on Windows **blocks for the OS-default TCP retry timeout (~21 seconds)** — Windows sends up to 3 SYN retransmissions before giving up, each with exponential backoff. When MC's wait loop calls `connect()` while the gateway is still booting (port not yet bound), the call **blocks for ~21 seconds, consuming our entire 15-second outer deadline in a single iteration** — so the loop never gets to test subsequent seconds when the bind finally lands.
+
+`connect_timeout(addr, 500ms)` per-iteration forces a clean 500ms ceiling. The wait loop now actually polls: connect (≤500ms) → fail → sleep 100ms → connect → ... → connect succeeds at second ~5.
+
+**3. `wait_for_gateway_ready` logs every iteration's outcome to `miracle-claw.log`** with iter count + elapsed time, so even if the bug recurs we'll see exactly which iter succeeded/failed and when.
+
+**4. `kill_orphan_holding_port` got verify-after-kill** (was already in progress during rc1 work, finished in rc2): after the `taskkill` + 500ms sleep, **re-run netstat** and return Err if the port is still bound. Defends against silent taskkill failures (Windows ACL, antivirus, etc.) where taskkill says "success" but the OS hasn't actually released the socket.
+
+**5. All `kill_orphan_holding_port` call sites log to `miracle-claw.log`** — scan results, kill results, verify results.
+
+**6. `setup()` and `start_gateway_after_login` log their spawn decisions** to `miracle-claw.log` — provider_configured=true/false, key_present=true/false, spawn result.
+
+### What David needs to do for v1.0.9-rc2
+
+1. Install the rc2 installer.
+2. Reproduce the same flow (fresh launch → click OpenClaw tile).
+3. If error appears, **send the contents of `%APPDATA%\MiracleClaw\miracle-claw.log`** to me. That file will show every TCP connect attempt, every spawn result, every orphan-kill decision, every verify check.
+
+### Files changed
+- `src-tauri/src/lib.rs`:
+  - New `log_to_file(msg)` helper (~50 LOC, `cfg(target_os = "windows")` + `cfg(not(target_os = "windows"))` branches).
+  - `wait_for_gateway_ready` rewritten: per-iteration `connect_timeout(500ms)` instead of bare `connect`, iter-counted logging.
+  - `kill_orphan_holding_port` got verify-after-kill and per-step `log_to_file` calls.
+  - `setup()` and `start_gateway_after_login` got `log_to_file` calls at every spawn decision.
+  - `spawn_launcher_and_wait` got additional `log_to_file` calls at sidecar spawn, CommandEvent::Error, and CommandEvent::Terminated.
+- `src-tauri/{Cargo.toml,tauri.conf.json}`, `package.json` — version bump 1.0.9 → 1.0.9-rc2.
+
+### Known follow-ups (deferred)
+- Once we have the rc2 log we can decide if the per-iteration `connect_timeout` already fixed it (likely) or if there's a deeper bug.
+- The HTTP readiness check (`check_http_ready`) is still in `openclaw_open_window` as the second-layer defense.
+- v1.1.0 dashboard pivot — still deferred.
