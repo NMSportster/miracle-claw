@@ -587,7 +587,24 @@ match the installable state. v5 is the installable state.
 
 [v1.0.5-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.4-rc1...593d4d1
 
-## [v1.0.6-rc1] — 2026-08-19 (commit `39a7917`)
+## [v1.0.6-rc1] — 2026-08-19 08:04 MDT (commit `39a7917`, installer `48cff6ab9313c17a5442666f95e0e3cf`)
+
+### Installer (SHIPPED)
+- **File:** `dist-installers/windows/MiracleClaw_1.0.6_x64-setup.exe`
+- **MD5:** `48cff6ab9313c17a5442666f95e0e3cf`
+- **Size:** 56,742,962 bytes (~54 MB)
+- **Path on David's desktop:** `C:\Users\Adeal\Desktop\MiracleClaw_1.0.6_x64-setup.exe`
+- **Built via:** `bash scripts/build-windows-docker.sh` (Docker cold cache; NSIS `makensis` step took ~9 minutes for the 13MB binary + OpenClaw bundle compression)
+
+### Binary verification
+- Extracted via `7z x`; bundled `miracle-claw.exe` contains the eprintln strings:
+  - `[miracle-claw] auto_relogin: stashed cached creds for endpoint=`
+  - `[miracle-claw] auto_relogin: cleared cached creds`
+  - `cached-creds-key`, `cached-creds` (keychain entry usernames)
+  - `src/auto_relogin.rs` (module path)
+  - These confirm the Lesson 458 fix is in the shipped binary.
+
+
 
 ### Added — "Stay signed in" opt-in
 - **Lesson 458: silent-relogin on 401 via cached credentials.**

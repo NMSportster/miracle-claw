@@ -1,10 +1,10 @@
 {
   "version": "1.0.6",
   "commit": "39a7917",
-  "bundled-at": "TBD-on-build",
-  "tauri-build": "TBD",
-  "installer-md5": "TBD",
-  "installer-size": 0,
+  "bundled-at": "2026-08-19T14:04:00Z",
+  "tauri-build": "miracle-claw.exe (13MB), miracle-claw-launcher.exe (318KB)",
+  "installer-md5": "48cff6ab9313c17a5442666f95e0e3cf",
+  "installer-size": 56742962,
   "lesson": 458,
   "fix-summary": "add 'Stay signed in' checkbox; silent_relogin via OS keychain (AES-256-GCM); maic_logout for v1.1.0 dashboard; see CHANGELOG v1.0.6"
 }
