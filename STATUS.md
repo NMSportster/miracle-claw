@@ -248,3 +248,106 @@ Next: v1.0.1 backlog (ADeal green branding, code signing, auto-updater, launcher
 - **Lesson 421:** When the launcher's `[dependencies]` is shared with the main binary's tauri dep tree (cargo workspace has only one Cargo.toml), the launcher's Linux-host build pulls in GTK headers too (tauri → webkit → gtk → gdk). Install `libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev` in the Docker image even though the launcher is conceptually std-only. Proper fix would be to split the launcher into its own crate; libs are cheaper.
 - **Lesson 422:** `scripts/build-windows-docker.sh`'s "auto-copy to Desktop" path silently no-ops when `chat.rs` doesn't exist (was reading `const APP_VERSION` for the `+N` build suffix). Drop the suffix lookup when shipping clean `MAJOR.MINOR.PATCH` tags.
 - **Lesson 423:** `scripts/bundle-runtime.sh`'s default `--target host` is a footgun for cross-compile builds. If you run it once on Linux dev, `resources/node.exe` is a 0-byte placeholder via `touch`, and that placeholder gets shipped in the Windows installer. The script's comment says "placeholder so tauri-build's pre-flight validation passes" — but Tauri's pre-flight is the only thing that placeholder is good for. **Fix:** `scripts/build-windows-docker.sh` must invoke `bundle-runtime.sh --target windows --force` BEFORE the `npm run tauri -- build` runs (which we now do). Without `--force`, the Linux-tarball cache makes the script skip downloading the Windows Node. Without `--target windows`, the Linux ELF gets copied as `resources/node` (124 MB). Also: when `--target windows`, don't ship the Linux `node-dist/` subtree (~150 MB dead weight) and use `python3 -m zipfile` as a fallback when `unzip` isn't installed (some Linux sandboxes / Docker base images omit it).
+
+---
+
+## v1.0.1 — Lesson 431 v2 (SecretRef) + Lesson 428 (bundle.resources leak)
+
+**Built:** 2026-08-18 18:46 MDT
+**Commit:** `a5a5ed6` — Lesson 431 v2 + Lesson 428
+**Installer:** `dist-installers/windows/MiracleClaw_1.0.0_x64-setup.exe`
+- MD5: `6762024031c9d9cd677ad9a92478fff3`
+- SHA256: `13d33848c4d08ab941091a1ec730c9a7a7475913e2b97b593326f4f0b26b6633`
+- Size: 56,064,824 bytes (+10,716 vs v7's 56,054,108)
+- File count: 31,188 (+8 vs v7's 31,180)
+- Format: PE32 GUI NSIS, 7 sections
+
+### Why v8 (not v1.0.1.0)
+
+**Lesson 431 v2 fix — the proper way, no shortcuts:**
+
+v7's `ensure_maic_provider_config()` fell through to `MaicKeySource::None` when:
+1. No `MAIC_API_KEY` env var on Windows
+2. No system-openclaw MAIC config at `%APPDATA%\openclaw\openclaw.json`
+
+Result: chat hit `missing-provider-auth` with no clear error.
+
+v8 replaces the "give up" path with **openclaw's native SecretRef + SecretProvider schema**:
+
+| When `MAIC_API_KEY` is... | `models.providers.maic.apiKey` shape |
+|---|---|
+| SET | Literal string `"<value>"` (no indirection cost) |
+| NOT SET | `{source: "env", provider: "default", id: "MAIC_API_KEY"}` + registered `secrets.providers.default` env provider + `secrets.defaults.env: "default"` |
+
+The second case lets openclaw resolve `MAIC_API_KEY` from the OS env at request time.
+**User experience:** if env var is NOT set, chat fails with a clear:
+> `Environment variable "MAIC_API_KEY" is missing or empty.`
+instead of the opaque `missing-provider-auth`.
+
+**Verified end-to-end against openclaw's runtime resolution:**
+- 6/6 unit tests pass (env-var key, SecretRef fallback, idempotency, existing-entry preservation, `tool_execution` pinning, `is_empty_api_key`)
+- `resolveSecretRefString` correctly resolves `apiKey` from `process.env["MAIC_API_KEY"]` when env var is set
+- All 5 zod schemas (SecretRef, SecretProvider, SecretInput, SecretsConfig, ModelsConfig) accept the v1.0.1 config shape
+- Live boot test against the actual bundled openclaw.mjs (`OpenClaw 2026.7.1-2`) confirms the SecretRef resolves correctly with the v8-staged openclaw.json
+
+**Lesson 428 fix — `bundle.resources` regression:**
+- Removed `"resources/node"` from `tauri.conf.json` `bundle.resources` array
+- Tauri bundler couldn't differentiate Linux-portable-Node dir from a regular file path
+- Caused a 0-byte `resources/node` stub at `C:\Program Files\MiracleClaw\resources\node` on Windows install (benign but polluted install)
+- **`resources/node` is only relevant for *nix dev; don't ship on Windows**
+
+### Pre-flight (Lesson 432 release gate)
+
+✅ Installer format: PE32+ GUI NSIS, 7 sections, x86-64
+✅ Main binary: PE32+ Windows x86-64
+✅ Sidecar: PE32+ Windows x86-64
+✅ `node.exe`: PE32+ Windows x86-64 (87 MB, valid)
+✅ **`resources/node` stub: NOT PRESENT** (Lesson 428 fix verified)
+✅ `openclaw.mjs`: present
+✅ `maic-plugin/`: 4 files (index.js, openclaw.plugin.json, package.json, test_plugin.js + SHA256SUMS + VERSION)
+✅ `zod-schema.core-DviqqtPj.js`: present, schema validates v1.0.1 config
+✅ `package.json`: openclaw `2026.7.1-2` (pinned version)
+✅ SecretRef resolved end-to-end with v8's bundled openclaw runtime
+
+### Files changed (commit a5a5ed6)
+
+```
+src-tauri/src/lib.rs                      # ensure_maic_provider_config: SecretRef + register default env provider
+src-tauri/tauri.conf.json                 # Remove "resources/node" from bundle.resources
+src-tauri/Cargo.toml                      # Add [dev-dependencies] tempfile = "3" for unit tests
+src-tauri/Cargo.lock                      # Regenerated
+```
+
+### Test plan for v8 (per Lesson 432 chat roundtrip release gate)
+
+Before tagging v1.0.1, David must:
+
+1. **Manual install** (clean state dir, fresh Windows VM):
+   - `taskkill /F /IM miracle-claw.exe /T` (kill any leftover v6/v7)
+   - Run v8 installer from Desktop
+   - Verify no `resources/node` 0-byte stub at `C:\Program Files\MiracleClaw\resources\`
+2. **Without env var (default test)**:
+   - Verify `openclaw.json` at `%APPDATA%\MiracleClaw\openclaw.json` contains:
+     - `models.providers.maic.apiKey` as a SecretRef object
+     - `secrets.providers.default` registered
+     - `secrets.defaults.env: "default"`
+   - Open Miracle Claw, try a chat → expect clear error: `Environment variable "MAIC_API_KEY" is missing or empty`
+3. **With env var (real test)**:
+   - `setx MAIC_API_KEY "<real-key>" /M` (machine-wide or user-level)
+   - Restart Miracle Claw
+   - Send a chat → expect chat to work end-to-end
+4. **Roundtrip verification**:
+   - Send "Hello, world" → expect a normal chat response
+   - Send a tool-calling prompt → expect `tool_execution: "client"` to fire (MAIC returns tool_calls)
+
+If all 4 steps pass, **v1.0.1 is ready to tag at commit `a5a5ed6`**.
+
+### Lessons added this session
+
+- **Lesson 428** (already captured): Tauri `bundle.resources` is an explicit allowlist. Including `"resources/node"` (Linux portable-Node dir) in Windows installer creates a 0-byte stub.
+- **Lesson 431 v2** (rewrite): Use openclaw's native SecretRef + SecretProvider schema for env-var-backed API keys. Don't write placeholder strings to `apiKey`. Register `secrets.providers.default` with `allowlist: ["MAIC_API_KEY"]` and set `secrets.defaults.env: "default"`. The runtime resolves `process.env[id]` at request time.
+- **Lesson 433** (already captured): Release-gate fix should land in the same release, not be deferred to a polish queue.
+- **Lesson 434** (already captured): WSL-mount pre-flight substitute for `tasklist` when diagnosing Windows process state.
+- **Lesson 436 (new)**: Tauri bundle.resources Linux-portable-Node leak — confirmed and fixed.
+- **Lesson 437 (new)**: Proactive provider bootstrap — write default provider config matching the user's environment pattern even without a real key, so the auth failure surfaces at request time with a clear error.
+- **Lesson 438 (new)**: Chat symptom disambiguation — `missing-provider-auth` vs `node.exe error` both sound like infrastructure failures but are different layers. Trace through launcher → resources → node → openclaw.mjs → schema → provider auth.

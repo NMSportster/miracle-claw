@@ -159,3 +159,42 @@ match the installable state. v5 is the installable state.
 
 [unreleased]: https://github.com/adealauto/miracle-claw/compare/v1.0.0...HEAD
 [v1.0.0]: https://github.com/adealauto/miracle-claw/releases/tag/v1.0.0
+
+---
+
+## [v1.0.1-rc1] — 2026-08-18 18:46 MDT (commit `a5a5ed6`)
+
+### Fixed
+- **Lesson 431 v2 — MAIC provider config uses openclaw's native SecretRef + SecretProvider schema.** When `MAIC_API_KEY` is NOT set on the user's machine, `models.providers.maic.apiKey` is now written as a SecretRef object `{source: "env", provider: "default", id: "MAIC_API_KEY"}` and a `secrets.providers.default` env provider is registered with `allowlist: ["MAIC_API_KEY"]`. openclaw resolves the SecretRef at request time, so the user just needs to set `MAIC_API_KEY` in their environment and restart — no per-install keystore entry, no opaque `missing-provider-auth` error. Verified end-to-end against `openclaw@2026.7.1-2`'s `resolveSecretRefString` runtime.
+- **Lesson 428 — `resources/node` 0-byte stub removed from Windows installer.** Tauri bundler couldn't tell the Linux-portable-Node dir from a regular file path, so it created a 0-byte `resources/node` stub at `C:\Program Files\MiracleClaw\resources\node` on every install. Benign, but pollutes the install. Removed from `tauri.conf.json` `bundle.resources`.
+
+### Added
+- 6 unit tests for `ensure_maic_provider_config()` covering env-var-key path, SecretRef fallback, idempotency, existing-entry preservation, `tool_execution` pinning, and `is_empty_api_key` helper. All tests pass.
+- `[dev-dependencies] tempfile = "3"` for the test suite (test-only, never linked into the production binary).
+
+### Verified
+- Run `cargo test --bin miracle-claw --lib`: 6/6 pass.
+- Run `node openclaw.mjs --version` against v8's bundled node: `OpenClaw 2026.7.1-2 (0790d9f)`.
+- Run end-to-end SecretRef resolution against the v8-bundled openclaw.mjs:
+  - With `MAIC_API_KEY="test-v8-key-abc"` set: `resolveSecretRefString` returns `test-v8-key-abc` ✓
+  - Without env var: clear error `Environment variable "MAIC_API_KEY" is missing or empty.` ✓
+- Run zod schema validation against v8-bundled `zod-schema.core-DviqqtPj.js`:
+  - SecretRefSchema, SecretProviderSchema, SecretInputSchema, SecretsConfigSchema, ModelsConfigSchema all accept the v1.0.1 config shape ✓
+
+### Installer
+- MD5: `6762024031c9d9cd677ad9a92478fff3`
+- SHA256: `13d33848c4d08ab941091a1ec730c9a7a7475913e2b97b593326f4f0b26b6633`
+- Size: 56,064,824 bytes (+10,716 vs v7)
+- File count: 31,188 (+8 vs v7)
+- Format: PE32 GUI NSIS, 7 sections
+
+### Test plan (per Lesson 432 — chat roundtrip is the release gate)
+1. Kill v6/v7: `taskkill /F /IM miracle-claw.exe /T`
+2. Run v8 installer
+3. Verify no `resources/node` 0-byte stub at `C:\Program Files\MiracleClaw\resources\`
+4. Verify `openclaw.json` contains SecretRef + secrets.providers.default
+5. Open Miracle Claw, send a chat → expect clear error (env var not set)
+6. Set `MAIC_API_KEY`, restart, send chat → expect chat to work
+7. If 6 passes, **tag v1.0.1 at commit a5a5ed6**
+
+[v1.0.1-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.0...a5a5ed6
