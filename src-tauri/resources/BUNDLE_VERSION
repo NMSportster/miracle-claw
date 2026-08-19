@@ -1,5 +1,10 @@
-miracle-claw=3b41fd0
-openclaw=2026.7.1-2
-node=22.23.2
-node-target=win-x64
-bundled-at=2026-08-19T03:59:08Z
+{
+  "version": "1.0.5",
+  "commit": "429ab9e",
+  "bundled-at": "2026-08-19T00:10:00Z",
+  "tauri-build": "miracle-claw.exe (12.9MB), miracle-claw-launcher.exe (325KB)",
+  "installer-md5": "10b06dc7e61ca21a70ec5b5a81602a09",
+  "installer-size": 56712789,
+  "lesson": 451,
+  "fix-summary": "early-return path now migrates stale bare-origin baseUrl (/v1 suffix); see CHANGELOG v1.0.5"
+}
