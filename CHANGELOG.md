@@ -1089,3 +1089,205 @@ Bare `TcpStream::connect` against an unbound port on Windows **blocks for the OS
 - Once we have the rc2 log we can decide if the per-iteration `connect_timeout` already fixed it (likely) or if there's a deeper bug.
 - The HTTP readiness check (`check_http_ready`) is still in `openclaw_open_window` as the second-layer defense.
 - v1.1.0 dashboard pivot — still deferred.
+
+## [v1.0.9-rc3] — 2026-08-19 15:54 MDT (idempotency fix)
+
+### What rc3 fixes
+
+David's 15:10 MDT question cut to the heart of the issue: "Why is getting
+Openclaw to run any different than in the early versions where it came up
+after the log in?" The answer:
+
+- **v1.0.5-v1.0.8**: launcher was spawned ONCE in `setup()` at app start.
+  Login → tile click just opened the webview to the already-running gateway.
+  No respawn cycle, no orphan risk.
+
+- **v1.0.9-rc1/rc2**: the launcher spawn was moved OUT of `setup()` and
+  INTO `start_gateway_after_login` (Lesson 449 — required because
+  openclaw needs MAIC_API_KEY in env, which only exists after login).
+  BUT the frontend still calls `start_gateway_after_login` on EVERY tile
+  click (src/main.js:162 had a "cheap no-op if already running" comment
+  that was wrong — the function unconditionally killed any previous handle
+  and respawned).
+
+- The rc2 fix (orphan-killer + connect_timeout) worked AROUND this by
+  cleaning up orphans after each kill+respawn cycle. The rc3 fix makes
+  the cycle itself skip when the gateway is already serving.
+
+### The fix (1 function, ~25 lines)
+
+`start_gateway_after_login` now does an idempotency probe at the top:
+
+```rust
+// rc3 idempotency probe (Lesson 466)
+match std::net::TcpStream::connect_timeout(
+    &format!("127.0.0.1:{}", OPENCLAW_PORT).parse()?,
+    std::time::Duration::from_millis(500),
+) {
+    Ok(_) => {
+        log_to_file("start_gateway_after_login: idempotent no-op — gateway already serving");
+        return Ok(());
+    }
+    Err(e) => log_to_file(&format!("...port probe failed ({}); proceeding to spawn", e)),
+}
+```
+
+If the port is bound → return Ok immediately, don't touch `launcher_child`,
+don't kill anything, don't spawn anything.
+
+If the port is unbound → fall through to the existing
+kill-previous-handle-then-respawn path (covers first-run and login-retry
+cases where we genuinely need a fresh spawn).
+
+### Behavior after rc3
+
+- **Login first time** → spawn launcher → gateway binds → dashboard
+  renders → first tile click is no-op ✅
+- **Subsequent tile clicks** → pure no-ops (no kill, no spawn, no orphan
+  risk) ✅
+- **Hot-reload config change during chat** → openclaw respawns itself →
+  port briefly unbound → next tile click falls through to respawn → may
+  briefly orphan during reload, but rare edge case ✅
+
+### What David needs to do for v1.0.9-rc3
+
+1. Install `MiracleClaw_1.0.9-rc3_x64-setup.exe` over rc2
+2. Login
+3. Click the OpenClaw tile — chat window opens
+4. **Click the tile 5 more times in a row** — window should just refocus,
+   no respawn cycles, no blank windows
+5. Optional: share `%APPDATA%\MiracleClaw\miracle-claw.log` to confirm
+   the `idempotent no-op — gateway already serving` line fires on each
+   subsequent click
+
+### Files changed
+
+- `src-tauri/src/lib.rs` — idempotency probe added to
+  `start_gateway_after_login` (line ~2376)
+- `src-tauri/{Cargo.toml,tauri.conf.json}`, `package.json` — version bump
+  1.0.9-rc2 → 1.0.9-rc3
+
+### Lesson 466 (to be promoted after verification)
+
+**Spawn-once functions must be idempotent on the resource state, not
+just the handle state.** A "kill previous handle, spawn fresh" pattern
+only works if the underlying resource (bound port, child PID, file lock)
+is also killed. With wrapper-sidecar patterns where the wrapper exits
+clean but the child persists, an idempotency check on the resource
+(port probe, PID lookup, HTTP check) is mandatory before any respawn
+cycle.
+
+**Symptom signature**: clicking the same UI control N times causes the
+launcher / daemon / subprocess to restart N times, leaving N-1 orphans
+holding shared resources.
+
+**Fix**: probe the resource state (port bound? PID alive? HTTP responding?)
+before any kill+respawn cycle. If the resource is healthy, return Ok
+without touching the handle.
+
+### Known follow-ups (deferred)
+
+- v1.1.0 dashboard pivot — still deferred.
+- Once rc3 verified → bump 1.0.9-rc3 → 1.0.9 (final) and promote Lesson
+  466 to MEMORY.md.
+
+## [v1.0.9-rc3] — 2026-08-19 15:54 MDT (idempotency fix)
+
+### What rc3 fixes
+
+David's 15:10 MDT question cut to the heart of the issue: "Why is getting
+Openclaw to run any different than in the early versions where it came up
+after the log in?" The answer:
+
+- **v1.0.5-v1.0.8**: launcher was spawned ONCE in `setup()` at app start.
+  Login → tile click just opened the webview to the already-running gateway.
+  No respawn cycle, no orphan risk.
+
+- **v1.0.9-rc1/rc2**: the launcher spawn was moved OUT of `setup()` and
+  INTO `start_gateway_after_login` (Lesson 449 — required because
+  openclaw needs MAIC_API_KEY in env, which only exists after login).
+  BUT the frontend still calls `start_gateway_after_login` on EVERY tile
+  click (src/main.js:162 had a "cheap no-op if already running" comment
+  that was wrong — the function unconditionally killed any previous handle
+  and respawned).
+
+- The rc2 fix (orphan-killer + connect_timeout) worked AROUND this by
+  cleaning up orphans after each kill+respawn cycle. The rc3 fix makes
+  the cycle itself skip when the gateway is already serving.
+
+### The fix (1 function, ~25 lines)
+
+`start_gateway_after_login` now does an idempotency probe at the top:
+
+```rust
+// rc3 idempotency probe (Lesson 466)
+match std::net::TcpStream::connect_timeout(
+    &format!("127.0.0.1:{}", OPENCLAW_PORT).parse()?,
+    std::time::Duration::from_millis(500),
+) {
+    Ok(_) => {
+        log_to_file("start_gateway_after_login: idempotent no-op — gateway already serving");
+        return Ok(());
+    }
+    Err(e) => log_to_file(&format!("...port probe failed ({}); proceeding to spawn", e)),
+}
+```
+
+If the port is bound → return Ok immediately, don't touch `launcher_child`,
+don't kill anything, don't spawn anything.
+
+If the port is unbound → fall through to the existing
+kill-previous-handle-then-respawn path (covers first-run and login-retry
+cases where we genuinely need a fresh spawn).
+
+### Behavior after rc3
+
+- **Login first time** → spawn launcher → gateway binds → dashboard
+  renders → first tile click is no-op ✅
+- **Subsequent tile clicks** → pure no-ops (no kill, no spawn, no orphan
+  risk) ✅
+- **Hot-reload config change during chat** → openclaw respawns itself →
+  port briefly unbound → next tile click falls through to respawn → may
+  briefly orphan during reload, but rare edge case ✅
+
+### What David needs to do for v1.0.9-rc3
+
+1. Install `MiracleClaw_1.0.9-rc3_x64-setup.exe` over rc2
+2. Login
+3. Click the OpenClaw tile — chat window opens
+4. **Click the tile 5 more times in a row** — window should just refocus,
+   no respawn cycles, no blank windows
+5. Optional: share `%APPDATA%\MiracleClaw\miracle-claw.log` to confirm
+   the `idempotent no-op — gateway already serving` line fires on each
+   subsequent click
+
+### Files changed
+
+- `src-tauri/src/lib.rs` — idempotency probe added to
+  `start_gateway_after_login` (line ~2376)
+- `src-tauri/{Cargo.toml,tauri.conf.json}`, `package.json` — version bump
+  1.0.9-rc2 → 1.0.9-rc3
+
+### Lesson 466 (to be promoted after verification)
+
+**Spawn-once functions must be idempotent on the resource state, not
+just the handle state.** A "kill previous handle, spawn fresh" pattern
+only works if the underlying resource (bound port, child PID, file lock)
+is also killed. With wrapper-sidecar patterns where the wrapper exits
+clean but the child persists, an idempotency check on the resource
+(port probe, PID lookup, HTTP check) is mandatory before any respawn
+cycle.
+
+**Symptom signature**: clicking the same UI control N times causes the
+launcher / daemon / subprocess to restart N times, leaving N-1 orphans
+holding shared resources.
+
+**Fix**: probe the resource state (port bound? PID alive? HTTP responding?)
+before any kill+respawn cycle. If the resource is healthy, return Ok
+without touching the handle.
+
+### Known follow-ups (deferred)
+
+- v1.1.0 dashboard pivot — still deferred.
+- Once rc3 verified → bump 1.0.9-rc3 → 1.0.9 (final) and promote Lesson
+  466 to MEMORY.md.

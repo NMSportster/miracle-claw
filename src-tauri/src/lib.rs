@@ -2369,6 +2369,31 @@ fn start_gateway_after_login(
         );
     }
 
+    // rc3 idempotency probe (Lesson 466): if the gateway is already serving
+    // on its port, this is a click-while-already-running. Skip the entire
+    // kill+respawn cycle. Without this, every tile click killed the launcher
+    // handle and respawned, which left orphan openclaw.mjs children holding
+    // 28789 → blank window on the next click.
+    match std::net::TcpStream::connect_timeout(
+        &format!("127.0.0.1:{}", OPENCLAW_PORT)
+            .parse()
+            .map_err(|e| format!("invalid addr: {e}"))?,
+        std::time::Duration::from_millis(500),
+    ) {
+        Ok(_) => {
+            log_to_file(
+                "start_gateway_after_login: idempotent no-op — gateway already serving",
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            log_to_file(&format!(
+                "start_gateway_after_login: port probe failed ({}); proceeding to spawn",
+                e
+            ));
+        }
+    }
+
     // If a previous launcher is still around (shouldn't be on first run, but
     // defensive against repeated calls), kill it before spawning a new one.
     if let Some(prev) = state.launcher_child.lock().unwrap().take() {
