@@ -7,9 +7,15 @@
 //      the openclaw chat UI at http://localhost:28789/.
 //
 // On login submit:
-//   1. invoke('maic_login', { email, password })
-//   2. On success → redirect to chat UI (chat will work now that MAIC is wired).
-//   3. On error → surface error message, let user retry.
+//   1. invoke('maic_login', { email, password }) — backend writes the JWT
+//      into openclaw.json (replacing the legacy SecretRef) and sets the env
+//      var in the parent process.
+//   2. invoke('start_gateway_after_login') — backend spawns the launcher
+//      sidecar with MAIC_API_KEY now set in env, waits for gateway to bind
+//      localhost:28789.
+//   3. On gateway ready → redirect to chat UI. Chat will work because the
+//      openclaw.json apiKey is the literal JWT, not a SecretRef.
+//   4. On any step error → surface error message, let user retry.
 
 import "./styles.css";
 
@@ -107,9 +113,13 @@ function renderLogin(endpoint) {
 
     try {
       const result = await invoke("maic_login", { email, password });
-      // Login succeeded → MAIC provider is now wired in openclaw.json.
-      // Jump to the chat UI. The next /v1/chat/completions call will use
-      // the new JWT.
+      // Login succeeded → MAIC provider is now wired in openclaw.json
+      // (the legacy SecretRef has been replaced with the literal JWT).
+      // Now spawn the launcher with MAIC_API_KEY in env, so the openclaw
+      // gateway can read the new config and bind localhost:28789.
+      submit.textContent = "Starting gateway…";
+      await invoke("start_gateway_after_login");
+      // Gateway is up — navigate to the chat UI.
       window.location.href = "http://localhost:28789/";
       // Reference result so V8/etc don't optimistically say "unused".
       console.info(

@@ -44,7 +44,6 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::{Manager, RunEvent};
 use tauri_plugin_shell::process::CommandEvent;
-use tauri_plugin_shell::ShellExt;
 
 mod launcher_info;
 use launcher_info::{launcher_binary_name, MAIC_PLUGIN_FILENAMES, OPENCLAW_PORT};
@@ -498,20 +497,35 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
         .and_then(|p| p.get(PROVIDER_ID))
         .cloned();
 
-    // If the user already has a complete provider entry (apiKey with non-empty
-    // value OR a SecretRef, baseUrl), we are done. This is the idempotency
-    // guarantee — re-running setup() never overwrites a working config.
+    // If the user already has a complete provider entry (literal non-empty
+    // apiKey + baseUrl), we are done. This is the idempotency guarantee —
+    // re-running setup() never overwrites a working config.
+    //
+    // Lesson 449 (post-v1.0.2): a SecretRef (apiKey = {source: "env", id: ...})
+    // does NOT count as "complete" here. The previous behavior early-returned
+    // on SecretRef and left it on disk, but the openclaw gateway would then
+    // fail at startup with SecretRefResolutionError if the env var wasn't
+    // actually set in the launcher's process env (which it never is on a
+    // fresh install — the env var lives in the parent Tauri process, not
+    // the spawned child). Result: gateway crashed, webview hit
+    // ERR_CONNECTION_REFUSED on http://localhost:28789/ after login.
+    //
+    // The fix: only treat literal-string apiKey as complete. If the user has
+    // a SecretRef, fall through to the write path so we can replace it with
+    // the literal after login. User-customized configs with SecretRef still
+    // resolve correctly on the write path (we preserve the existing entry's
+    // other fields and only stamp apiKey when missing/empty).
     if let Some(entry) = existing.as_ref() {
-        let has_key = entry
-            .get("apiKey")
-            .map(|v| !is_empty_api_key(v))
-            .unwrap_or(false);
+        let has_literal_key = matches!(
+            entry.get("apiKey"),
+            Some(serde_json::Value::String(s)) if !s.trim().is_empty()
+        );
         let has_url = entry
             .get("baseUrl")
             .and_then(|v| v.as_str())
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false);
-        if has_key && has_url {
+        if has_literal_key && has_url {
             return Ok(MaicProviderBootstrap {
                 provider_configured: true,
                 provider_id: PROVIDER_ID.to_string(),
@@ -624,9 +638,14 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
     let entry_obj = provider_entry.as_object_mut().unwrap();
 
     entry_obj.entry("baseUrl".to_string()).or_insert(Value::String(resolved_url.clone()));
-    // Only stamp apiKey if the user hasn't already set one. If they have a
-    // non-empty literal string OR a SecretRef, leave it alone.
-    if !entry_obj.contains_key("apiKey") || is_empty_api_key(&entry_obj["apiKey"]) {
+    // Only stamp apiKey if the existing one is "unresolvable" (Lesson 449):
+    //   - missing entirely
+    //   - literal empty/whitespace string
+    //   - SecretRef whose target env var is empty/missing (would crash the
+    //     openclaw gateway at startup with SecretRefResolutionError)
+    // A non-empty literal OR a SecretRef that resolves in the current env
+    // is left alone — preserves the user's existing setup.
+    if !entry_obj.contains_key("apiKey") || is_unresolvable_api_key(&entry_obj["apiKey"]) {
         match &resolved_key {
             Some(literal) => {
                 entry_obj.insert("apiKey".to_string(), Value::String(literal.clone()));
@@ -707,6 +726,16 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
         *providers_obj = Value::Object(Default::default());
     }
     let providers = providers_obj.as_object_mut().unwrap();
+    // Lesson 449: capture the final endpoint from the entry's actual baseUrl
+    // BEFORE we insert/move `provider_entry` into the providers map. After
+    // the insert, `entry_obj` no longer exists (we moved its owner), so we
+    // can't read baseUrl off it anymore. The value is what was actually
+    // written — user's custom URL if they had one, else our resolved_url.
+    let final_endpoint = entry_obj
+        .get("baseUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&resolved_url)
+        .to_string();
     providers.insert(PROVIDER_ID.to_string(), provider_entry);
 
     // Serialize back. We preserve the user's other fields exactly (no
@@ -728,8 +757,68 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
         provider_configured: true,
         provider_id: PROVIDER_ID.to_string(),
         api_key_source: key_source,
-        endpoint: resolved_url,
+        endpoint: final_endpoint,
     })
+}
+
+/// Replace the MAIC provider entry's apiKey field with the literal JWT from
+/// the current `MAIC_API_KEY` env var. Used by `maic_login` after a
+/// successful login to make sure the literal is written to disk (replacing
+/// any legacy SecretRef shipped by v1.0.0 / v1.0.1 / v1.0.2 setups).
+///
+/// Lesson 449 root cause: previous versions stamped a SecretRef on the
+/// host's `openclaw.json` when no `MAIC_API_KEY` was set; the openclaw
+/// gateway then crashed at startup with `SecretRefResolutionError`,
+/// yielding `ERR_CONNECTION_REFUSED` in the chat UI on localhost:28789.
+///
+/// Returns `true` iff the function successfully ensured the literal JWT is
+/// on disk under `models.providers.maic.apiKey` (either by writing it now
+/// or by confirming it was already there). Returns `false` only when the
+/// env var is missing, or the openclaw.json doesn't have a maic provider
+/// entry, or a write error occurred — all of which the caller should log
+/// but not abort on (the user can retry on next launch).
+fn replace_secret_ref_with_literal() -> bool {
+    let token = match std::env::var(ENV_VAR_NAME) {
+        Ok(t) if !t.trim().is_empty() => t,
+        _ => return false,
+    };
+    let path = openclaw_json_path();
+    let mut cfg: serde_json::Value = match std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+    {
+        Some(c) => c,
+        None => return false,
+    };
+    let entry = cfg
+        .get_mut("models")
+        .and_then(|m| m.get_mut("providers"))
+        .and_then(|p| p.get_mut("maic"))
+        .and_then(|e| e.as_object_mut());
+    if let Some(entry_obj) = entry {
+        let already_correct = matches!(
+            entry_obj.get("apiKey"),
+            Some(serde_json::Value::String(s)) if s == &token
+        );
+        if already_correct {
+            return true;
+        }
+        // Either missing, SecretRef, null/scalar, or wrong literal — write
+        // the JWT from the current env var.
+        entry_obj.insert("apiKey".to_string(), serde_json::Value::String(token));
+        if let Ok(serialized) = serde_json::to_string_pretty(&cfg) {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if std::fs::write(&path, serialized).is_ok() {
+                eprintln!(
+                    "[miracle-claw] maic_login: replaced SecretRef with literal JWT in openclaw.json"
+                );
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Register a default env-based SecretProvider so openclaw's SecretRef
@@ -818,6 +907,40 @@ fn is_empty_api_key(value: &Value) -> bool {
             id.is_empty()
         }
         _ => true,
+    }
+}
+
+/// Is `value` an apiKey that the openclaw gateway CAN'T currently resolve?
+///
+/// Lesson 449: this is what we want the bootstrap stamp path to use, not
+/// `is_empty_api_key`. A SecretRef to `MAIC_API_KEY` is "unresolvable" when
+/// its target env var is empty or missing in the current process. In that
+/// case the gateway will crash with SecretRefResolutionError, and we want
+/// to replace it with a literal string (after login, we have a literal).
+///
+/// Conversely, if the env var is set, the SecretRef IS resolvable — we leave
+/// it alone (preserves user-customized configs).
+fn is_unresolvable_api_key(value: &Value) -> bool {
+    if is_empty_api_key(value) {
+        return true;
+    }
+    match value {
+        Value::Object(obj) => {
+            // Only env-sourced SecretRefs to known env var names can be checked
+            // here. For other sources (file/exec/JSON pointer), trust the
+            // existing is_empty_api_key result (true means broken, false means
+            // non-empty so we leave alone).
+            let source = obj.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            if source != "env" {
+                return false;
+            }
+            let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            match std::env::var(id) {
+                Ok(v) if !v.trim().is_empty() => false, // resolvable
+                _ => true, // missing or empty = unresolvable = should be replaced
+            }
+        }
+        _ => false, // literal non-empty is always resolvable
     }
 }
 
@@ -1146,6 +1269,13 @@ fn maic_login(email: String, password: String) -> Result<MaicLoginInfo, String> 
         ));
     }
 
+    // Lesson 449: even after the bootstrap, if the user had a pre-existing
+    // SecretRef (legacy MC < v1.0.3 installs), the bootstrap keeps the
+    // SecretRef because the env var IS now set and the SecretRef resolves.
+    // We need the literal JWT on disk so the openclaw gateway reads a
+    // working key — guarantee that explicitly here.
+    replace_secret_ref_with_literal();
+
     eprintln!(
         "[miracle-claw] maic_login: success — user={}, tier={}, key_source={:?}",
         resolved_email, tier, bootstrap.api_key_source
@@ -1269,25 +1399,70 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => eprintln!("[miracle-claw] openclaw.json read error: {}", e),
     }
 
-    // 4. Spawn launcher sidecar.
+    // 5. Spawn launcher sidecar — but ONLY when we have a usable MAIC key.
+    //
+    // Lesson 449: the openclaw gateway crashes at startup with
+    // SecretRefResolutionError if MAIC_API_KEY isn't set in the launcher's
+    // process env. The launcher is spawned as a child process and inherits
+    // the env at spawn time, so setting MAIC_API_KEY in the parent process
+    // AFTER spawn (via maic_login) doesn't help. We have to either:
+    //   (a) spawn with the key already set, OR
+    //   (b) restart the launcher after login sets the env var.
+    //
+    // Path (a) is what `setup()` does — when we already have a key (literal
+    // apiKey in openclaw.json, or env var set externally), spawn now and
+    // wait for the gateway to be ready. When LoginRequired (no key anywhere),
+    // we defer the spawn to `start_gateway_after_login` (called from the
+    // frontend after a successful `maic_login`).
+    if maic_bootstrap.provider_configured {
+        match spawn_launcher_and_wait(&app_handle, OPENCLAW_PORT, Duration::from_secs(15)) {
+            Ok(()) => eprintln!("[miracle-claw] gateway READY on port {}", OPENCLAW_PORT),
+            Err(e) => eprintln!("[miracle-claw] gateway NOT ready: {}", e),
+        }
+    } else {
+        eprintln!(
+            "[miracle-claw] LoginRequired — deferring launcher spawn until maic_login completes"
+        );
+    }
+
+    // 6. Webview URL pre-configured in tauri.conf.json → http://localhost:28789/.
+    //    The webview loads as soon as the renderer fires; nothing to do here.
+
+    Ok(())
+}
+
+/// Spawn the launcher sidecar with the current process env (so MAIC_API_KEY
+/// set via `std::env::set_var` propagates) and wait for the gateway to be
+/// reachable on the given port. Used by both `setup()` (returning users with
+/// a key already in place) and `start_gateway_after_login` (after login
+/// sets MAIC_API_KEY in the parent env).
+///
+/// Returns Ok(()) on first successful TCP connect within `timeout`. Errors
+/// are non-fatal — the caller logs and continues (the webview will show a
+/// gateway-not-ready state via first_run_report).
+fn spawn_launcher_and_wait(
+    app_handle: &tauri::AppHandle,
+    port: u16,
+    timeout: Duration,
+) -> Result<(), String> {
+    use tauri_plugin_shell::ShellExt;
+
     let shell = app_handle.shell();
-    let port_str = OPENCLAW_PORT.to_string();
+    let port_str = port.to_string();
     let launcher_name = launcher_binary_name().to_string();
     eprintln!(
         "[miracle-claw] spawning sidecar: {} --gateway-port {}",
         launcher_name, port_str
     );
-    let spawned = shell.sidecar(launcher_name.clone()).and_then(|cmd| {
-        cmd.args(["--gateway-port", &port_str]).spawn()
-    });
-
-    let (mut rx, child) = match spawned {
-        Ok(pair) => pair,
-        Err(e) => {
+    let spawned = shell
+        .sidecar(launcher_name.clone())
+        .and_then(|cmd| cmd.args(["--gateway-port", &port_str]).spawn())
+        .map_err(|e| {
             eprintln!("[miracle-claw] sidecar spawn failed: {}", e);
-            return Err(Box::new(e));
-        }
-    };
+            format!("sidecar spawn failed: {e}")
+        })?;
+
+    let (mut rx, child) = spawned;
 
     // Background log capture: pipe sidecar stdout/stderr to our stderr with a
     // tag so it's visible in Tauri's dev console.
@@ -1312,29 +1487,67 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    app.state::<AppState>()
+    app_handle
+        .state::<AppState>()
         .launcher_child
         .lock()
         .unwrap()
         .replace(child);
 
-    // 4. Wait for gateway to be ready (poll TCP connect, 15s cap).
-    match wait_for_gateway_ready(OPENCLAW_PORT, Duration::from_secs(15)) {
-        Ok(()) => eprintln!("[miracle-claw] gateway READY on port {}", OPENCLAW_PORT),
-        Err(e) => eprintln!("[miracle-claw] gateway NOT ready: {}", e),
+    wait_for_gateway_ready(port, timeout)
+}
+
+/// Tauri command: start_gateway_after_login (Lesson 449).
+///
+/// Called by the frontend AFTER `maic_login` returns success. Spawns the
+/// launcher sidecar with MAIC_API_KEY now set in the process env, then waits
+/// for the gateway to be reachable on localhost:28789. Returns once the
+/// gateway is up (or an error if startup fails).
+///
+/// Why this exists: in setup() we deferred the launcher spawn when no key
+/// was available (LoginRequired), because the gateway would otherwise crash
+/// with SecretRefResolutionError. After maic_login sets the key, we need to
+/// start the gateway so the webview can navigate to localhost:28789/ and
+/// load the chat UI.
+#[tauri::command]
+fn start_gateway_after_login(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    // Sanity: maic_login must have been called first. We check both the env
+    // var and the openclaw.json entry so we don't accidentally start a
+    // gateway that's about to crash.
+    let key_present = std::env::var(ENV_VAR_NAME)
+        .ok()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if !key_present {
+        return Err(
+            "start_gateway_after_login called before MAIC_API_KEY was set; \
+             frontend must call maic_login first."
+                .to_string(),
+        );
     }
 
-    // 5. Webview URL pre-configured in tauri.conf.json → http://localhost:28789/.
-    //    The webview loads as soon as the renderer fires; nothing to do here.
+    // If a previous launcher is still around (shouldn't be on first run, but
+    // defensive against repeated calls), kill it before spawning a new one.
+    if let Some(prev) = state.launcher_child.lock().unwrap().take() {
+        eprintln!("[miracle-claw] killing previous launcher before respawn");
+        let _ = prev.kill();
+    }
 
-    Ok(())
+    spawn_launcher_and_wait(&app_handle, OPENCLAW_PORT, Duration::from_secs(15))
 }
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![first_run_report, maic_login])
+        .invoke_handler(tauri::generate_handler![
+            first_run_report,
+            maic_login,
+            start_gateway_after_login
+        ])
         .setup(|app| {
             setup(app)?;
             Ok(())
@@ -1381,6 +1594,17 @@ mod tests {
 
     // Tests that mutate process-global env vars run serially.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Acquire the env lock, tolerating poisoning from a previously-panicked
+    /// test. Without this, a single test panic leaves the mutex poisoned
+    /// for all subsequent tests in the binary (and they all panic on
+    /// `lock().unwrap()`), masking the actual failure mode.
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        match ENV_LOCK.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        }
+    }
 
     /// Set HOME to a fresh temp dir, return (temp_path, guard).
     /// Guard clears MAIC_API_KEY / MAIC_API_URL on drop.
@@ -1440,7 +1664,7 @@ mod tests {
 
     #[test]
     fn env_var_key_writes_literal_string() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "test-key-abc-123");
 
@@ -1477,7 +1701,7 @@ mod tests {
 
     #[test]
     fn no_env_var_returns_login_required_and_writes_no_provider() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_env();
         let _g = fresh_env();
         // No MAIC_API_KEY set.
 
@@ -1520,7 +1744,7 @@ mod tests {
 
     #[test]
     fn idempotency_no_duplication() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "first-key");
 
@@ -1548,10 +1772,17 @@ mod tests {
     }
 
     #[test]
-    fn existing_entry_with_secret_ref_is_preserved() {
-        let _lock = ENV_LOCK.lock().unwrap();
+    fn existing_entry_with_secret_ref_is_preserved_when_env_set() {
+        // Lesson 449: a SecretRef alone does NOT count as "complete" at the
+        // bootstrap layer — only a literal non-empty apiKey does. So if the
+        // env var resolves the SecretRef, we fall through to the write path
+        // and the existing entry's other fields are preserved (we only stamp
+        // apiKey when missing/empty).
+        let _lock = lock_env();
         let _g = fresh_env();
-        // Pre-write a user-supplied entry with a SecretRef.
+        // Env var set — the user's SecretRef to MAIC_API_KEY will resolve.
+        env::set_var("MAIC_API_KEY", "env-resolved-key");
+        // Pre-write a user-supplied entry with a SecretRef + custom fields.
         let path = openclaw_json_path();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let pre_existing = serde_json::json!({
@@ -1576,7 +1807,13 @@ mod tests {
         std::fs::write(&path, serde_json::to_string_pretty(&pre_existing).unwrap()).unwrap();
 
         let result = ensure_maic_provider_config().expect("bootstrap ok");
-        assert!(matches!(result.api_key_source, MaicKeySource::Existing));
+        // Lesson 449: with the SecretRef falling through to the write path,
+        // the key_source reports Env (resolved from env var), not Existing.
+        // The user's SecretRef field itself is preserved (we only stamp
+        // apiKey when it's empty per is_empty_api_key), but the bootstrap
+        // result reflects that we actively used the env-resolved key this
+        // run.
+        assert!(matches!(result.api_key_source, MaicKeySource::Env));
         assert_eq!(result.endpoint, "https://custom.maic.example.com");
 
         let cfg = read_maic_root();
@@ -1590,9 +1827,9 @@ mod tests {
             entry.get("baseUrl").and_then(|v| v.as_str()),
             Some("https://custom.maic.example.com")
         );
-        // User's SecretRef preserved.
+        // User's SecretRef preserved (not overwritten with a literal).
         let api_key = entry.get("apiKey").expect("apiKey");
-        assert!(api_key.is_object());
+        assert!(api_key.is_object(), "SecretRef should still be an object");
         assert_eq!(api_key.get("id").and_then(|v| v.as_str()), Some("MAIC_API_KEY"));
         // User's custom model preserved.
         let models = entry.get("models").and_then(|m| m.as_array()).unwrap();
@@ -1600,8 +1837,202 @@ mod tests {
     }
 
     #[test]
+    fn existing_secret_ref_with_no_env_var_falls_through_to_login_required() {
+        // Lesson 449: when a SecretRef exists but the env var is empty, the
+        // entry is INCOMPLETE (the openclaw gateway would fail to resolve
+        // MAIC_API_KEY at startup). The bootstrap must NOT early-return on
+        // "Existing" — it must fall through so we can either re-login (and
+        // replace the SecretRef with a literal) or hit LoginRequired.
+        let _lock = lock_env();
+        let _g = fresh_env();
+        // No MAIC_API_KEY env var set.
+        let path = openclaw_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let pre_existing = serde_json::json!({
+            "gateway": {"mode": "local", "auth": {"mode": "none"}},
+            "models": {
+                "providers": {
+                    "maic": {
+                        "baseUrl": "https://maicserver.com",
+                        "apiKey": {
+                            "source": "env",
+                            "provider": "default",
+                            "id": "MAIC_API_KEY"
+                        },
+                        "api": "openai-completions",
+                        "models": [{"id": "milagro-dev", "name": "MAIC default"}]
+                    }
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&pre_existing).unwrap()).unwrap();
+
+        let result = ensure_maic_provider_config().expect("bootstrap ok");
+        assert!(
+            !result.provider_configured,
+            "SecretRef + empty env var must NOT be treated as configured"
+        );
+        assert!(
+            matches!(result.api_key_source, MaicKeySource::LoginRequired),
+            "key_source should be LoginRequired, got {:?}",
+            result.api_key_source
+        );
+        // The legacy SecretRef is left in place (we don't overwrite it on
+        // LoginRequired). It'll be replaced with the literal after login.
+        let cfg = read_maic_root();
+        let entry = cfg
+            .get("models")
+            .and_then(|m| m.get("providers"))
+            .and_then(|p| p.get("maic"))
+            .expect("maic provider entry should still be on disk");
+        let api_key = entry.get("apiKey").expect("apiKey");
+        assert!(api_key.is_object(), "SecretRef should remain until login");
+    }
+
+    #[test]
+    fn login_replaces_legacy_secret_ref_with_literal() {
+        // Lesson 449: after login (env var now set), the bootstrap preserves
+        // the legacy SecretRef (because it resolves now), so we rely on
+        // `replace_secret_ref_with_literal` to explicitly swap the SecretRef
+        // for the literal JWT that maic_login just received. The bootstrap
+        // call alone is not enough — this is intentional to keep the
+        // bootstrap idempotent for users who actually have a working
+        // SecretRef + env-var-set setup.
+        let _lock = lock_env();
+        let _g = fresh_env();
+        // Pre-existing entry with a SecretRef (the legacy v1.0.0 / v1.0.1 /
+        // v1.0.2 shape — Lesson 444 didn't write SecretRefs, but pre-Lesson-444
+        // installs did, and we want to migrate them on first login).
+        let path = openclaw_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let pre_existing = serde_json::json!({
+            "gateway": {"mode": "local", "auth": {"mode": "none"}},
+            "models": {
+                "providers": {
+                    "maic": {
+                        "baseUrl": "https://maicserver.com",
+                        "apiKey": {
+                            "source": "env",
+                            "provider": "default",
+                            "id": "MAIC_API_KEY"
+                        },
+                        "api": "openai-completions",
+                        "models": [{"id": "milagro-dev", "name": "MAIC default"}]
+                    }
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&pre_existing).unwrap()).unwrap();
+
+        // Simulate what maic_login does: set the env var (carrying the JWT),
+        // then run the post-login cleanup helpers.
+        env::set_var("MAIC_API_KEY", "newly-logged-in-jwt");
+        let _ = ensure_maic_provider_config().expect("bootstrap ok");
+        // The bootstrap alone would preserve the SecretRef (it now resolves
+        // because env is set). The literal-replace helper is what migrates
+        // legacy setups to the new shape.
+        let replaced = replace_secret_ref_with_literal();
+        assert!(replaced, "replace_secret_ref_with_literal should report it wrote");
+
+        // The SecretRef must have been replaced with the literal JWT.
+        let cfg = read_maic_root();
+        let entry = cfg
+            .get("models")
+            .and_then(|m| m.get("providers"))
+            .and_then(|p| p.get("maic"))
+            .expect("maic provider entry");
+        assert_eq!(
+            entry.get("apiKey").and_then(|v| v.as_str()),
+            Some("newly-logged-in-jwt"),
+            "legacy SecretRef should be replaced with the literal JWT on login"
+        );
+    }
+
+    #[test]
+    fn replace_secret_ref_is_idempotent_when_already_literal_and_correct() {
+        // Lesson 449: if the apiKey is already the correct literal, the
+        // helper must be a no-op (don't churn the file) AND return true
+        // (so callers don't log "nothing happened" warnings).
+        let _lock = lock_env();
+        let _g = fresh_env();
+        let path = openclaw_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let pre_existing = serde_json::json!({
+            "gateway": {"mode": "local", "auth": {"mode": "none"}},
+            "models": {
+                "providers": {
+                    "maic": {
+                        "baseUrl": "https://maicserver.com",
+                        "apiKey": "existing-correct-jwt",
+                        "api": "openai-completions",
+                        "models": [{"id": "milagro-dev", "name": "MAIC default"}]
+                    }
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&pre_existing).unwrap()).unwrap();
+        env::set_var("MAIC_API_KEY", "existing-correct-jwt");
+
+        let replaced = replace_secret_ref_with_literal();
+        assert!(replaced);
+
+        // File should still parse and have the correct literal.
+        let cfg = read_maic_root();
+        let entry = cfg
+            .get("models")
+            .and_then(|m| m.get("providers"))
+            .and_then(|p| p.get("maic"))
+            .expect("maic provider entry");
+        assert_eq!(
+            entry.get("apiKey").and_then(|v| v.as_str()),
+            Some("existing-correct-jwt")
+        );
+    }
+
+    #[test]
+    fn replace_secret_ref_overwrites_wrong_literal() {
+        // Lesson 449: if the existing literal is wrong (e.g. user logged in
+        // as a different account, or stale token from a prior session), the
+        // helper overwrites with the current env var value.
+        let _lock = lock_env();
+        let _g = fresh_env();
+        let path = openclaw_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let pre_existing = serde_json::json!({
+            "gateway": {"mode": "local", "auth": {"mode": "none"}},
+            "models": {
+                "providers": {
+                    "maic": {
+                        "baseUrl": "https://maicserver.com",
+                        "apiKey": "old-stale-jwt",
+                        "api": "openai-completions",
+                        "models": [{"id": "milagro-dev", "name": "MAIC default"}]
+                    }
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&pre_existing).unwrap()).unwrap();
+        env::set_var("MAIC_API_KEY", "new-correct-jwt");
+
+        let replaced = replace_secret_ref_with_literal();
+        assert!(replaced);
+
+        let cfg = read_maic_root();
+        let entry = cfg
+            .get("models")
+            .and_then(|m| m.get("providers"))
+            .and_then(|p| p.get("maic"))
+            .expect("maic provider entry");
+        assert_eq!(
+            entry.get("apiKey").and_then(|v| v.as_str()),
+            Some("new-correct-jwt"),
+            "stale literal should be replaced with the new env var value"
+        );
+    }
+
+    #[test]
     fn tool_execution_param_pinned_to_client() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "any-key");
 
@@ -1643,5 +2074,51 @@ mod tests {
         assert!(is_empty_api_key(&serde_json::json!(null)));
         // Scalar
         assert!(is_empty_api_key(&serde_json::json!(42)));
+    }
+
+    #[test]
+    fn is_unresolvable_api_key_checks_env_var() {
+        let _lock = lock_env();
+        let _g = fresh_env();
+
+        // Literal non-empty → always resolvable.
+        assert!(!is_unresolvable_api_key(&serde_json::json!("abc")));
+
+        // SecretRef with empty id → unresolvable (delegates to is_empty_api_key).
+        assert!(is_unresolvable_api_key(&serde_json::json!({
+            "source": "env", "provider": "default", "id": ""
+        })));
+
+        // SecretRef to MAIC_API_KEY + env var NOT SET → unresolvable.
+        // This is the lesson 449 case: bootstrap ships a SecretRef, user
+        // hasn't set env, gateway would crash.
+        assert!(is_unresolvable_api_key(&serde_json::json!({
+            "source": "env", "provider": "default", "id": "MAIC_API_KEY"
+        })));
+
+        // Set the env var → same SecretRef now resolves → NOT unresolvable.
+        env::set_var("MAIC_API_KEY", "live-jwt-token");
+        assert!(!is_unresolvable_api_key(&serde_json::json!({
+            "source": "env", "provider": "default", "id": "MAIC_API_KEY"
+        })));
+
+        // Empty env var → unresolvable.
+        env::set_var("MAIC_API_KEY", "");
+        assert!(is_unresolvable_api_key(&serde_json::json!({
+            "source": "env", "provider": "default", "id": "MAIC_API_KEY"
+        })));
+
+        // Whitespace-only env var → unresolvable.
+        env::set_var("MAIC_API_KEY", "   ");
+        assert!(is_unresolvable_api_key(&serde_json::json!({
+            "source": "env", "provider": "default", "id": "MAIC_API_KEY"
+        })));
+
+        // Non-env sources (file/exec) → trust is_empty_api_key result.
+        // Non-empty id + non-env source → considered resolvable (we can't
+        // actually check file/exec resolution here without side effects).
+        assert!(!is_unresolvable_api_key(&serde_json::json!({
+            "source": "file", "provider": "default", "id": "/etc/key"
+        })));
     }
 }

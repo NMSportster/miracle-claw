@@ -354,3 +354,103 @@ match the installable state. v5 is the installable state.
 10. Send a chat message → expect response from MAIC (Lesson 432 — actual release gate)
 
 [v1.0.2-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.1-rc2...bbb1ff0
+
+## [v1.0.3-rc1] — 2026-08-18 21:50 MDT (commit TBD)
+
+### Fixed
+- **Lesson 449 (localhost refused to connect after login) — `setup()` spawned the
+  launcher sidecar BEFORE first-run login completed, with `MAIC_API_KEY` still
+  unset in the launcher's process env. The openclaw gateway crashed at startup
+  with `SecretRefResolutionError: Environment variable "MAIC_API_KEY" is missing
+  or empty` and the webview hit `ERR_CONNECTION_REFUSED` on
+  `http://localhost:28789/`.** Three bugs in concert:
+  1. **Bug A (bootstrap early-return):** `ensure_maic_provider_config` treated
+     a SecretRef (`apiKey: {source:"env", id:"MAIC_API_KEY"}`) as a complete
+     entry and early-returned `MaicKeySource::Existing`. The SecretRef never
+     counts as complete at the bootstrap layer — only a literal non-empty
+     apiKey does. With `is_unresolvable_api_key(value)` added, the bootstrap
+     correctly falls through when a SecretRef's target env var is unset, so
+     `maic_login` can replace it with the literal JWT.
+  2. **Bug B (launcher spawn timing):** `setup()` spawned the launcher as soon
+     as the bootstrap returned, regardless of whether we had a usable key. With
+     no key in env the gateway fails its self-check and `launcher.exe` exits
+     within a second. The webview then has nothing to connect to. Fix:
+     `setup()` now defers the spawn until `maic_provider_configured = true`.
+  3. **Bug C (frontend navigation race):** the JS frontend called
+     `maic_login` then immediately `window.location.href =
+     "http://localhost:28789/"`. The Tauri→backend login completed, but the
+     gateway wasn't running yet, so the navigation hit ERR_CONNECTION_REFUSED
+     in the webview's address bar. Fix: new `start_gateway_after_login`
+     Tauri command that the frontend `await`s before navigation; it spawns
+     the launcher with the now-set env var and blocks until TCP connect
+     succeeds on `127.0.0.1:28789`.
+
+### Added
+- New Tauri command `start_gateway_after_login`. Spawns the launcher sidecar
+  with `MAIC_API_KEY` now set in the parent process env, waits for the
+  gateway to bind `127.0.0.1:28789`, returns once reachable. Defensively
+  refuses to run if `MAIC_API_KEY` is still missing (caller must call
+  `maic_login` first).
+- New helper `replace_secret_ref_with_literal()` that runs after `maic_login`
+  succeeds. Reads `MAIC_API_KEY` from env, replaces any legacy SecretRef in
+  `models.providers.maic.apiKey` with the literal JWT. Idempotent — returns
+  `true` if the disk now contains the correct literal (written or already
+  there), `false` only when the env var is missing or the openclaw.json
+  read failed. This is the explicit "fix the legacy config" step that
+  complements Bug A's "don't claim the entry is complete when it isn't"
+  logic.
+- New helper `is_unresolvable_api_key(value)` (used by the bootstrap). A
+  SecretRef is "unresolvable" when its target env var is missing or empty
+  in process env — i.e. the openclaw gateway would crash trying to resolve
+  it. Distinct from `is_empty_api_key` which only checks syntactic emptiness.
+- Refactored launcher spawn into `spawn_launcher_and_wait(app_handle, port,
+  timeout)`. Used by both `setup()` (returning users with a key already in
+  place) and `start_gateway_after_login` (post-login spawn). Replaces the
+  duplicated spawn logic that was inline in `setup`.
+
+### Verified
+- `cargo check --bin miracle-claw --lib` — clean
+- `cargo test --lib` — **11/11 pass** (added 5 new tests):
+  - `is_unresolvable_api_key_checks_env_var` — SecretRef env vars
+    (set/unset/empty/whitespace) classified correctly
+  - `existing_secret_ref_with_no_env_var_falls_through_to_login_required` —
+    Bug A regression: SecretRef + no env = `LoginRequired` (not `Existing`)
+  - `existing_entry_with_secret_ref_is_preserved_when_env_set` — user-
+    customized configs with working SecretRef + env set are preserved
+  - `login_replaces_legacy_secret_ref_with_literal` — Bug C regression:
+    `maic_login` post-conditions guarantee the literal JWT is on disk
+  - `replace_secret_ref_is_idempotent_when_already_literal_and_correct` —
+    no churn when the disk already has the right literal
+  - `replace_secret_ref_overwrites_wrong_literal` — stale tokens get
+    refreshed
+  - All 6 prior tests still pass (idempotency, env-var-key, etc.)
+- Also fixed a latent test infrastructure bug: `ENV_LOCK` was using
+  `lock().unwrap()` which poisoned the mutex when a test panicked, taking
+  out all subsequent tests. Now uses `lock_or_recover()` that falls through
+  to `into_inner()` on poisoning.
+
+### Installer
+- **File:** `dist-installers/windows/MiracleClaw_1.0.3_x64-setup.exe`
+- **MD5:** TBD (after rebuild)
+- **Size:** TBD
+- **Path on David's desktop:** `C:\Users\Adeal\Desktop\MiracleClaw_1.0.3_x64-setup.exe` (after rebuild)
+
+### Test plan (Lesson 432 chat roundtrip — release gate)
+1. `taskkill /F /IM miracle-claw.exe /T; taskkill /F /IM node.exe /T` (clean state)
+2. Uninstall any existing MC via Settings → Apps (or `rm -rf "%LOCALAPPDATA%\Programs\MiracleClaw"`)
+3. Run v1.0.3 installer from Desktop (upgrade-over-install is OK since the
+   upstream Lesson 430 NSIS pre-install taskkill handles the running process)
+4. Verify NO Abort/Retry/Ignore dialog (Lesson 430 fix)
+5. Launch `miracle-claw.exe` → expect login modal to appear (Lesson 444 fix)
+6. Enter `championnm@yahoo.com` + password → submit
+7. Verify NO 422 error (Lesson 447 fix)
+8. Verify NO `ERR_CONNECTION_REFUSED` (Lesson 449 fix) — webview shows
+   "Starting gateway…" briefly, then redirects to `http://localhost:28789/`
+9. Verify JWT baked into `openclaw.json` as literal string under
+   `models.providers.maic.apiKey` (Lesson 449 fix, Bug C)
+10. Modal closes, chat UI loads at `http://localhost:28789/` (Lesson 449
+    fix, Bug B+C combined)
+11. Send a chat message → expect response from MAIC (Lesson 432 — actual
+    release gate)
+
+[v1.0.3-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.2-rc1...TBD
