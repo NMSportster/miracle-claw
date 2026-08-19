@@ -455,7 +455,7 @@ match the installable state. v5 is the installable state.
 
 [v1.0.3-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.2-rc1...bdbe2cf
 
-## [v1.0.4-rc1] — 2026-08-18 22:55 MDT (commit pending)
+## [v1.0.4-rc1] — 2026-08-18 22:55 MDT (commit `63bc70c`)
 
 ### Fixed
 - **Lesson 450 (chat returns "The selected model was not found by the
@@ -530,4 +530,4 @@ match the installable state. v5 is the installable state.
 10. Verify the selected model in the response is `milagro-dev` (the
     default in `src/main.js`)
 
-[v1.0.4-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.3-rc1...HEAD
+[v1.0.4-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.3-rc1...63bc70c
