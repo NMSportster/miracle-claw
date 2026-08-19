@@ -1984,6 +1984,61 @@ fn start_gateway_after_login(
     spawn_launcher_and_wait(&app_handle, OPENCLAW_PORT, Duration::from_secs(15))
 }
 
+/// Tauri command: openclaw_open_window (Lesson 461).
+///
+/// Spawns (or focuses, if already open) a dedicated webview window that
+/// hosts the OpenClaw chat UI at http://localhost:28789/. Lives separately
+/// from the dashboard so the user can keep the dashboard alive while
+/// chatting, and so a popup-blocked `window.open()` from the dashboard
+/// cannot permanently navigate the dashboard away.
+///
+/// Returns Ok("created") if a new window was spawned, Ok("focused") if
+/// an existing one was brought to front, Err(msg) on failure.
+#[tauri::command]
+fn openclaw_open_window(
+    app_handle: tauri::AppHandle,
+) -> Result<&'static str, String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    const WINDOW_LABEL: &str = "openclaw-chat";
+    const CHAT_URL: &str = "http://localhost:28789/";
+
+    // If the window already exists (user clicked the OpenClaw tile twice),
+    // just focus it and bail. Don't create a second one.
+    if let Some(existing) = app_handle.get_webview_window(WINDOW_LABEL) {
+        let _ = existing.set_focus();
+        let _ = existing.unminimize();
+        eprintln!("[miracle-claw] openclaw-chat window already open — focusing");
+        return Ok("focused");
+    }
+
+    // Spawn the chat window. Tauri 2 requires:
+    //   - A unique label (we use WINDOW_LABEL).
+    //   - A WebviewUrl (we point at the bundled chat gateway).
+    //   - The label must be allowed in capabilities/openclaw.json —
+    //     otherwise the runtime rejects the window.
+    let builder = WebviewWindowBuilder::new(
+        &app_handle,
+        WINDOW_LABEL,
+        WebviewUrl::External(CHAT_URL.parse().map_err(|e| {
+            format!("invalid CHAT_URL {CHAT_URL:?}: {e}")
+        })?),
+    )
+    .title("MiracleClaw — OpenClaw Chat")
+    .inner_size(1280.0, 800.0)
+    .min_inner_size(800.0, 560.0)
+    .resizable(true)
+    .center();
+
+    builder.build().map_err(|e| {
+        eprintln!("[miracle-claw] openclaw-chat spawn failed: {}", e);
+        format!("could not create chat window: {e}")
+    })?;
+
+    eprintln!("[miracle-claw] openclaw-chat window created → {}", CHAT_URL);
+    Ok("created")
+}
+
 // ----------------------------------------------------------------------------
 // v1.0.7: tier + quota + nudge Tauri commands.
 //
@@ -2098,6 +2153,7 @@ pub fn run() {
             maic_logout,
             silent_relogin,
             start_gateway_after_login,
+            openclaw_open_window,
             // v1.0.7: tier + nudge surface
             mc_get_tier,
             mc_get_nudge,

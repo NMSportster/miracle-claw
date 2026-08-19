@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "openclaw-capability",
+  "description": "Miracle Claw OpenClaw chat window — hosts the bundled chat gateway at localhost:28789. Loaded as a separate webview so the dashboard (main window) is not navigated away when the user opens chat. The launcher sidecar is already spawned by the main window; this window just consumes the running gateway.",
+  "windows": ["openclaw-chat"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:webview:default",
+    "core:event:default"
+  ]
+}

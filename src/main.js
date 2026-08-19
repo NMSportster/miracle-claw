@@ -59,6 +59,17 @@ async function renderDashboard() {
     invoke("mc_get_nudge"),
   ]);
 
+  // If the tier fetch failed with "not logged in", the keychain is empty
+  // AND openclaw.json has no api key. Show a sign-in tile instead of a
+  // half-rendered dashboard. (Lesson 461 follow-up: previously this
+  // rendered with "Unknown" tier and an em-dash usage bar — David had to
+  // discover that the tier badge was clickable to escape.)
+  if (tierResult.status === "rejected" &&
+      String(tierResult.reason).includes("not logged in")) {
+    renderLogin("https://maicserver.com");
+    return;
+  }
+
   const tier = tierResult.status === "fulfilled" ? tierResult.value : null;
   const nudge = nudgeResult.status === "fulfilled" ? nudgeResult.value : null;
 
@@ -148,27 +159,19 @@ async function openOpenClaw() {
     label.textContent = "Starting…";
   }
   try {
-    // Spawn the gateway (or confirm it's already up). Wait up to 15s for
-    // the launcher to come up on localhost:28789. The promise only
-    // resolves once the port is reachable, so window.open() below will
-    // hit a live URL.
+    // Make sure the gateway is up. Cheap no-op if already running.
     const gw = await invoke("start_gateway_after_login");
     console.log("[dashboard] gateway ready:", gw);
 
-    const win = window.open(
-      "http://localhost:28789/",
-      "openclaw-chat",
-      "width=1280,height=800"
-    );
-    if (!win) {
-      // Popups blocked or webview policy denied the new window — fall
-      // back to navigating the same window so the user is never stuck
-      // staring at the dashboard with no way out.
-      console.warn("[dashboard] window.open returned null; navigating in place");
-      window.location.href = "http://localhost:28789/";
-    }
+    // Spawn (or focus) the dedicated OpenClaw chat webview window.
+    // Lesson 461: do NOT use window.open() — Tauri's main webview silently
+    // blocks popups and the dashboard would lose its place. The Tauri
+    // command creates a sibling webview window that lives independently
+    // of the dashboard.
+    const result = await invoke("openclaw_open_window");
+    console.log("[dashboard] openclaw window:", result);
   } catch (err) {
-    console.error("[dashboard] start_gateway_after_login failed:", err);
+    console.error("[dashboard] could not open OpenClaw:", err);
     showFatal(`Could not open OpenClaw: ${escapeHtml(err)}`);
   } finally {
     if (tile) {
