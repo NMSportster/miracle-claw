@@ -355,7 +355,7 @@ match the installable state. v5 is the installable state.
 
 [v1.0.2-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.1-rc2...bbb1ff0
 
-## [v1.0.3-rc1] — 2026-08-18 21:50 MDT (commit TBD)
+## [v1.0.3-rc1] — 2026-08-18 21:50 MDT (commit `bdbe2cf`)
 
 ### Fixed
 - **Lesson 449 (localhost refused to connect after login) — `setup()` spawned the
@@ -453,4 +453,4 @@ match the installable state. v5 is the installable state.
 11. Send a chat message → expect response from MAIC (Lesson 432 — actual
     release gate)
 
-[v1.0.3-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.2-rc1...TBD
+[v1.0.3-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.2-rc1...bdbe2cf
