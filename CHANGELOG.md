@@ -1291,3 +1291,125 @@ without touching the handle.
 - v1.1.0 dashboard pivot — still deferred.
 - Once rc3 verified → bump 1.0.9-rc3 → 1.0.9 (final) and promote Lesson
   466 to MEMORY.md.
+
+## [v1.0.9-rc4] — 2026-08-19 16:25 MDT (HTTP-level readiness probe)
+
+### What rc4 fixes
+
+David's 16:19 MDT sidecar log exposed that the rc3 probe was too coarse.
+Sequence from his install:
+
+```
+16:17:21  http server listening (4.9s)
+16:17:22  gateway ready
+16:17:28  maic_login success → JWT injected → triggers config change
+16:17:29  hot reload applied → openclaw respawns itself briefly
+16:17:??  start_gateway_after_login called (tile click)
+          ├─ rc3 TCP probe: SUCCEEDS (old node still bound during reload)
+          └─ returns Ok(()) — no kill, no respawn ✅
+16:17:??  openclaw_open_window called next
+          ├─ TCP probe: SUCCEEDS
+          └─ HTTP probe: FAILS (10060) — server mid-reload, not serving
+16:17:??  error returned: "OpenClaw gateway port is open but not serving the chat UI"
+```
+
+rc3 prevented the respawn-on-every-click cycle (Lesson 466 fix held), but
+the TCP-only probe returned Ok on stale port-holders. The HTTP probe in
+`openclaw_open_window` correctly caught the stale state and refused to
+open the window, but the user experience was a dead-end error instead of
+chat.
+
+### The fix (1 function, 12 line delta vs rc3)
+
+Replace `TcpStream::connect_timeout(500ms)` in `start_gateway_after_login`
+with `check_http_ready("http://127.0.0.1:28789/", Duration::from_millis(500))`:
+
+```rust
+// rc4 idempotency probe (Lesson 466 + Lesson 467)
+match check_http_ready(
+    "http://127.0.0.1:28789/",
+    std::time::Duration::from_millis(500),
+) {
+    Ok(status) => {
+        log_to_file(&format!(
+            "start_gateway_after_login: idempotent no-op — gateway already serving (HTTP {})",
+            status
+        ));
+        return Ok(());
+    }
+    Err(e) => {
+        log_to_file(&format!(
+            "start_gateway_after_login: HTTP probe failed ({}); proceeding to clean+respawn",
+            e
+        ));
+    }
+}
+```
+
+If `GET /` returns 2xx → return Ok (gateway genuinely ready, no-op).
+If port unbound OR HTTP fails → fall through to existing kill+respawn
+path (orphan-killer catches stale pid, fresh spawn starts).
+
+### Symmetry win
+
+`start_gateway_after_login` and `openclaw_open_window` now check the same
+readiness signal (HTTP 2xx from `check_http_ready`). Both fall back to
+the same kill+respawn path on failure. The two click-tile functions are
+no longer making different assumptions about what "ready" means.
+
+### Behavior matrix (rc3 → rc4)
+
+| State at click time | rc3 result | rc4 result |
+|---|---|---|
+| Gateway serving normally | no-op ✅ | no-op ✅ |
+| Tile click during hot reload | no-op → HTTP probe fails in `openclaw_open_window` → error | kill+respawn → clean start |
+| Orphan from prior session | no-op → orphan keeps port → HTTP fails → error | kill+respawn → orphan-killer catches stale → clean |
+| First click after login | no-op (TCP succeeds within 4.9s) | no-op (HTTP also succeeds within ~4.9s) |
+
+### Lesson 467 (new — promoted)
+
+**TCP-port-bound is not gateway-ready.** A bare `TcpStream::connect_timeout`
+returns success on any process holding the port — including dying nodes
+mid-reload, orphans from earlier sessions, even non-openclaw processes
+that happened to grab the port. Real readiness = HTTP 2xx from `GET /`.
+
+**Anti-overengineering rule**: when probing "is the service ready?", check
+the **highest-level signal the caller will use**. For an HTTP gateway,
+that's `GET /` returning 2xx — not a TCP connect, not a PID lookup, not
+a process list scan. The TCP probe is a necessary precondition but not
+sufficient on its own.
+
+**Symptom signature**: TCP connect succeeds but the actual operation
+(HTTP GET, gRPC call, DB query) times out. The service is mid-shutdown,
+mid-reload, or never started serving despite binding the port.
+
+**Fix**: probe at the application layer (HTTP/1.1 GET for HTTP services,
+HELLO/EHLO for SMTP, PING for Redis, etc.) before declaring readiness.
+
+### Files changed
+
+- `src-tauri/src/lib.rs` — `start_gateway_after_login` probe swapped
+  from `TcpStream::connect_timeout` to `check_http_ready` (~12 line
+  delta from rc3)
+- `src-tauri/{Cargo.toml,tauri.conf.json}`, `package.json` — version
+  bump 1.0.9-rc3 → 1.0.9-rc4
+
+### What David needs to do for v1.0.9-rc4
+
+1. Install `MiracleClaw_1.0.9-rc4_x64-setup.exe` over rc3
+2. Login → dashboard renders → click OpenClaw tile (chat opens, one
+   spawn)
+3. Click the tile 4 more times — should refocus, log "idempotent no-op"
+   with HTTP 200 each time
+4. To trigger the cleanup path: while the chat window is open, change a
+   config setting that forces openclaw hot-reload (or kill the node
+   process externally and click the tile) — should respawn cleanly,
+   log "HTTP probe failed; proceeding to clean+respawn"
+5. Optional: share `%APPDATA%\MiracleClaw\miracle-claw.log` for the full
+   trace
+
+### Known follow-ups (deferred)
+
+- v1.1.0 dashboard pivot — still deferred.
+- Once rc4 verified → bump 1.0.9-rc4 → 1.0.9 (final) and promote Lesson
+  466 + Lesson 467 to MEMORY.md.

@@ -2369,26 +2369,31 @@ fn start_gateway_after_login(
         );
     }
 
-    // rc3 idempotency probe (Lesson 466): if the gateway is already serving
-    // on its port, this is a click-while-already-running. Skip the entire
-    // kill+respawn cycle. Without this, every tile click killed the launcher
-    // handle and respawned, which left orphan openclaw.mjs children holding
-    // 28789 → blank window on the next click.
-    match std::net::TcpStream::connect_timeout(
-        &format!("127.0.0.1:{}", OPENCLAW_PORT)
-            .parse()
-            .map_err(|e| format!("invalid addr: {e}"))?,
+    // rc4 idempotency probe (Lesson 466 + Lesson 467): TCP-port-bound is
+    // NOT gateway-ready. An orphan from a previous session, an openclaw
+    // mid-hot-reload, or any stray process that grabbed the port can all
+    // satisfy TcpStream::connect_timeout() without actually serving the
+    // chat UI. Real readiness = HTTP 2xx from GET /. check_http_ready
+    // (already used by openclaw_open_window) does this in one round-trip.
+    //
+    // If the gateway is genuinely serving, return Ok immediately — skip
+    // the entire kill+respawn cycle (rc3 fix for the per-tile-click orphan
+    // pattern). If port is unbound OR HTTP probe fails, fall through to
+    // the existing kill+respawn path so the stale state gets cleaned.
+    match check_http_ready(
+        "http://127.0.0.1:28789/",
         std::time::Duration::from_millis(500),
     ) {
-        Ok(_) => {
-            log_to_file(
-                "start_gateway_after_login: idempotent no-op — gateway already serving",
-            );
+        Ok(status) => {
+            log_to_file(&format!(
+                "start_gateway_after_login: idempotent no-op — gateway already serving (HTTP {})",
+                status
+            ));
             return Ok(());
         }
         Err(e) => {
             log_to_file(&format!(
-                "start_gateway_after_login: port probe failed ({}); proceeding to spawn",
+                "start_gateway_after_login: HTTP probe failed ({}); proceeding to clean+respawn",
                 e
             ));
         }
