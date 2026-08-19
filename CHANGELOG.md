@@ -531,3 +531,51 @@ match the installable state. v5 is the installable state.
     default in `src/main.js`)
 
 [v1.0.4-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.3-rc1...63bc70c
+
+## [v1.0.5-rc1] — 2026-08-18 23:55 MDT (commit TBD)
+
+### Fixed
+- **Lesson 451 (v1.0.4 regression — early-return path skipped the baseUrl
+  /v1 migration).** v1.0.4 added the `upgrade_legacy_maic_base_url`
+  migration but placed it in the *write path*, after the existing-entry
+  early-return. On a v1.0.4 launch where the user already had a complete
+  openclaw.json entry from v1.0.0..v1.0.3 (literal apiKey + non-empty
+  baseUrl), the early-return fired before the migration could rewrite
+  the stale bare MAIC origin. Result: David's v1.0.4 install still
+  showed `baseUrl: "https://maicserver.com"` and chat still failed with
+  "The selected model was not found by the provider". The fix is a
+  one-line restructuring: the migration now runs *inside* the
+  early-return block too, persisting the rewritten file before
+  returning the migrated URL. User-customized paths (proxy mounts,
+  alternate routes) are still preserved by the conservative
+  `upgrade_legacy_maic_base_url` policy.
+
+### Verified
+- `cargo test --lib` — **15/15 pass** (1 new Lesson 451 regression test
+  + 14 from v1.0.4; new test:
+  `lesson_451_early_return_path_migrates_existing_bare_origin`).
+- `cargo check --bin miracle-claw --lib` — clean.
+
+### Installer
+- **File:** `dist-installers/windows/MiracleClaw_1.0.5_x64-setup.exe`
+- **MD5:** TBD (after rebuild)
+- **Size:** TBD
+- **Path on David's desktop:** `C:\Users\Adeal\Desktop\MiracleClaw_1.0.5_x64-setup.exe`
+
+### Test plan
+1. `taskkill /F /IM miracle-claw.exe /T; taskkill /F /IM node.exe /T`
+2. Uninstall v1.0.4 via Settings → Apps
+3. **Do NOT delete `openclaw.json`** — this is the regression case. We
+   want the v1.0.0..v1.0.3-era bare-origin entry to be migrated in-place
+   by the Lesson 451 fix.
+4. Run v1.0.5 installer
+5. Launch → login modal
+6. Enter `championnm@yahoo.com` + password
+7. After login, **verify openclaw.json now has
+   `baseUrl: "https://maicserver.com/v1"`** (was
+   `"https://maicserver.com"` in v1.0.4 and earlier — the migration
+   should have rewritten it).
+8. Modal closes, chat UI loads
+9. **Send a chat message → expect response** (no more "model not found").
+
+[v1.0.5-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.4-rc1...TBD

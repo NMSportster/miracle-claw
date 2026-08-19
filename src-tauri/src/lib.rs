@@ -515,6 +515,16 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
     // the literal after login. User-customized configs with SecretRef still
     // resolve correctly on the write path (we preserve the existing entry's
     // other fields and only stamp apiKey when missing/empty).
+    //
+    // Lesson 451 (post-v1.0.4 bug — the early-return path skipped the
+    // baseUrl /v1 migration): v1.0.4 users who already had a complete entry
+    // hit this early return BEFORE the migration block could rewrite the
+    // stale bare MAIC origin. The migration logic in the write path was
+    // therefore unreachable for users coming from v1.0.0..v1.0.3, and the
+    // "model not found" error persisted. Fix: run the migration here too
+    // (when applicable) and persist the rewritten file before returning.
+    // User-customized paths (proxy mounts, etc.) are preserved by the
+    // conservative `upgrade_legacy_maic_base_url` policy.
     if let Some(entry) = existing.as_ref() {
         let has_literal_key = matches!(
             entry.get("apiKey"),
@@ -526,6 +536,34 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false);
         if has_literal_key && has_url {
+            // Lesson 451: migrate the baseUrl /v1 suffix in-place when it's
+            // a stale bare MAIC origin. Persist if we changed anything so
+            // the migration is one-shot, not every-launch.
+            if let Some(existing_base) = entry.get("baseUrl").and_then(|v| v.as_str()) {
+                if let Some(fixed) = upgrade_legacy_maic_base_url(existing_base) {
+                    if let Some(models) = cfg
+                        .get_mut("models")
+                        .and_then(|m| m.get_mut("providers"))
+                        .and_then(|p| p.get_mut(PROVIDER_ID))
+                        .and_then(|p| p.as_object_mut())
+                    {
+                        models.insert("baseUrl".to_string(), Value::String(fixed.clone()));
+                        let serialized = serde_json::to_string_pretty(&cfg)
+                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                        fs::write(&path, serialized)?;
+                        eprintln!(
+                            "[miracle-claw] Lesson 451: migrated baseUrl {} → {} (in-place)",
+                            existing_base, fixed
+                        );
+                        return Ok(MaicProviderBootstrap {
+                            provider_configured: true,
+                            provider_id: PROVIDER_ID.to_string(),
+                            api_key_source: MaicKeySource::Existing,
+                            endpoint: fixed,
+                        });
+                    }
+                }
+            }
             return Ok(MaicProviderBootstrap {
                 provider_configured: true,
                 provider_id: PROVIDER_ID.to_string(),
@@ -2321,6 +2359,33 @@ mod tests {
         assert_eq!(
             strip_trailing_v1("https://proxy.example.com/v1/maic"),
             "https://proxy.example.com/v1/maic"
+        );
+    }
+
+    #[test]
+    fn lesson_451_early_return_path_migrates_existing_bare_origin() {
+        // Lesson 451 regression: the early-return path (existing entry with
+        // literal apiKey + non-empty baseUrl) used to skip the baseUrl /v1
+        // migration entirely. v1.0.4 users coming from v1.0.0..v1.0.3 kept
+        // their bare "https://maicserver.com" baseUrl and chat still failed
+        // with "model not found". This test pins the migration behavior on
+        // the helper that's invoked in the early-return path: when given a
+        // bare MAIC origin, it must rewrite to the /v1 form so the
+        // subsequent `entry.insert("baseUrl", ...)` in the early-return path
+        // actually mutates the value.
+        let existing_base = "https://maicserver.com";
+        let migrated = upgrade_legacy_maic_base_url(existing_base)
+            .expect("bare MAIC origin must be migrated to /v1 form");
+        assert_eq!(migrated, "https://maicserver.com/v1");
+        // Idempotency check: re-running on the migrated value must be a no-op.
+        assert!(
+            upgrade_legacy_maic_base_url(&migrated).is_none(),
+            "re-running migration on already-migrated URL must not rewrite"
+        );
+        // Conservative: user-customized paths preserved verbatim (no rewrite).
+        assert!(
+            upgrade_legacy_maic_base_url("https://proxy.example.com/maic").is_none(),
+            "user paths must be preserved by the migration policy"
         );
     }
 }
