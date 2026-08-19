@@ -250,3 +250,71 @@ match the installable state. v5 is the installable state.
 7. If 6 passes, **tag v1.0.1 at commit a5a5ed6**
 
 [v1.0.1-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.0...a5a5ed6
+
+---
+
+## [v1.0.1-rc2] — 2026-08-18 20:25 MDT (commit `47640b1`)
+
+### Fixed
+- **Lesson 430 (NSIS file lock) — `MiracleClaw_*_x64-setup.exe` overwrites an existing MC install without an Abort/Retry/Ignore dialog.** Symptom (David 19:01 MDT): trying to install v9 over v8 while MC was running gave NSIS error "Error opening file for writing: node.exe" — Tauri killed `miracle-claw.exe` via `CheckIfAppIsRunning`, but the orphaned `node.exe` child kept its file handle. Fix: custom NSIS template wired in via `tauri.conf.json: bundle.windows.nsis.template`. The `NSIS_HOOK_PREINSTALL` macro (recognized by Tauri's installer.nsi at line 641) runs BEFORE `CheckIfAppIsRunning` and force-kills both `node.exe` and `miracle-claw.exe`. `nsExec::ExecToLog` swallows error codes so installs without a running MC proceed normally. `Sleep 2000` gives the OS time to release file handles.
+
+- **Lesson 444 (first-run login UI) — opaque `missing-provider-auth` error on a fresh customer machine.** Symptom: MAIC provider config was wired to a `SecretRef` for `MAIC_API_KEY`, but on a fresh install the env var isn't set and the customer has no idea how to proceed. Fix: when no MAIC key is found at bootstrap time, `ensure_maic_provider_config()` returns `provider_configured: false` + `api_key_source: LoginRequired` + early-returns BEFORE `fs::write()` (critical Lesson 444 bug fix — initial impl had the early-return AFTER `fs::write()`, which would have written a half-populated provider entry to disk). The customer's `openclaw.json` stays clean. MC's frontend detects `needs_maic_login: true` via `first_run_report` and renders an email/password form. On submit, `maic_login(email, password)` POSTs to `https://maicserver.com/v1/auth/login` (via `ureq`, sync, ships with rustls-tls — no tokio weight), parses the JWT, sets `process.env.MAIC_API_KEY = token`, RE-RUNS `ensure_maic_provider_config()` to bake the JWT as a literal in `openclaw.json`, and the frontend redirects to `http://localhost:28789/`.
+
+### Added
+- **Frontend stack (vanilla HTML/JS, no framework):**
+  - `index.html` — Vite root, ~600 bytes built
+  - `src/main.js` — entry logic: `invoke('first_run_report')` → render form OR redirect
+  - `src/styles.css` — vanilla CSS, dark/light via `prefers-color-scheme`, ADeal auto-repair green `#22c55e` accent
+  - `vite.config.js` — port 1420, `strictPort: true`
+  - Total Vite output: ~7 KB
+- **Backend:**
+  - `MaicKeySource::LoginRequired` enum variant (replaces dead `EnvRef` variant)
+  - `#[tauri::command] fn maic_login(email, password) -> Result<MaicLoginInfo, String>`
+  - `MaicLoginInfo { token, email, tier, endpoint }` response struct
+  - `FirstRunReport { ..., needs_maic_login: bool }` extended
+  - `needs_maic_login_from_state()` helper
+  - `http_post_json_with_tls_fallback()` helper (ureq-based, 10s timeout, HTTPS first)
+  - `ENV_VAR_NAME` and `DEFAULT_ENDPOINT` constants hoisted to module scope (Lesson 444 scoping gotcha)
+  - `ensure_secrets_default_env_provider()` retained as `#[allow(dead_code)]` utility
+  - `read_maic_root()` made defensive (returns `serde_json::json!({})` if file not found)
+- **NSIS template (`src-tauri/installer.nsi`)** — Tauri 2's full default installer template with my `NSIS_HOOK_PREINSTALL` macro injected at line 68 (before the `!define` block).
+- **`Cargo.toml`**: `ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }` — sync HTTP, rustls-tls, no tokio.
+- **`tauri.conf.json`**:
+  - `build.frontendDist = "../dist"`, `build.devUrl = "http://localhost:1420"`
+  - `windows[0].url = "index.html"` (was `http://localhost:28789/`) — Tauri asset protocol (`tauri://localhost`) serves MC's bundled HTML
+  - `security.csp` extended with `frame-src http://localhost:28789;` for post-login redirect
+  - `bundle.windows.nsis.template = "installer.nsi"`
+  - Bumped `version` to `1.0.1`
+
+### Tests
+- `tests::no_env_var_returns_login_required_and_writes_no_provider` — asserts the early-return path correctly skips the provider write AND does NOT register `secrets.providers.default`.
+- All 6 unit tests pass.
+
+### Verified
+- `cargo check --bin miracle-claw --lib` — clean, no warnings
+- `cargo test --bin miracle-claw --lib` — 6/6 pass
+- `npx vite build` — dist/index.html (0.60 KB), dist/assets/index-*.css (2.84 KB), dist/assets/index-*.js (3.39 KB)
+- Docker cross-compile (`scripts/build-windows-docker.sh`) — full build completed in ~14 min (slow because makensis LZMA-compresses 31,185 resource files over a WSL→Windows 9P mount)
+- v9 installer extracted via 7z — `miracle-claw.exe` contains `maic_login`, `LoginRequired`, `first_run_report`, `needs_maic_login` strings ✓
+- `installer.nsi` hook verified via Tauri 2 source (`tauri-bundler-2.9.4/src/bundle/windows/nsis/installer.nsi` line 641)
+
+### Installer
+- **File:** `dist-installers/windows/MiracleClaw_1.0.1_x64-setup.exe` (filename v1.0.1 after version bump)
+- **MD5:** TBD (after rebuild with v1.0.1 version)
+- **Size:** TBD
+- **Format:** PE32 GUI NSIS
+- **Path on David's desktop:** `C:\Users\Adeal\Desktop\MiracleClaw_1.0.1_x64-setup.exe` (after rebuild)
+
+### Test plan (Lesson 432 chat roundtrip — release gate)
+1. `taskkill /F /IM miracle-claw.exe /T; taskkill /F /IM node.exe /T`
+2. `rm -rf "%APPDATA%\MiracleClaw"` (clean state)
+3. Run v1.0.1 installer from Desktop (upgrade-over-install path)
+4. Verify NO Abort/Retry/Ignore dialog appears (Lesson 430 fix)
+5. Verify `resources/node` 0-byte stub absent (Lesson 428 fix still holds)
+6. Launch `miracle-claw.exe` → expect login modal to appear (Lesson 444 fix)
+7. Enter `mc-test-pro@milagro.cloud` test credentials → submit
+8. Verify JWT baked into `openclaw.json` as literal string under `models.providers.maic.apiKey`
+9. Modal closes, chat UI loads at `http://localhost:28789/`
+10. Send a chat message → expect response from MAIC (Lesson 432 — actual release gate)
+
+[v1.0.1-rc2]: https://github.com/adealauto/miracle-claw/compare/v1.0.1-rc1...47640b1
