@@ -240,6 +240,10 @@ The 17-commit v1.0.0 release covers 3 install-test cycles:
 Lessons 423/424/425/426 captured in MEMORY.md. v1.0.0 is the release of record.
 
 Next: v1.0.1 backlog (ADeal green branding, code signing, auto-updater, launcher separate-crate refactor).
+**Active blocker for v1.0.1**: Lesson 430 (NSIS pre-kill for upgrade-over-install)
++ Lesson 444 (first-run login UI) — both blocking the v1.0.1 tag. Lesson 444 is
+implemented in this session (cargo check clean, 6/6 tests pass); Lesson 430 NSIS
+pre-step still pending.
 
 ## Lessons added this session (Day 2 — installer build)
 

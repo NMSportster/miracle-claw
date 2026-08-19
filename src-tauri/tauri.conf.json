@@ -4,7 +4,9 @@
   "version": "1.0.0",
   "identifier": "com.adealauto.miracle-claw",
   "build": {
-    "beforeBuildCommand": "bash scripts/build-launcher-sidecar.sh"
+    "beforeBuildCommand": "bash scripts/build-launcher-sidecar.sh && npx vite build",
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420"
   },
   "app": {
     "withGlobalTauri": true,
@@ -21,11 +23,11 @@
         "center": true,
         "visible": true,
         "decorations": true,
-        "url": "http://localhost:28789/"
+        "url": "index.html"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' http://localhost:28789; style-src 'self' http://localhost:28789 'unsafe-inline'; img-src 'self' data: http://localhost:28789; font-src 'self' data: http://localhost:28789; connect-src 'self' http://localhost:28789 ws://localhost:28789 ipc: https://ipc.localhost https://maicserver.com https://ollama.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none';"
+      "csp": "default-src 'self'; script-src 'self' http://localhost:28789; style-src 'self' http://localhost:28789 'unsafe-inline'; img-src 'self' data: http://localhost:28789; font-src 'self' data: http://localhost:28789; connect-src 'self' http://localhost:28789 ws://localhost:28789 ipc: https://ipc.localhost https://maicserver.com https://ollama.com; frame-src http://localhost:28789; object-src 'none'; base-uri 'self'; frame-ancestors 'none';"
     }
   },
   "bundle": {

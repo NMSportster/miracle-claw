@@ -50,6 +50,19 @@ mod launcher_info;
 use launcher_info::{launcher_binary_name, MAIC_PLUGIN_FILENAMES, OPENCLAW_PORT};
 
 // ----------------------------------------------------------------------------
+// Constants
+// ----------------------------------------------------------------------------
+
+/// Default MAIC endpoint. Overridable via MAIC_API_URL env var at runtime;
+/// the login UI shows whatever this resolves to so the customer knows
+/// which server they're signing into. Lesson 444.
+const DEFAULT_ENDPOINT: &str = "https://maicserver.com";
+
+/// MAIC API key env var. Used by `maic_login`, `needs_maic_login_from_state`,
+/// and the openclaw.json SecretRef path. Lesson 444.
+const ENV_VAR_NAME: &str = "MAIC_API_KEY";
+
+// ----------------------------------------------------------------------------
 // State we hold for the lifetime of the process
 // ----------------------------------------------------------------------------
 
@@ -69,10 +82,17 @@ struct FirstRunReport {
     openclaw_json_patched: bool,
     openclaw_json_already_patched: bool,
     /// Lesson 431: did setup() successfully wire `models.providers.maic`?
-    /// false means the chat panel will fail with `missing-provider-auth`.
+    /// false means the chat panel will fail with `missing-provider-auth`
+    /// AND the first-run login modal will be shown.
     maic_provider_configured: bool,
     /// Endpoint the MAIC provider is configured against (informational).
     maic_provider_endpoint: String,
+    /// Lesson 444: true when the MAIC provider is NOT configured because no
+    /// MAIC API key was available at setup time. The frontend must show the
+    /// login modal and call `maic_login` before the chat panel can render.
+    /// Distinct from `maic_provider_configured == false` for plugin install
+    /// errors — that case is a fatal installer bug, not a login prompt.
+    needs_maic_login: bool,
     launcher_spawned: bool,
     gateway_ready: bool,
     gateway_error: Option<String>,
@@ -451,11 +471,9 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
     // openclaw-channel 'existing' path semantics). Otherwise we wire the
     // SecretRef + register the env provider so the request-time resolver fills
     // it in.
-    const DEFAULT_ENDPOINT: &str = "https://maicserver.com";
     const DEFAULT_API: &str = "openai-completions";
     const DEFAULT_MODEL_ID: &str = "milagro-dev";
     const PROVIDER_ID: &str = "maic";
-    const ENV_VAR_NAME: &str = "MAIC_API_KEY";
     const SECRET_PROVIDER_ALIAS: &str = "default";
 
     let path = openclaw_json_path();
@@ -540,14 +558,50 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
     // MAIC_API_KEY from the process env. The user fixes the chat by setting
     // MAIC_API_KEY + restarting; openclaw will surface a clear "secret not
     // found in env" error instead of the opaque missing-provider-auth.
+    //
+    // LoginRequired path (Lesson 444): if no literal key came from anywhere,
+    // signal the frontend that it needs to collect one via maic_login() before
+    // chat will work. We DO NOT write a SecretRef in that case — that would
+    // produce a guaranteed-failing config and complicate the user-facing
+    // message. The frontend blocks the chat panel on `LoginRequired`.
     let (key_source, resolved_key) = match resolved_key {
         Some(k) => (key_source, Some(k)),
-        None => {
-            // No literal key — wire a SecretRef so the user can set MAIC_API_KEY
-            // in their env and chat works without re-running setup().
-            (MaicKeySource::EnvRef, None)
-        }
+        None => (MaicKeySource::LoginRequired, None),
     };
+
+    // Lesson 444 — LoginRequired early return.
+    //
+    // When no key is available, we DO NOT write a placeholder provider entry
+    // into openclaw.json. The chat panel blocks on the first-run login modal
+    // instead, and `maic_login` re-runs `ensure_maic_provider_config` after
+    // MAIC_API_KEY is set in the process env (at which point we hit the
+    // literal-key branch and write the full provider entry).
+    //
+    // Why we don't write a SecretRef like the Lesson 431 v2 path used to:
+    //   - A SecretRef to MAIC_API_KEY produces a guaranteed-failing config
+    //     when no env var is set; openclaw will surface a "secret not found"
+    //     error and the user has no clear next step.
+    //   - LoginRequired is the *customer-facing* solution: collect the key
+    //     via the login modal, bake it as a literal, and chat just works.
+    //   - This also keeps openclaw.json clean — no half-populated maic
+    //     provider entry that needs a separate migration to clean up.
+    if matches!(key_source, MaicKeySource::LoginRequired) {
+        let resolved_url = env_url
+            .clone()
+            .or_else(|| {
+                read_system_openclaw_maic_base_url().ok().flatten()
+            })
+            .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+        eprintln!(
+            "[miracle-claw] MAIC provider login required (no key in env, system openclaw, or SecretRef) — chat panel will block on login modal"
+        );
+        return Ok(MaicProviderBootstrap {
+            provider_configured: false,
+            provider_id: PROVIDER_ID.to_string(),
+            api_key_source: key_source,
+            endpoint: resolved_url,
+        });
+    }
 
     let resolved_url = env_url
         .clone()
@@ -655,14 +709,6 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
     let providers = providers_obj.as_object_mut().unwrap();
     providers.insert(PROVIDER_ID.to_string(), provider_entry);
 
-    // Lesson 431 v2: if we wrote a SecretRef (no literal key was available),
-    // register the `default` env provider so the request-time resolver can
-    // pull MAIC_API_KEY from the OS env. Idempotent — we only register if
-    // missing.
-    if matches!(key_source, MaicKeySource::EnvRef) {
-        ensure_secrets_default_env_provider(&mut cfg, ENV_VAR_NAME, SECRET_PROVIDER_ALIAS);
-    }
-
     // Serialize back. We preserve the user's other fields exactly (no
     // schema-strip pass) — openclaw's gateway does its own validation
     // and we only added keys we know are valid.
@@ -693,6 +739,11 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
 /// Schema (zod-schema.core `SecretsConfigSchema`):
 ///   secrets.providers.default = { source: "env", allowlist: ["MAIC_API_KEY"] }
 ///   secrets.defaults.env = "default"
+#[allow(dead_code)] // Retained as a documented utility; Lesson 444 made the
+                    // SecretRef fallback path unreachable, so no caller wires
+                    // it. Kept so future re-enable of the SecretRef fallback
+                    // (e.g. for air-gapped installs with no login UI) is one
+                    // line away.
 fn ensure_secrets_default_env_provider(cfg: &mut Value, env_var: &str, alias: &str) {
     if !cfg.is_object() {
         *cfg = serde_json::json!({});
@@ -774,16 +825,23 @@ fn is_empty_api_key(value: &Value) -> bool {
 enum MaicKeySource {
     /// MAIC_API_KEY env var was set; we wrote the literal string into apiKey.
     Env,
-    /// Inline SecretRef { source: "env", provider: "default", id: "MAIC_API_KEY" }
-    /// — openclaw resolves it at request time.
-    EnvRef,
     /// Read from system openclaw's `models.providers.maic.apiKey`.
     SystemOpenClaw,
     /// User already had a complete provider entry in their openclaw.json.
     Existing,
-    /// No key was available AND we fell back to EnvRef (legacy fallback path,
-    /// also implies the provider is still wired via SecretRef).
+    /// No key came from any source at all (env empty, system openclaw had no
+    /// provider entry). This is distinct from `LoginRequired` only in that
+    /// `None` is set transiently while we're still trying to bootstrap — by
+    /// the time the bootstrap function returns, `None` has been replaced
+    /// with `LoginRequired` (Lesson 444).
     None,
+    /// No key was available at all — the frontend must collect one via the
+    /// first-run MAIC login flow (`maic_login` Tauri command) before the
+    /// chat panel can render. The provider IS NOT configured in openclaw.json
+    /// (we early-return without writing a placeholder), but the bootstrap
+    /// result still reports `provider_id=maic` so the login UI knows where to
+    /// point the customer.
+    LoginRequired,
 }
 
 #[derive(Debug)]
@@ -923,10 +981,229 @@ fn first_run_report(state: tauri::State<'_, AppState>) -> FirstRunReport {
         openclaw_json_patched: false,
         openclaw_json_already_patched: false,
         maic_provider_configured,
-        maic_provider_endpoint,
+        maic_provider_endpoint: maic_provider_endpoint.clone(),
+        // Lesson 444: surface whether the login modal should show. We read the
+        // live openclaw.json instead of re-running ensure_maic_provider_config
+        // (which has write side-effects we don't want here). If the provider
+        // is unconfigured AND no api key is in scope (no env var, no literal
+        // string in config, no SecretRef whose env var is set), we need login.
+        needs_maic_login: needs_maic_login_from_state(&maic_provider_endpoint),
         launcher_spawned,
         gateway_ready,
         gateway_error: None,
+    }
+}
+
+/// Returns true iff the chat panel cannot render without a MAIC login.
+/// Computed from the live state at the moment of first_run_report — does
+/// NOT re-write openclaw.json.
+fn needs_maic_login_from_state(_provider_endpoint: &str) -> bool {
+    // If a MAIC_API_KEY env var is set, we have a key — no login needed.
+    if let Ok(k) = std::env::var(ENV_VAR_NAME) {
+        if !k.trim().is_empty() {
+            return false;
+        }
+    }
+    // Otherwise, check openclaw.json. If the apiKey is a non-empty literal
+    // string, we're good. If it's a SecretRef or empty, we need login.
+    let path = openclaw_json_path();
+    if !path.is_file() {
+        return true; // Fresh install, no config = no key
+    }
+    let raw = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return true,
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return true,
+    };
+    let api_key = parsed
+        .get("models")
+        .and_then(|m| m.get("providers"))
+        .and_then(|p| p.get("maic"))
+        .and_then(|e| e.get("apiKey"));
+    match api_key {
+        Some(serde_json::Value::String(s)) => s.trim().is_empty(),
+        // SecretRef or missing — we treat both as login-required for the
+        // frontend's purposes (the user already had a SecretRef, but it's
+        // now broken since no env var is set — login is the fix).
+        _ => true,
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Tauri command: maic_login (Lesson 444)
+//
+// Called by the first-run login modal. POSTs {email, password} to
+// `MAIC_API_URL/v1/auth/login`, returns the JWT, then triggers a re-bootstrap
+// of the MAIC provider config (with MAIC_API_KEY now set in the parent
+// process's env). After this returns successfully, the chat panel will
+// unblock because openclaw.json now has a real apiKey.
+//
+// On failure, returns the error message verbatim so the login modal can
+// surface it. Errors do NOT leak the password back to the frontend.
+// ----------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Debug)]
+struct MaicLoginInfo {
+    /// JWT bearer token — also known as MAIC_API_KEY in the provider config.
+    token: String,
+    /// User email returned by /v1/auth/login (may equal the input).
+    email: String,
+    /// Resolved tier: 'free', 'pro', 'pro_plus', 'team', 'enterprise' (or
+    /// whatever the server returns). Free tier is the default.
+    tier: String,
+    /// Endpoint the login was against (for the UI to show "logged in to X").
+    endpoint: String,
+}
+
+#[tauri::command]
+fn maic_login(email: String, password: String) -> Result<MaicLoginInfo, String> {
+    let endpoint = std::env::var("MAIC_API_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+
+    // Validate the email shape early to avoid a round-trip on obvious typos.
+    if !email.contains('@') || email.trim().is_empty() {
+        return Err("Please enter a valid email address.".to_string());
+    }
+    if password.is_empty() {
+        return Err("Password cannot be empty.".to_string());
+    }
+
+    let body = serde_json::json!({
+        "email": email.trim(),
+        "password": password,
+    })
+    .to_string();
+
+    let response_body = http_post_json_with_tls_fallback(&endpoint, "/v1/auth/login", &body)
+        .map_err(|e| format!("Login request failed: {}", e))?;
+
+    // The endpoint returns { token, user: {email, tier, ...} } on success.
+    // Older /v1/users/login paths return { token }. We accept both.
+    let parsed: serde_json::Value = serde_json::from_str(&response_body)
+        .map_err(|e| format!("Login response could not be parsed: {}", e))?;
+
+    let token = parsed
+        .get("token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            format!(
+                "Login succeeded but no token in response. Server said: {}",
+                response_body.chars().take(200).collect::<String>()
+            )
+        })?;
+
+    let resolved_email = parsed
+        .get("user")
+        .and_then(|u| u.get("email"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(email.trim())
+        .to_string();
+
+    let tier = parsed
+        .get("user")
+        .and_then(|u| u.get("tier"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("free")
+        .to_string();
+
+    // Set MAIC_API_KEY in *this* process's env so that subsequent calls
+    // to ensure_maic_provider_config() will write the provider entry as a
+    // literal (not a SecretRef). The setting does NOT persist across
+    // process restarts — we ALSO write the key as a literal into
+    // openclaw.json, so it survives.
+    std::env::set_var(ENV_VAR_NAME, &token);
+
+    // Re-bootstrap. This now hits the literal-key branch (resolved_key = Some)
+    // and writes the full provider entry into openclaw.json.
+    let bootstrap = ensure_maic_provider_config().map_err(|e| {
+        format!(
+            "Login succeeded but provider config could not be written: {}",
+            e
+        )
+    })?;
+
+    if !bootstrap.provider_configured {
+        return Err(format!(
+            "Login succeeded but provider still not configured (key_source={:?}). \
+             Please restart Miracle Claw and try again.",
+            bootstrap.api_key_source
+        ));
+    }
+
+    eprintln!(
+        "[miracle-claw] maic_login: success — user={}, tier={}, key_source={:?}",
+        resolved_email, tier, bootstrap.api_key_source
+    );
+
+    Ok(MaicLoginInfo {
+        token,
+        email: resolved_email,
+        tier,
+        endpoint,
+    })
+}
+
+/// HTTP POST helper for the login flow.
+///
+/// Uses ureq (sync, ships with rustls-tls feature) so we don't pull tokio.
+/// Both HTTPS (https://maicserver.com) and plain HTTP (localhost self-hosted)
+/// endpoints are supported. Returns the response body as a String on 2xx,
+/// or an io::Error with the server's status + body excerpt on failure.
+fn http_post_json_with_tls_fallback(
+    base: &str,
+    path: &str,
+    body: &str,
+) -> io::Result<String> {
+    let url = format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    );
+
+    // ureq with default-features=false + tls feature set in Cargo.toml.
+    // 10s timeout — login should be fast or fail loud.
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+
+    let resp = agent
+        .post(&url)
+        .set("Content-Type", "application/json")
+        .set("Accept", "application/json")
+        .send_string(body);
+
+    match resp {
+        Ok(r) => {
+            let status = r.status();
+            let body = r
+                .into_string()
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("read body: {e}")))?;
+            if (200..300).contains(&status) {
+                Ok(body)
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("HTTP {} — {}", status, body.chars().take(300).collect::<String>()),
+                ))
+            }
+        }
+        Err(ureq::Error::Status(code, response)) => {
+            let body = response
+                .into_string()
+                .unwrap_or_else(|_| "(no body)".to_string());
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("HTTP {} — {}", code, body.chars().take(300).collect::<String>()),
+            ))
+        }
+        Err(e) => Err(io::Error::new(io::ErrorKind::Other, format!("{e}"))),
     }
 }
 
@@ -1048,7 +1325,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![first_run_report])
+        .invoke_handler(tauri::generate_handler![first_run_report, maic_login])
         .setup(|app| {
             setup(app)?;
             Ok(())
@@ -1140,7 +1417,15 @@ mod tests {
 
     fn read_maic_root() -> serde_json::Value {
         let path = openclaw_json_path();
-        let raw = std::fs::read_to_string(&path).expect("read openclaw.json");
+        // If the file doesn't exist (e.g. LoginRequired early-return didn't
+        // write it), return an empty object so assertions on missing keys
+        // return None instead of panicking. Tests should NOT depend on the
+        // file's presence — they should assert on the keys they care about.
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return serde_json::json!({}),
+            Err(e) => panic!("read openclaw.json: {e}"),
+        };
         serde_json::from_str(&raw).expect("parse openclaw.json")
     }
 
@@ -1182,60 +1467,45 @@ mod tests {
     }
 
     #[test]
-    fn no_env_var_writes_secret_ref_and_registers_provider() {
+    fn no_env_var_returns_login_required_and_writes_no_provider() {
         let _lock = ENV_LOCK.lock().unwrap();
         let _g = fresh_env();
         // No MAIC_API_KEY set.
 
         let result = ensure_maic_provider_config().expect("bootstrap ok");
-        assert!(result.provider_configured, "should be configured (via SecretRef)");
+        assert!(!result.provider_configured, "Lesson 444: should NOT be configured (login required)");
         assert!(
-            matches!(result.api_key_source, MaicKeySource::EnvRef),
-            "key_source should be EnvRef, got {:?}",
+            matches!(result.api_key_source, MaicKeySource::LoginRequired),
+            "key_source should be LoginRequired, got {:?}",
             result.api_key_source
         );
 
+        // Lesson 444: NO provider entry written (we early-return before the
+        // providers_obj insert). LoginRequired path keeps openclaw.json
+        // minimal so the user-facing login modal can present a clean message.
         let cfg = read_maic_root();
-        let entry = cfg
+        let maic = cfg
             .get("models")
             .and_then(|m| m.get("providers"))
-            .and_then(|p| p.get("maic"))
-            .expect("maic provider entry");
-
-        // apiKey should be a SecretRef object, NOT a literal string.
-        let api_key = entry.get("apiKey").expect("apiKey");
-        assert!(api_key.is_object(), "apiKey should be a SecretRef object, got: {}", api_key);
-        assert_eq!(api_key.get("source").and_then(|v| v.as_str()), Some("env"));
-        assert_eq!(
-            api_key.get("provider").and_then(|v| v.as_str()),
-            Some("default")
-        );
-        assert_eq!(api_key.get("id").and_then(|v| v.as_str()), Some("MAIC_API_KEY"));
-
-        // secrets.providers.default should be registered as env source with allowlist.
-        let secrets = cfg.get("secrets").expect("secrets block");
-        let default_provider = secrets
-            .get("providers")
-            .and_then(|p| p.get("default"))
-            .expect("default secret provider");
-        assert_eq!(
-            default_provider.get("source").and_then(|v| v.as_str()),
-            Some("env")
-        );
-        let allowlist = default_provider
-            .get("allowlist")
-            .and_then(|v| v.as_array())
-            .expect("allowlist");
+            .and_then(|p| p.get("maic"));
         assert!(
-            allowlist.iter().any(|v| v.as_str() == Some("MAIC_API_KEY")),
-            "allowlist should include MAIC_API_KEY"
+            maic.is_none(),
+            "LoginRequired path must not write a maic provider entry, got: {}",
+            maic.map(|v| v.to_string()).unwrap_or_default()
         );
 
-        // secrets.defaults.env should point at "default".
-        let defaults = secrets.get("defaults").expect("defaults");
-        assert_eq!(
-            defaults.get("env").and_then(|v| v.as_str()),
-            Some("default")
+        // secrets.providers.default should NOT be registered (no SecretRef
+        // fallback was needed). This is a deliberate Lesson 444 change:
+        // the previous behavior auto-registered the env provider with a
+        // SecretRef, which produced a guaranteed-failing config on disk.
+        let secrets_providers_default = cfg
+            .get("secrets")
+            .and_then(|s| s.get("providers"))
+            .and_then(|p| p.get("default"));
+        assert!(
+            secrets_providers_default.is_none(),
+            "LoginRequired path must not register secrets.providers.default, got: {}",
+            secrets_providers_default.map(|v| v.to_string()).unwrap_or_default()
         );
     }
 

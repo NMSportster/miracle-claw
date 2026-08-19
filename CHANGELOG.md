@@ -23,6 +23,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unified 8-step pre-flight checklist (Lesson 432 corollary) committed to
   MEMORY.md; future MC releases must run it before tagging.
 
+### Things built this session (WIP — not yet committed as rc2)
+
+- **Lesson 444 (WIP, ready to commit): First-run MAIC login UI.**
+  - Symptom (Lesson 431 v2 leftover): `MAIC_API_KEY` not set on a fresh
+    customer machine → `models.providers.maic.apiKey = SecretRef` resolves
+    to "secret not found in env" at request time → user sees an opaque
+    error and doesn't know how to proceed.
+  - Fix: MC's first-run window shows a login form when no MAIC key is
+    available. Customer enters email/password → MC POSTs to
+    `https://maicserver.com/v1/auth/login` → JWT returned → MC sets
+    `MAIC_API_KEY` in the process env + bakes the JWT as a literal string
+    in `openclaw.json` + the chat UI unblocks and redirects to the
+    openclaw gateway at `http://localhost:28789/`.
+  - **Frontend (NEW)**: `index.html` (Vite root), `src/main.js` (entry
+    logic — calls `invoke('first_run_report')`, conditionally renders
+    login form, redirects on success), `src/styles.css` (vanilla CSS,
+    no framework).
+  - **Backend (NEW)**: `#[tauri::command] fn maic_login(email, password)`
+    POSTs via `ureq` (sync, ships with rustls-tls). Sets
+    `MAIC_API_KEY=token` in `process::env` so re-running
+    `ensure_maic_provider_config()` hits the literal-key branch and
+    writes the provider entry to disk. Returns `MaicLoginInfo { token,
+    email, tier, endpoint }`.
+  - **New variant**: `MaicKeySource::LoginRequired` (replaces the dead
+    `EnvRef` fallback path). When no key is found, the bootstrap
+    function early-returns BEFORE writing to disk, so the customer's
+    `openclaw.json` stays clean — no half-populated provider entry, no
+    `secrets.providers.default` placeholder that would fail at request
+    time.
+  - **New helper**: `needs_maic_login_from_state()` — reads the live
+    `openclaw.json` to decide whether the login modal should fire on
+    next boot. Honors already-baked literal keys, treats SecretRef as
+    "needs login" since the env-var fallback is unreliable.
+  - **`tauri.conf.json`**: `build.frontendDist = "../dist"`, `windows[0].url =
+    "index.html"` (Tauri asset protocol — MC's bundled HTML loads first,
+    then redirects to `localhost:28789` after login).
+  - **`Cargo.toml`**: `ureq = { version = "2.10", default-features = false,
+    features = ["tls", "json"] }` — sync HTTP, no tokio weight.
+  - **Test coverage**: `tests::no_env_var_returns_login_required_and_writes_no_provider`
+    asserts the early-return path correctly skips the provider write
+    AND does NOT register `secrets.providers.default`.
+  - **Verified**: `cargo check` clean, all 6 unit tests pass.
+  - **Pending**: build v9 installer on Windows, verify chat roundtrip
+    through the login UI, then tag v1.0.1 at this commit.
+
 ### Things planned (require rebuild)
 - **Wire MAIC as the agent provider in first-run (Lesson 431).**
   - Symptom: chat errors with `No API key found for provider "openai"`
