@@ -532,7 +532,7 @@ match the installable state. v5 is the installable state.
 
 [v1.0.4-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.3-rc1...63bc70c
 
-## [v1.0.5-rc1] — 2026-08-18 23:55 MDT (commit TBD)
+## [v1.0.5-rc1] — 2026-08-18 23:55 MDT (commit `429ab9e`)
 
 ### Fixed
 - **Lesson 451 (v1.0.4 regression — early-return path skipped the baseUrl
@@ -587,7 +587,7 @@ match the installable state. v5 is the installable state.
 
 [v1.0.5-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.4-rc1...593d4d1
 
-## [v1.0.6-rc1] — 2026-08-19 (commit TBD)
+## [v1.0.6-rc1] — 2026-08-19 (commit `39a7917`)
 
 ### Added — "Stay signed in" opt-in
 - **Lesson 458: silent-relogin on 401 via cached credentials.**

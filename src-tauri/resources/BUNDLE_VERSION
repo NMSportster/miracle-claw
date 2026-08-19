@@ -1,10 +1,10 @@
 {
-  "version": "1.0.5",
-  "commit": "429ab9e",
-  "bundled-at": "2026-08-19T00:10:00Z",
-  "tauri-build": "miracle-claw.exe (12.9MB), miracle-claw-launcher.exe (325KB)",
-  "installer-md5": "10b06dc7e61ca21a70ec5b5a81602a09",
-  "installer-size": 56712789,
-  "lesson": 451,
-  "fix-summary": "early-return path now migrates stale bare-origin baseUrl (/v1 suffix); see CHANGELOG v1.0.5"
+  "version": "1.0.6",
+  "commit": "39a7917",
+  "bundled-at": "TBD-on-build",
+  "tauri-build": "TBD",
+  "installer-md5": "TBD",
+  "installer-size": 0,
+  "lesson": 458,
+  "fix-summary": "add 'Stay signed in' checkbox; silent_relogin via OS keychain (AES-256-GCM); maic_logout for v1.1.0 dashboard; see CHANGELOG v1.0.6"
 }
