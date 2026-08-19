@@ -922,3 +922,48 @@ match the installable state. v5 is the installable state.
   links, child-window management). Spec at `notes/V1.1.0-DASHBOARD-PLAN.md`.
 - MAIC backend (parallel, David's work): `/v1/usage/quota` endpoint
   + `tier_changed: true` flag in `/v1/auth/login` response.
+
+## [v1.0.8] — 2026-08-19 11:00 MDT (commit `e8cf632`, installer `ea86a487d45b43590e4706a5e06229a5`, 57,081,588 bytes)
+
+### Lesson 461 — OpenClaw tile spawns a sibling webview window (not a popup)
+
+**Symptom (David 10:35 MDT, after v1.0.7-rc1 hotfix)**: "When I click the Openclaw Box, I get nothing it doesn't open another page or window".
+
+**Root cause**: The dashboard was calling `window.open('http://localhost:28789/', ...)` from the Tauri 2 main webview. **Tauri's webview silently returns null** for popup requests — no exception, no error. The v1.0.7-rc1 hotfix's `window.location.href` fallback would have navigated the dashboard AWAY from itself, leaving the user stuck staring at chat with no way back to the dashboard. Same outcome from the user's perspective: dashboard unusable.
+
+**Fix**: Replaced the `window.open` JS path with a Tauri command that uses `tauri::WebviewWindowBuilder` to spawn a dedicated sibling webview (label `openclaw-chat`) pointing at the chat gateway. The dashboard and chat are now siblings — both child webviews of the Tauri app process — not parent-and-popup.
+
+**Files changed**:
+- `src-tauri/src/lib.rs` — new `openclaw_open_window` command using `WebviewWindowBuilder::new(...).title(...).inner_size(...).build()`. Idempotent: if window with that label already exists, focuses it instead of spawning a duplicate. Registered in `invoke_handler![]` next to `start_gateway_after_login`.
+- `src-tauri/capabilities/openclaw.json` (NEW) — whitelists the `openclaw-chat` window label for `core:default`, `core:window:default`, `core:webview:default`, `core:event:default`. Without this entry, Tauri 2's runtime rejects the new window with "window label 'openclaw-chat' not allowed by capabilities".
+- `src/main.js::openOpenClaw()` — replaced `window.open()` and `window.location.href` fallback with `invoke('openclaw_open_window')`. Loading state on the tile ("Starting…") + console diagnostics preserved.
+- `src-tauri/src/{Cargo.toml,tauri.conf.json}`, `package.json`, `src-tauri/resources/BUNDLE_VERSION` — version bump 1.0.7 → 1.0.8 (Lesson 459).
+
+### Sub-lesson 461b — Dashboard must handle "logged out" state explicitly
+
+**Symptom (David, same session)**: "There is another box with nothing below that unknown, i'm guessing that should be the login options instead of having to click unknow".
+
+**Root cause**: When `mc_get_tier` failed (no JWT, expired JWT, network blip), `renderDashboard()` rendered with `tier=null` → label "Unknown" → usage-bar showing "—". The only escape was clicking the hidden-clickable tier badge. Bad UX.
+
+**Fix**: In `renderDashboard()`, after the parallel `mc_get_tier` / `mc_get_nudge` fetches, check if the tier fetch rejected with `"not logged in"` and redirect to `renderLogin()` instead of rendering a half-broken dashboard. One early-return, ~5 lines.
+
+### Installer verification
+- **MD5**: `ea86a487d45b43590e4706a5e06229a5` (was `185e29eff0dda45de4443dc410e382e5` for v1.0.7-rc1 hotfix)
+- **Size**: 57,081,588 bytes (~55 MB)
+- **Path on David's desktop**: `C:\Users\Adeal\Desktop\MiracleClaw_1.0.8_x64-setup.exe`
+- **Bundle contents**: `miracle-claw.exe` (13.4 MB, includes new command), `resources/miracle-claw-tools.exe` (455 KB), `miracle-claw-launcher.exe` (325 KB).
+- **Archived previous**: `MiracleClaw_1.0.7_185e29e_x64-setup.exe` (v1.0.7-rc1 hotfix).
+- **Also archived**: `MiracleClaw_1.0.6_b280a93_x64-setup.exe` — the bogus v1.0.6 file from the Lesson 459 incident (misnamed installer from when tauri.conf.json wasn't bumped). The legitimate v1.0.6 ship (MD5 `48cff6ab9313c17a5442666f95e0e3cf`) lives only on David's desktop from the original install.
+
+### Test plan for David
+1. Uninstall v1.0.7 hotfix (or just install v1.0.8 over it — installer should be safe-upgrade)
+2. Launch v1.0.8 → login (if not auto-signed-in)
+3. Click the OpenClaw tile → a SEPARATE window opens with the chat UI
+4. Close the chat window → click OpenClaw again → window reopens
+5. Click OpenClaw while chat is already open → chat window comes to front (focused), no duplicate spawns
+6. Report back any issues
+
+### What's NOT in v1.0.8
+- v1.1.0 dashboard pivot (`notes/V1.1.0-DASHBOARD-PLAN.md`) — deferred until v1.0.8 is verified by David.
+- YoClaw skills-folder port — v1.1.x candidate.
+- MAIC-side `/v1/usage/quota` and `tier_changed` flag — David's separate workstream.
