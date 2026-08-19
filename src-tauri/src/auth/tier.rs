@@ -80,14 +80,11 @@ pub struct TierInfo {
 
 #[derive(Debug, Deserialize)]
 struct AuthMeResponse {
-    user: AuthMeUser,
-}
-
-#[derive(Debug, Deserialize)]
-struct AuthMeUser {
     tier: String,
     #[serde(default)]
     plan_code: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
     #[serde(default)]
     email: Option<String>,
 }
@@ -123,7 +120,7 @@ pub fn fetch_tier_fresh(jwt: &str, maic_base: &str) -> Result<TierInfo, String> 
             .map_err(|e| format!("parse /v1/auth/me: {}", e))?,
         Err(e) => return Err(format!("/v1/auth/me: {}", e)),
     };
-    let tier = Tier::from_str(&parsed.user.tier);
+    let tier = Tier::from_str(&parsed.tier);
     let mut cache = TIER_CACHE.lock().unwrap();
     let tier_changed = match cache.as_ref() {
         Some(prev) if prev.last_published != tier && prev.last_published > tier => true,
@@ -131,8 +128,10 @@ pub fn fetch_tier_fresh(jwt: &str, maic_base: &str) -> Result<TierInfo, String> 
     };
     let info = TierInfo {
         tier,
-        plan_code: parsed.user.plan_code,
-        email: parsed.user.email,
+        plan_code: parsed.plan_code,
+        // MAIC's `/v1/auth/me` returns `name`, not `email`. Stash under
+        // `email` field too since the frontend just renders a label.
+        email: parsed.name.or(parsed.email),
         from_cache: false,
         tier_changed,
     };
@@ -243,5 +242,36 @@ mod tests {
         // we don't expose a setter; instead verify the public surface.
         invalidate_tier_cache();
         assert_eq!(current_tier(), Tier::Free);
+    }
+
+    /// Pin the JSON shape of MAIC's `/v1/auth/me` so future schema
+    /// changes on MAIC surface as a test failure here (and not as a
+    /// runtime "missing field user" error in production).
+    #[test]
+    fn auth_me_response_deserializes_maic_actual_schema() {
+        // MAIC's actual response shape per /opt/maic/api/routes/dashboard.py:
+        //   { id, name, is_master, tier, plan_code }
+        let maic_real = r#"{"id":12345,"name":"david","is_master":false,"tier":"pro","plan_code":"pro_plus"}"#;
+        let parsed: AuthMeResponse = serde_json::from_str(maic_real)
+            .expect("MAIC's actual /v1/auth/me shape must deserialize");
+        assert_eq!(parsed.tier, "pro");
+        assert_eq!(parsed.plan_code.as_deref(), Some("pro_plus"));
+        assert_eq!(parsed.name.as_deref(), Some("david"));
+        assert_eq!(parsed.email, None, "MAIC returns `name`, not `email`");
+
+        // Free user with no plan_code.
+        let free_maic = r#"{"id":1,"name":"freee","is_master":false,"tier":"free"}"#;
+        let parsed: AuthMeResponse = serde_json::from_str(free_maic).unwrap();
+        assert_eq!(parsed.tier, "free");
+        assert_eq!(parsed.plan_code, None);
+
+        // Legacy shape with user-wrapping must NOT deserialize (we no
+        // longer ship that); this guards against accidentally going
+        // back to a wrapped schema.
+        let wrapped = r#"{"user":{"tier":"pro","plan_code":null}}"#;
+        assert!(
+            serde_json::from_str::<AuthMeResponse>(wrapped).is_err(),
+            "Schema must NOT match wrapped shape (was: {{user: {{tier, plan_code}}}})"
+        );
     }
 }

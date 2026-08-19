@@ -141,21 +141,44 @@ function formatNumber(n) {
 
 async function openOpenClaw() {
   const tile = document.getElementById("openclaw-tile");
-  if (tile) tile.disabled = true;
+  if (tile) {
+    tile.disabled = true;
+    const label = tile.querySelector(".tile-cta") || tile;
+    label.dataset.oldText = label.dataset.oldText ?? label.textContent;
+    label.textContent = "Starting…";
+  }
   try {
-    // The gateway is already running (we reached this dashboard because
-    // the JWT was valid). Just navigate. If for some reason the gateway
-    // is down, start_gateway_after_login will respawn it.
-    try {
-      await invoke("start_gateway_after_login");
-    } catch (e) {
-      // Already up — start_gateway_after_login will return Ok anyway.
+    // Spawn the gateway (or confirm it's already up). Wait up to 15s for
+    // the launcher to come up on localhost:28789. The promise only
+    // resolves once the port is reachable, so window.open() below will
+    // hit a live URL.
+    const gw = await invoke("start_gateway_after_login");
+    console.log("[dashboard] gateway ready:", gw);
+
+    const win = window.open(
+      "http://localhost:28789/",
+      "openclaw-chat",
+      "width=1280,height=800"
+    );
+    if (!win) {
+      // Popups blocked or webview policy denied the new window — fall
+      // back to navigating the same window so the user is never stuck
+      // staring at the dashboard with no way out.
+      console.warn("[dashboard] window.open returned null; navigating in place");
+      window.location.href = "http://localhost:28789/";
     }
-    window.open("http://localhost:28789/", "openclaw-chat", "width=1280,height=800");
   } catch (err) {
+    console.error("[dashboard] start_gateway_after_login failed:", err);
     showFatal(`Could not open OpenClaw: ${escapeHtml(err)}`);
   } finally {
-    if (tile) tile.disabled = false;
+    if (tile) {
+      tile.disabled = false;
+      const label = tile.querySelector(".tile-cta") || tile;
+      if (label.dataset.oldText) {
+        label.textContent = label.dataset.oldText;
+        delete label.dataset.oldText;
+      }
+    }
   }
 }
 

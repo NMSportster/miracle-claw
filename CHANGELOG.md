@@ -719,7 +719,35 @@ match the installable state. v5 is the installable state.
 - v1.1.0 — dashboard pivot (post-login = tiles, OpenClaw child window,
   tier badge, token usage display). Spec finalized today.
 
-## [v1.0.7-rc1] — 2026-08-19 (rc for testing) — SHA `faf6030b05515cdccb3a64aa004228ad` (57,081,313 bytes)
+## [v1.0.7-rc1] — 2026-08-19 (rc for testing) — SHA `185e29eff0dda45de4443dc410e382e5` (57,071,827 bytes)
+
+### Lesson 460 — `AuthMeResponse` schema must match MAIC's actual response shape (2026-08-19 09:38 MDT)
+
+**Symptom (David 2026-08-19)**: Clicking the dashboard's "Refresh tier" button or any path that triggered `mc_refresh_tier` returned:
+> "Could not refresh tier: parse /v1/auth/me: Failed to read JSON: missing field `user` at line 1 column 92"
+
+**Root cause**: `auth/tier.rs` deserialized MAIC's `/v1/auth/me` into `{user: {tier, plan_code, email}}`, but MAIC actually returns `{id, name, is_master, tier, plan_code}` — flat, no `user` wrapper. Latent since v1.0.6; only surfaced in v1.0.7 because v1.0.7's dashboard calls `mc_refresh_tier` for the first time (previous versions had no dashboard and never exercised this path).
+
+**Fix**:
+- `src-tauri/src/auth/tier.rs`: replaced `AuthMeResponse { user: AuthMeUser }` with flat `AuthMeResponse { tier, plan_code, name, email }`.
+- Reads `parsed.tier` instead of `parsed.user.tier`, stashes `parsed.name` into the `email` field (frontend just renders a label).
+- Added test `auth_me_response_deserializes_maic_actual_schema` that pins both the real shape and asserts the old `{"user": {...}}` shape does NOT deserialize — so future schema changes in either direction will fail loudly.
+
+**Why the bug existed**: When I first wrote `tier.rs` in v1.0.7 development, I never called `/v1/auth/me` against real MAIC to inspect the response. I wrote a `wrapper.user.field` schema based on how I had been writing MAIC `/v1/users/login` responses (which DO wrap in `user`). Without an integration test that hits the actual endpoint, the bug stayed invisible until the first dashboard fetch.
+
+**Anti-patterns**:
+- Writing serialization code without an integration test that hits the real endpoint with a real JWT.
+- Letting the test suite ("60/60 tests pass") give false confidence — every test was a unit test of normal-shape data, never a deserialize-the-real-MAIC-shape test.
+- Trusting the dashboard "looks right" as an end-to-end test — David was the first real user of the dashboard-with-tier flow.
+
+**Symptom → cause → fix table** (Lesson 460 additions):
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `Could not refresh tier: parse /v1/auth/me: Failed to read JSON: missing field X at line 1 column Y` | `X` field doesn't exist in MAIC's actual response shape | Match MC's schema to MAIC's actual JSON (verified via `curl https://maicserver.com/v1/auth/me -H "Authorization: Bearer <jwt>"`) |
+| Dashboard tile parses fine but tier shows as "free" no matter what MAIC tier is | Schema fields are present but wrong path (e.g. `parsed.user.tier` instead of `parsed.tier`) | Pin a test using MAIC's actual response payload; assert both ways |
+| Login works but dashboard can't fetch tier | `AuthMeResponse` deserialization fails on every fetch | Same — add an integration test against real MAIC |
+
+**Status**: fixed in v1.0.7-rc1 hotfix. New MD5 `185e29eff0dda45de4443dc410e382e5` (57,071,827 bytes). Dashboard now resolves tier correctly.
 
 ### Lesson 459 — Installer filename is `tauri.conf.json:version`, not `Cargo.toml`
 **Gotcha caught 2026-08-19 09:00 MDT**: I bumped `Cargo.toml` (1.0.6→1.0.7), `package.json`, and `BUNDLE_VERSION` to 1.0.7, but **forgot to bump `src-tauri/tauri.conf.json:version`**. The build's NSIS bundler uses `tauri.conf.json:version` for the installer filename (`MiracleClaw_<version>_x64-setup.exe`), so the resulting installer was named `MiracleClaw_1.0.6_x64-setup.exe` — even though the binary content was v1.0.7 (it shipped `miracle-claw-tools.exe` and all the new tier-gated logic). Caught it before anyone installed, but it's a trap.
