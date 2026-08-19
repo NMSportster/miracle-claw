@@ -83,9 +83,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Symptom: NSIS error "Error opening file for writing: node.exe" when installing
     a hotfix over a running prior gateway. Root cause: Windows file lock on
     `node.exe` while the gateway is still up.
-  - Fix: NSIS pre-step does `taskkill /F /IM miracle-claw.exe` then
-    `taskkill /F /IM node.exe` before the file copy. Show a clear error if the
-    kill fails.
+  - Fix: Custom NSIS template (`src-tauri/installer.nsi`) wired in via
+    `tauri.conf.json: bundle.windows.nsis.template`. The `customInstall`
+    macro does:
+    ```
+    nsExec::ExecToLog 'taskkill /F /IM miracle-claw.exe /T'
+    nsExec::ExecToLog 'taskkill /F /IM node.exe /T'
+    Sleep 2000
+    ```
+    If the kill fails (no process running), the install proceeds
+    anyway — `nsExec::ExecToLog` swallows the error code.
 - ADeal green branding (splash, theme, system tray icon).
   - Tray icon also solves Lesson 430 by giving the user a "Quit" affordance.
 - Code signing (Windows SmartScreen "Unknown publisher" → gone).

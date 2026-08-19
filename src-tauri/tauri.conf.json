@@ -63,7 +63,8 @@
         "installerIcon": "icons/icon.ico",
         "installMode": "perMachine",
         "languages": ["English"],
-        "displayLanguageSelector": false
+        "displayLanguageSelector": false,
+        "template": "installer.nsi"
       }
     }
   }
