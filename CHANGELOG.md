@@ -454,3 +454,80 @@ match the installable state. v5 is the installable state.
     release gate)
 
 [v1.0.3-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.2-rc1...bdbe2cf
+
+## [v1.0.4-rc1] — 2026-08-18 22:55 MDT (commit pending)
+
+### Fixed
+- **Lesson 450 (chat returns "The selected model was not found by the
+  provider" after login) — MC's `ensure_maic_provider_config` wrote the
+  bare origin `"https://maicserver.com"` into openclaw.json
+  `models.providers.maic.baseUrl`. openclaw's OpenAI SDK appends
+  `/chat/completions` to that URL verbatim (no auto `/v1` prefix), so
+  the gateway POSTs to `https://maicserver.com/chat/completions` which
+  MAIC returns 404 for (MAIC exposes its OpenAI-compatible route at
+  `/v1/chat/completions`, not `/chat/completions`). openclaw's
+  `isModelNotFoundErrorMessage` regex chain then matched the 404 body
+  text and surfaced the misleading "selected model was not found by
+  the provider" error — even though `milagro-dev` IS in MAIC's
+  LiteLLM allow-list.** Three concrete fixes:
+  1. **`normalize_maic_base_url(value: &str) -> String`** — stamps the
+     `/v1` suffix when writing the baseUrl for the first time
+     (Lesson 444 path) and any time a `MAIC_API_URL` override lacks
+     it. Idempotent: calling twice is a no-op. Tested via
+     `normalize_maic_base_url_appends_v1_when_missing`.
+  2. **`upgrade_legacy_maic_base_url(existing: &str) -> Option<String>`** —
+     rewrites baseUrl entries in v1.0.0..v1.0.3-era openclaw.json
+     files in-place. Conservative: only rewrites URLs that are clearly
+     the "bare origin" form (no path or `/` only). Anything with a
+     user-added path (proxy mount, alternate route) is preserved
+     verbatim. Tested via
+     `upgrade_legacy_maic_base_url_only_rewrites_bare_origin`.
+  3. **`strip_trailing_v1(value: &str) -> String`** — used by
+     `maic_login` to normalize a user-supplied `MAIC_API_URL` before
+     appending `/v1/users/login`. Handles the "user already included
+     /v1" case so we never POST to `/v1/v1/users/login`. Tested via
+     `strip_trailing_v1_handles_both_forms`.
+
+  **Display semantics**: `MaicProviderBootstrap.endpoint` (the URL the
+  login UI displays as "Logged in to https://maicserver.com") still
+  reports the bare origin — `/v1` is purely an implementation detail
+  of openclaw's OpenAI SDK URL composition. The `/v1`-normalized
+  form lives in the entry's `baseUrl` for openclaw's gateway to
+  consume.
+
+### Verified
+- `cargo check --bin miracle-claw --lib` — clean
+- `cargo test --lib` — **14/14 pass** (3 new Lesson 450 tests
+  + 11 regression tests; updated 3 existing tests to assert the
+  normalized `/v1` baseUrl forms):
+  - `normalize_maic_base_url_appends_v1_when_missing`
+  - `upgrade_legacy_maic_base_url_only_rewrites_bare_origin`
+  - `strip_trailing_v1_handles_both_forms`
+- `curl https://maicserver.com/chat/completions` — 404 (route not
+  exposed, root cause confirmed)
+- `curl https://maicserver.com/v1/chat/completions` — 401 (route
+  exists, would pass with valid JWT)
+
+### Installer
+- **File:** `dist-installers/windows/MiracleClaw_1.0.4_x64-setup.exe`
+- **MD5:** TBD (after rebuild)
+- **Size:** TBD
+- **Path on David's desktop:** `C:\Users\Adeal\Desktop\MiracleClaw_1.0.4_x64-setup.exe` (after rebuild)
+
+### Test plan (Lesson 432 chat roundtrip — release gate)
+1. `taskkill /F /IM miracle-claw.exe /T; taskkill /F /IM node.exe /T`
+2. Uninstall v1.0.3 via Settings → Apps (or `rm -rf "%LOCALAPPDATA%\Programs\MiracleClaw"`)
+3. Delete `C:\Users\Adeal\AppData\Roaming\MiracleClaw\openclaw.json`
+   (force fresh bootstrap so Lesson 450 migration path runs cleanly)
+4. Run v1.0.4 installer
+5. Launch `miracle-claw.exe` → login modal (Lesson 444 fix)
+6. Enter `championnm@yahoo.com` + password → submit
+7. Verify openclaw.json now has `baseUrl: "https://maicserver.com/v1"`
+   (Lesson 450 fix) — was `"https://maicserver.com"` in v1.0.3
+8. Modal closes, chat UI loads
+9. **Send a chat message → expect response (not "model not found")**
+   (Lesson 450 — actual release gate)
+10. Verify the selected model in the response is `milagro-dev` (the
+    default in `src/main.js`)
+
+[v1.0.4-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.3-rc1...HEAD

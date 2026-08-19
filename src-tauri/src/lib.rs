@@ -637,7 +637,25 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
     }
     let entry_obj = provider_entry.as_object_mut().unwrap();
 
-    entry_obj.entry("baseUrl".to_string()).or_insert(Value::String(resolved_url.clone()));
+    entry_obj.entry("baseUrl".to_string()).or_insert(Value::String(normalize_maic_base_url(&resolved_url)));
+    // Lesson 450: ensure the openai-completions baseUrl we stamp carries the
+    // `/v1` suffix that openclaw's OpenAI SDK appends `/chat/completions` to.
+    // Without `/v1`, openclaw POSTs to `{origin}/chat/completions` and MAIC
+    // returns 404. openclaw's regex classifier then sees "404 ... not found"
+    // in the body and surfaces the misleading "The selected model was not
+    // found by the provider" error to the user — even though MAIC accepts
+    // the same model on its `/v1/chat/completions` route.
+    //
+    // The line above only inserts when baseUrl is missing. To retroactively
+    // repair an existing user's openclaw.json written by v1.0.0..v1.0.3
+    // (which lack `/v1`), the next block rewrites the value in-place when
+    // it's clearly a stale MAIC origin without the suffix. User-customized
+    // paths or proxy-prefixed URLs are preserved verbatim.
+    if let Some(existing_base) = entry_obj.get("baseUrl").and_then(|v| v.as_str()) {
+        if let Some(fixed) = upgrade_legacy_maic_base_url(existing_base) {
+            entry_obj.insert("baseUrl".to_string(), Value::String(fixed));
+        }
+    }
     // Only stamp apiKey if the existing one is "unresolvable" (Lesson 449):
     //   - missing entirely
     //   - literal empty/whitespace string
@@ -726,16 +744,19 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
         *providers_obj = Value::Object(Default::default());
     }
     let providers = providers_obj.as_object_mut().unwrap();
-    // Lesson 449: capture the final endpoint from the entry's actual baseUrl
-    // BEFORE we insert/move `provider_entry` into the providers map. After
-    // the insert, `entry_obj` no longer exists (we moved its owner), so we
-    // can't read baseUrl off it anymore. The value is what was actually
-    // written — user's custom URL if they had one, else our resolved_url.
-    let final_endpoint = entry_obj
-        .get("baseUrl")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&resolved_url)
-        .to_string();
+    // Lesson 449/450: `result.endpoint` is the friendly URL the login UI shows
+    // ("Logged in to https://maicserver.com"). It does NOT include the `/v1`
+    // suffix that openclaw's OpenAI SDK appends `/chat/completions` to — the
+    // login UI never builds chat URLs, only login URLs (see `maic_login`).
+    // The `/v1`-normalized form lives in the entry's `baseUrl` for openclaw's
+    // gateway to consume. We strip the suffix off here so the display value
+    // stays the bare origin the user typed.
+    let final_endpoint = strip_trailing_v1(
+        entry_obj
+            .get("baseUrl")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&resolved_url),
+    );
     providers.insert(PROVIDER_ID.to_string(), provider_entry);
 
     // Serialize back. We preserve the user's other fields exactly (no
@@ -942,6 +963,98 @@ fn is_unresolvable_api_key(value: &Value) -> bool {
         }
         _ => false, // literal non-empty is always resolvable
     }
+}
+
+/// Lesson 450: ensure an MAIC `baseUrl` value carries the `/v1` path prefix
+/// that openclaw's OpenAI SDK appends `/chat/completions` onto.
+///
+/// MAIC exposes its OpenAI-compatible chat route at `/v1/chat/completions`,
+/// not `/chat/completions`. openclaw passes `model.baseUrl` straight through
+/// to `new OpenAI({baseURL, ...})` which calls
+/// `new URL(baseURL + '/chat/completions')` — so the value must include
+/// `/v1` or the SDK POSTs to a 404 route.
+///
+/// `normalize_maic_base_url` is always-idempotent: returns the same value
+/// when called twice, appends `/v1` exactly once, and never strips user
+/// content beyond a trailing slash. Used at write time.
+///
+/// `upgrade_legacy_maic_base_url` is the in-place migration heuristic that
+/// patches existing openclaw.json values written by v1.0.0..v1.0.3. It only
+/// rewrites URLs that clearly match the old "https://{host}" pattern with
+/// no path or with `/v1`-missing-path — anything more complex (e.g.
+/// `https://proxy.example.com/maic/`) is preserved verbatim so we don't
+/// break users running MAIC behind a reverse proxy with its own mount.
+fn normalize_maic_base_url(value: &str) -> String {
+    let trimmed = value.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return value.to_string();
+    }
+    // Already has /v1? Leave alone.
+    if trimmed.ends_with("/v1")
+        || trimmed.contains("/v1/")
+        || trimmed.contains("/v1?")
+    {
+        return trimmed.to_string();
+    }
+    format!("{}/v1", trimmed)
+}
+
+/// Lesson 450: One-shot rewrite for v1.0.0..v1.0.3 openclaw.json baseUrl
+/// values. Returns the upgraded URL if a rewrite should happen, None if
+/// the value should be preserved as-is.
+///
+/// Conservative rewrite policy: we only rewrite URLs that are clearly the
+/// "bare origin" form (no path or only `/` as path). Anything with a path
+/// the user added (proxy mount, alternate route, version prefix) is left
+/// untouched — the user's intent is preserved.
+fn upgrade_legacy_maic_base_url(existing: &str) -> Option<String> {
+    let trimmed = existing.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Parsing defensively — anything not a clean origin URL stays put.
+    let parsed = url_origin_path(trimmed)?;
+    if parsed.path.is_empty() || parsed.path == "/" {
+        // Bare origin: append /v1 if it doesn't already have it.
+        let normalized = normalize_maic_base_url(trimmed);
+        if normalized != trimmed {
+            return Some(normalized);
+        }
+    }
+    None
+}
+
+/// Parse `url` into (origin, path). Returns None on parse errors.
+/// "Origin" = scheme + host (no path, no trailing slash). "Path" excludes
+/// the leading `/` so an empty path is "", not "/".
+struct UrlOriginPath {
+    origin: String,
+    path: String,
+}
+
+fn url_origin_path(url: &str) -> Option<UrlOriginPath> {
+    let scheme_end = url.find("://")?;
+    let after_scheme = &url[scheme_end + 3..];
+    let slash = after_scheme.find('/').unwrap_or(after_scheme.len());
+    let host = &after_scheme[..slash];
+    let path_with_slash = &after_scheme[slash..];
+    let path = path_with_slash.trim_start_matches('/').trim_end_matches('/').to_string();
+    Some(UrlOriginPath {
+        origin: format!("{}://{}", &url[..scheme_end], host),
+        path,
+    })
+}
+
+/// Lesson 450: strip a trailing `/v1` (or `/v1/`) from a URL. Used by
+/// `maic_login` to normalize a user-supplied endpoint before appending
+/// `/v1/<path>` — handles the "MAIC_API_URL already includes /v1" case
+/// cleanly so we never POST to `/v1/v1/users/login`.
+fn strip_trailing_v1(value: &str) -> String {
+    let trimmed = value.trim().trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        return trimmed[..trimmed.len() - 3].to_string();
+    }
+    trimmed.to_string()
 }
 
 #[derive(Debug)]
@@ -1196,6 +1309,15 @@ fn maic_login(email: String, password: String) -> Result<MaicLoginInfo, String> 
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+
+    // Lesson 450: normalize the endpoint to its bare-origin form before
+    // appending `/{path}`. This handles two cases:
+    //   1. DEFAULT_ENDPOINT = "https://maicserver.com" (no /v1) — unchanged.
+    //   2. User set MAIC_API_URL="https://maicserver.com/v1" themselves —
+    //      we strip /v1 here so the appended `/v1/users/login` doesn't
+    //      double-prefix the path. maic_login always POSTs to the v1
+    //      route of whatever MAIC instance the user pointed at.
+    let endpoint = strip_trailing_v1(&endpoint);
 
     // Validate the email shape early to avoid a round-trip on obvious typos.
     if !email.contains('@') || email.trim().is_empty() {
@@ -1671,6 +1793,9 @@ mod tests {
         let result = ensure_maic_provider_config().expect("bootstrap ok");
         assert!(result.provider_configured, "should be configured");
         assert!(matches!(result.api_key_source, MaicKeySource::Env));
+        // Lesson 450: bootstrap returns bare endpoint, but the openclaw.json
+        // baseUrl stamped is normalized to add /v1 (which is what openclaw's
+        // OpenAI SDK appends `/chat/completions` to).
         assert_eq!(result.endpoint, "https://maicserver.com");
 
         let cfg = read_maic_root();
@@ -1684,9 +1809,11 @@ mod tests {
             entry.get("apiKey").and_then(|v| v.as_str()),
             Some("test-key-abc-123")
         );
+        // Lesson 450: baseUrl is normalized to include the /v1 prefix that
+        // openclaw's OpenAI SDK needs to reach MAIC's /v1/chat/completions.
         assert_eq!(
             entry.get("baseUrl").and_then(|v| v.as_str()),
-            Some("https://maicserver.com")
+            Some("https://maicserver.com/v1")
         );
         assert_eq!(
             entry.get("api").and_then(|v| v.as_str()),
@@ -1822,10 +1949,14 @@ mod tests {
             .and_then(|m| m.get("providers"))
             .and_then(|p| p.get("maic"))
             .expect("maic provider entry");
-        // User's custom endpoint preserved.
+        // Lesson 450: user's custom baseUrl was rewritten to include /v1
+        // because it was a bare-origin URL (no path). The legacy v1.0.0..v1.0.3
+        // bootstrap wrote `https://maicserver.com` without /v1, which made
+        // openclaw POST to /chat/completions (404). upgrade_legacy_maic_base_url
+        // retroactively fixes the value.
         assert_eq!(
             entry.get("baseUrl").and_then(|v| v.as_str()),
-            Some("https://custom.maic.example.com")
+            Some("https://custom.maic.example.com/v1")
         );
         // User's SecretRef preserved (not overwritten with a literal).
         let api_key = entry.get("apiKey").expect("apiKey");
@@ -2120,5 +2251,76 @@ mod tests {
         assert!(!is_unresolvable_api_key(&serde_json::json!({
             "source": "file", "provider": "default", "id": "/etc/key"
         })));
+    }
+
+    #[test]
+    fn normalize_maic_base_url_appends_v1_when_missing() {
+        // Already has /v1 — left alone.
+        assert_eq!(
+            normalize_maic_base_url("https://maicserver.com/v1"),
+            "https://maicserver.com/v1"
+        );
+        assert_eq!(
+            normalize_maic_base_url("https://maicserver.com/v1/"),
+            "https://maicserver.com/v1"
+        );
+        // Bare origin — append /v1.
+        assert_eq!(
+            normalize_maic_base_url("https://maicserver.com"),
+            "https://maicserver.com/v1"
+        );
+        assert_eq!(
+            normalize_maic_base_url("https://maicserver.com/"),
+            "https://maicserver.com/v1"
+        );
+        // Path with /v1 mid-segment (e.g. https://proxy.example.com/v1/maic) — left alone.
+        assert_eq!(
+            normalize_maic_base_url("https://proxy.example.com/v1/maic"),
+            "https://proxy.example.com/v1/maic"
+        );
+        // Empty — left alone.
+        assert_eq!(normalize_maic_base_url(""), "");
+    }
+
+    #[test]
+    fn upgrade_legacy_maic_base_url_only_rewrites_bare_origin() {
+        // Bare origin WITHOUT /v1 → upgraded.
+        assert_eq!(
+            upgrade_legacy_maic_base_url("https://maicserver.com"),
+            Some("https://maicserver.com/v1".to_string())
+        );
+        assert_eq!(
+            upgrade_legacy_maic_base_url("https://maicserver.com/"),
+            Some("https://maicserver.com/v1".to_string())
+        );
+        // Already has /v1 → returns None (no rewrite needed).
+        assert_eq!(
+            upgrade_legacy_maic_base_url("https://maicserver.com/v1"),
+            None
+        );
+        // Path with custom mount (/maic) → returns None (preserve user setup).
+        assert_eq!(
+            upgrade_legacy_maic_base_url("https://proxy.example.com/maic"),
+            None
+        );
+        // Garbage → returns None.
+        assert_eq!(upgrade_legacy_maic_base_url("not-a-url"), None);
+        // Empty → returns None.
+        assert_eq!(upgrade_legacy_maic_base_url(""), None);
+    }
+
+    #[test]
+    fn strip_trailing_v1_handles_both_forms() {
+        // Already bare → unchanged.
+        assert_eq!(strip_trailing_v1("https://maicserver.com"), "https://maicserver.com");
+        // /v1 suffix → stripped.
+        assert_eq!(strip_trailing_v1("https://maicserver.com/v1"), "https://maicserver.com");
+        // /v1/ trailing → stripped to bare (no trailing slash).
+        assert_eq!(strip_trailing_v1("https://maicserver.com/v1/"), "https://maicserver.com");
+        // Mid-path /v1 → unchanged (not at the end).
+        assert_eq!(
+            strip_trailing_v1("https://proxy.example.com/v1/maic"),
+            "https://proxy.example.com/v1/maic"
+        );
     }
 }
