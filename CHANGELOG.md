@@ -967,3 +967,64 @@ match the installable state. v5 is the installable state.
 - v1.1.0 dashboard pivot (`notes/V1.1.0-DASHBOARD-PLAN.md`) — deferred until v1.0.8 is verified by David.
 - YoClaw skills-folder port — v1.1.x candidate.
 - MAIC-side `/v1/usage/quota` and `tier_changed` flag — David's separate workstream.
+
+---
+
+## [v1.0.9-rc1] — 2026-08-19 12:35 MDT (rc for testing)
+
+### Lesson 462 — Orphan gateway process holds port 28789 across restarts → blank window
+
+**Symptom (David 12:30 MDT, after v1.0.8 install)**: Click OpenClaw tile → new window opens but is **completely blank** (white page, no error message). Sidecar log shows:
+
+```
+[gateway] ready in 12.5s (http://127.0.0.1:28789, ws://127.0.0.1:28789)
+[gateway] starting channels and sidecars...ok
+Gateway failed to start: gateway already running (pid 27332); lock timeout
+Port 28789 is already in use. - pid 27332
+```
+
+**Root cause**: The launcher sidecar pattern is `miracle-claw-launcher.exe → node openclaw.mjs → launcher exits with code 0`. On Windows, when the launcher wrapper exits, the openclaw.mjs child process keeps running. The new launcher MC tries to spawn on the next session sees port 28789 bound by the **orphan**, bails with `port already in use`, and the launcher terminates cleanly. MC's webview window points at the ORPHAN's HTTP server (which knows nothing about the current session) and renders blank.
+
+**Two-part fix**:
+
+**Part 1 — `kill_orphan_holding_port(port)` in `spawn_launcher_and_wait`**: Before spawning the launcher, check if port 28789 is in use via `netstat -ano | findstr :28789`. If yes, find the PID holding it (LISTENING state only — don't kill clients), kill via `taskkill /F /T /PID <pid>`, wait 500ms for the OS to release the port, then proceed with normal spawn. Logs each killed PID with the `[miracle-claw] Lesson 462:` prefix so future debugging can trace orphans back.
+
+**Part 2 — `check_http_ready(url, timeout)` in `openclaw_open_window`**: After the TCP-only pre-flight check, do a real HTTP GET on `http://127.0.0.1:28789/` with a 1-second timeout. If it doesn't return a 2xx, return `Err("OpenClaw gateway port is open but not serving the chat UI. Please log out and back in to reset it.")` instead of letting the user see a blank window.
+
+These are **layered defenses**, not alternatives:
+- Part 1 prevents most cases (active restarts never encounter the orphan).
+- Part 2 catches the edge cases Part 1 misses (a fresh-but-broken gateway, an OS race during port release, a future bug in the launcher pattern).
+
+**Files changed**:
+- `src-tauri/src/lib.rs`:
+  - New `kill_orphan_holding_port(port)` (~80 LOC, Windows-specific via `cfg(target_os = "windows")`, with a no-op fallback for cross-platform code paths).
+  - New `check_http_ready(url, timeout)` (~80 LOC, hand-rolled minimal HTTP/1.1 client — no reqwest dep, keeps the binary small).
+  - `spawn_launcher_and_wait` calls `kill_orphan_holding_port` before spawning the sidecar.
+  - `openclaw_open_window` calls `check_http_ready` after the existing TCP pre-flight.
+
+### Bug #1 — New Account button on login screen (David 11:20 MDT)
+
+**Symptom**: Login screen had only a tiny "Create one" link in the footer. New users installing MC had to hunt for it.
+
+**Fix**: New `<button type="button" id="register-btn">` directly below the Sign in button, full-width, labeled "New here? Create a MAIC account". Click handler calls new `open_register_url` Tauri command which opens `https://milagrocloud.com/register` in the OS default browser via `cmd /c start "" <url>`. Defense-in-depth: the Rust command re-checks the URL is `https://` and the host is in our allow-list (`milagrocloud.com`, `www.milagrocloud.com`).
+
+### Bug #2 — Dashboard polish (David 11:20 MDT)
+
+**Symptom**: OpenClaw tile looked like a placeholder; description was wordy; visual hierarchy weak.
+
+**Fix**:
+- New `.tile.tile-primary` CSS class — gradient background, 2px link-colored border, larger icon, slightly bigger padding. The OpenClaw tile is the only tile in v1.1.0 and the primary CTA; visual emphasis matters.
+- `.tile:hover` now also adds a subtle shadow (`box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08)`).
+- Tightened the description (removed the "Free tier gets weather, web search, time and calculator" sentence — that detail belongs in the upgrade nudge, not the CTA copy).
+- Footer links ("Refresh tier", "Sign out") now have hover color transition.
+
+### Files changed
+- `src-tauri/src/lib.rs` — `kill_orphan_holding_port`, `check_http_ready`, `open_register_url`, integrated into existing commands + registered in `invoke_handler!`.
+- `src/main.js` — `tile tile-primary` class on OpenClaw tile, tightened description, register button wiring (already done in prior session).
+- `src/styles.css` — `.tile.tile-primary`, hover shadow, footer link transitions.
+- `src-tauri/{Cargo.toml,tauri.conf.json}`, `package.json`, `src-tauri/resources/BUNDLE_VERSION` — version bump 1.0.8 → 1.0.9 (Lesson 459).
+
+### What's NOT in v1.0.9-rc1
+- v1.1.0 dashboard pivot (`notes/V1.1.0-DASHBOARD-PLAN.md`) — still deferred.
+- Pre-build version-check guard in `build-windows-docker.sh` (Lesson 459 follow-up) — v1.0.x polish.
+- YoClaw skills-folder port — v1.1.x.

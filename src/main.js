@@ -94,15 +94,14 @@ async function renderDashboard() {
       </div>
 
       <div class="tiles">
-        <button class="tile" id="openclaw-tile" type="button">
+        <button class="tile tile-primary" id="openclaw-tile" type="button">
           <div class="tile-icon">🦞</div>
           <div class="tile-body">
             <div class="tile-title">OpenClaw</div>
             <div class="tile-description">
               Your MAIC chat workspace. Talk to any MAIC model, run code,
-              search the web, work with your files. Free tier gets weather,
-              web search, time and calculator. Pro and above unlocks file
-              tools, command execution, and persistent memory.
+              search the web, work with files. Pro and above unlocks local
+              file tools, command execution, and persistent memory.
             </div>
             <div class="tile-cta">Open in new window →</div>
           </div>
@@ -299,17 +298,17 @@ function renderLogin(endpoint) {
         </label>
 
         <button type="submit" id="login-submit">Sign in</button>
+
+        <button type="button" id="register-btn" class="register-btn">
+          New here? Create a MAIC account
+        </button>
       </form>
 
       <div id="login-error" class="error" hidden></div>
 
       <div class="footer">
         <p class="muted small">
-          Signing in connects to <code>${escapeHtml(endpoint)}</code>.<br />
-          Don't have a MAIC account?
-          <a href="https://milagrocloud.com/register" target="_blank" rel="noopener">
-            Create one — starts free, upgrade anytime.
-          </a>
+          Signing in connects to <code>${escapeHtml(endpoint)}</code>.
         </p>
       </div>
     </div>
@@ -355,6 +354,26 @@ function renderLogin(endpoint) {
       errorEl.hidden = false;
       submit.disabled = false;
       submit.textContent = "Sign in";
+    }
+  });
+
+  // v1.0.9 (David 11:20 MDT): New users installing MC need a way to
+  // create an account without hunting through footer text. Open the
+  // milagrocloud registration page in the OS default browser (NOT inside
+  // the Tauri webview — we don't want to leak the dashboard's webview to
+  // a third-party site). The user comes back to MC after signup, signs in,
+  // done.
+  document.getElementById("register-btn").addEventListener("click", async () => {
+    try {
+      await invoke("open_register_url", {
+        url: "https://milagrocloud.com/register",
+      });
+    } catch (e) {
+      console.error("[MiracleClaw] could not open register URL:", e);
+      errorEl.textContent =
+        "Could not open your browser automatically. Please visit " +
+        "milagrocloud.com/register to create an account.";
+      errorEl.hidden = false;
     }
   });
 

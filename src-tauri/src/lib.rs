@@ -1876,6 +1876,211 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// v1.0.9 (Lesson 462): kill any orphaned openclaw.mjs / node.exe holding
+/// port 28789 BEFORE we try to spawn a fresh launcher.
+///
+/// Why this exists: the launcher sidecar pattern is `launcher → node
+/// openclaw.mjs → launcher exits`. The launcher wrapper exits with code 0
+/// on shutdown, but the openclaw.mjs child process keeps running. On
+/// Windows, when MC restarts or tries to respawn the launcher, the new
+/// child process sees port 28789 bound by the orphan and bails with
+/// "port already in use" / "gateway already running". The new launcher
+/// terminates cleanly, but MC's webview window points at the ORPHAN's
+/// HTTP server (which knows nothing about the current session) and renders
+/// a blank page.
+///
+/// Symptom (David 12:30 MDT, post-v1.0.8 install):
+///   - Sidecar log: "Port 28789 is already in use. - pid 27332"
+///   - Dashboard tile click opens a blank window (orphan server responds,
+///     returns HTML that doesn't render as a chat UI).
+///
+/// Fix: before spawn_launcher_and_wait, check if port 28789 is in use.
+/// If yes, find the PID holding it (Windows: parse `netstat -ano | findstr
+/// :28789`), log it, kill it via `taskkill /F /PID`, wait 500ms for the OS
+/// to release the port, then proceed with normal spawn.
+///
+/// Cross-platform note: this implementation is Windows-only (miracle-claw
+/// currently only ships Windows installers). On non-Windows we'd use
+/// `lsof -ti:28789 | xargs kill -9` instead.
+fn kill_orphan_holding_port(port: u16) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        // netstat -ano | findstr :28789 → lines like:
+        //   TCP    127.0.0.1:28789    0.0.0.0:0    LISTENING    27332
+        let netstat = Command::new("netstat")
+            .args(["-ano"])
+            .output()
+            .map_err(|e| format!("netstat failed: {e}"))?;
+        let stdout = String::from_utf8_lossy(&netstat.stdout);
+
+        let port_marker = format!(":{}", port);
+        let mut orphan_pids: Vec<u32> = Vec::new();
+        for line in stdout.lines() {
+            // Only LISTENING lines are the gateway listening for connections.
+            // Established/Time_Wait lines are clients — we don't kill clients.
+            if !line.contains("LISTENING") {
+                continue;
+            }
+            if !line.contains(&port_marker) {
+                continue;
+            }
+            // PID is the last whitespace-separated field on a netstat -ano line.
+            if let Some(pid_str) = line.split_whitespace().last() {
+                if let Ok(pid) = pid_str.parse::<u32>() {
+                    // Don't kill ourselves (miracle-claw.exe has a different
+                    // PID pattern, but defensive check: if the PID == 0 or
+                    // 4 (System), skip — those are reserved).
+                    if pid > 4 {
+                        orphan_pids.push(pid);
+                    }
+                }
+            }
+        }
+
+        if orphan_pids.is_empty() {
+            return Ok(());
+        }
+
+        eprintln!(
+            "[miracle-claw] Lesson 462: found {} orphan(s) holding port {}: {:?}",
+            orphan_pids.len(),
+            port,
+            orphan_pids
+        );
+
+        for pid in &orphan_pids {
+            // /F = force, /T = also kill child processes (the node openclaw.mjs
+            // child if the launcher wrapper is what's still bound — unlikely
+            // on Windows but defensive).
+            let kill = Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .output();
+            match kill {
+                Ok(out) if out.status.success() => {
+                    eprintln!(
+                        "[miracle-claw] Lesson 462: killed orphan pid {} (port {})",
+                        pid, port
+                    );
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    eprintln!(
+                        "[miracle-claw] Lesson 462: taskkill pid {} failed: {}",
+                        pid,
+                        stderr.trim()
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[miracle-claw] Lesson 462: taskkill invocation failed: {}",
+                        e
+                    );
+                }
+            }
+        }
+
+        // Give the OS a moment to release the port. 500ms is enough on
+        // Windows in practice; if we see flakes in testing we'll bump it.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Future-proof for non-Windows. Not used today but keeps the function
+        // callable from cross-platform code paths without a cfg gate.
+        let _ = port;
+        Ok(())
+    }
+}
+
+/// v1.0.9 (Lesson 462): do a quick HTTP GET on the given URL with a
+/// short timeout. Returns Ok(status_code) on any 2xx, Err(msg) otherwise.
+///
+/// Used by `openclaw_open_window` to verify the openclaw gateway is
+/// actually serving the chat UI before we spawn the WebView window.
+/// Without this, an orphan gateway can hold the TCP port and the user
+/// sees a blank window (the orphan's HTML doesn't render as chat UI).
+fn check_http_ready(url: &str, timeout: std::time::Duration) -> Result<u16, String> {
+    // Parse the URL into host + port + path. We support http://127.0.0.1:PORT/
+    // and http://localhost:PORT/ — anything else is rejected.
+    let url = url.trim_start_matches("http://");
+    let (host_port, path) = match url.find('/') {
+        Some(idx) => (&url[..idx], &url[idx..]),
+        None => (url, "/"),
+    };
+    let (host, port) = match host_port.find(':') {
+        Some(idx) => (&host_port[..idx], &host_port[idx + 1..]),
+        None => (host_port, "80"),
+    };
+    let host = if host == "localhost" { "127.0.0.1" } else { host };
+    let port: u16 = port.parse().map_err(|e| format!("invalid port: {e}"))?;
+
+    // Connect TCP with timeout.
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    let stream = TcpStream::connect_timeout(
+        &format!("{host}:{port}").parse().map_err(|e| format!("invalid addr: {e}"))?,
+        timeout,
+    )
+    .map_err(|e| format!("TCP connect failed: {e}"))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| format!("set_read_timeout: {e}"))?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|e| format!("set_write_timeout: {e}"))?;
+    let mut stream = stream;
+
+    // Send a minimal HTTP/1.1 GET. No Host header tricks, no body.
+    let req = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(req.as_bytes())
+        .map_err(|e| format!("write failed: {e}"))?;
+    stream.flush().map_err(|e| format!("flush failed: {e}"))?;
+
+    // Read response headers (we only need the status line).
+    let mut buf = Vec::with_capacity(512);
+    let mut chunk = [0u8; 256];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                // Stop at end of headers.
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+                if buf.len() > 4096 {
+                    // Pathological response — bail.
+                    break;
+                }
+            }
+            Err(e) => return Err(format!("read failed: {e}")),
+        }
+    }
+
+    let response = String::from_utf8_lossy(&buf);
+    // First line: "HTTP/1.1 200 OK" or similar.
+    let status_line = response.lines().next().unwrap_or("");
+    // Parse status code (the second whitespace-separated token).
+    let parts: Vec<&str> = status_line.split_whitespace().collect();
+    if parts.len() < 2 {
+        return Err(format!("malformed status line: {status_line:?}"));
+    }
+    let code: u16 = parts[1]
+        .parse()
+        .map_err(|e| format!("status code parse: {e}"))?;
+    if (200..300).contains(&code) {
+        Ok(code)
+    } else {
+        Err(format!("HTTP {} from gateway", code))
+    }
+}
+
 /// Spawn the launcher sidecar with the current process env (so MAIC_API_KEY
 /// set via `std::env::set_var` propagates) and wait for the gateway to be
 /// reachable on the given port. Used by both `setup()` (returning users with
@@ -1891,6 +2096,20 @@ fn spawn_launcher_and_wait(
     timeout: Duration,
 ) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
+
+    // v1.0.9 (Lesson 462): before spawning, kill any orphan holding port
+    // 28789 from a previous session. Without this, the new gateway bails
+    // with "port already in use", the launcher exits cleanly with code 0,
+    // and the user's webview points at the orphan's HTTP server (which
+    // renders blank because it doesn't know about the current session).
+    if let Err(e) = kill_orphan_holding_port(port) {
+        // Non-fatal — log and continue. The spawn itself will fail loudly
+        // if the port is still held.
+        eprintln!(
+            "[miracle-claw] Lesson 462: kill_orphan_holding_port({}) returned: {}",
+            port, e
+        );
+    }
 
     let shell = app_handle.shell();
     let port_str = port.to_string();
@@ -1987,10 +2206,10 @@ fn start_gateway_after_login(
 /// Tauri command: openclaw_open_window (Lesson 461).
 ///
 /// Spawns (or focuses, if already open) a dedicated webview window that
-/// hosts the OpenClaw chat UI at http://localhost:28789/. Lives separately
-/// from the dashboard so the user can keep the dashboard alive while
-/// chatting, and so a popup-blocked `window.open()` from the dashboard
-/// cannot permanently navigate the dashboard away.
+/// hosts the OpenClaw chat UI at the bundled OpenClaw gateway. Lives
+/// separately from the dashboard so the user can keep the dashboard alive
+/// while chatting, and so a popup-blocked `window.open()` from the
+/// dashboard cannot permanently navigate the dashboard away.
 ///
 /// Returns Ok("created") if a new window was spawned, Ok("focused") if
 /// an existing one was brought to front, Err(msg) on failure.
@@ -2001,7 +2220,12 @@ fn openclaw_open_window(
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
     const WINDOW_LABEL: &str = "openclaw-chat";
-    const CHAT_URL: &str = "http://localhost:28789/";
+    // Lesson 461b: use 127.0.0.1, not localhost. WebView2 on some Windows
+    // machines has a known quirk where `localhost` resolves to ::1 (IPv6)
+    // first, the openclaw gateway binds only to 127.0.0.1 (IPv4), and the
+    // page hangs loading. 127.0.0.1 forces IPv4 and matches the bind
+    // mode=loopback default in the launcher.
+    const CHAT_URL: &str = "http://127.0.0.1:28789/";
 
     // If the window already exists (user clicked the OpenClaw tile twice),
     // just focus it and bail. Don't create a second one.
@@ -2010,6 +2234,53 @@ fn openclaw_open_window(
         let _ = existing.unminimize();
         eprintln!("[miracle-claw] openclaw-chat window already open — focusing");
         return Ok("focused");
+    }
+
+    // Sanity: verify the gateway is actually serving HTTP BEFORE we spawn
+    // the window. wait_for_gateway_ready only checked a TCP port, not that
+    // HTTP responses actually succeed. v1.0.9 (Lesson 462): we now also do
+    // a quick HTTP GET on / — if it doesn't return a 2xx, we know the
+    // server isn't actually serving the chat UI, and we surface that as an
+    // error instead of letting the user see a blank window.
+    match std::net::TcpStream::connect_timeout(
+        &"127.0.0.1:28789".parse().unwrap(),
+        std::time::Duration::from_millis(500),
+    ) {
+        Ok(_) => {
+            eprintln!("[miracle-claw] openclaw-chat: gateway port 28789 reachable");
+        }
+        Err(e) => {
+            eprintln!("[miracle-claw] openclaw-chat: gateway NOT reachable: {}", e);
+            return Err(format!(
+                "OpenClaw gateway is not responding on port 28789. \
+                 Try logging out and back in. ({e})"
+            ));
+        }
+    }
+
+    // v1.0.9 (Lesson 462): HTTP-level readiness check. A port being open
+    // does NOT mean the gateway is serving the chat UI (an orphaned
+    // gateway from a previous session can hold the port and respond with
+    // HTML that doesn't render as a chat UI → blank window). Verify we
+    // get a real 2xx back from GET / within 1 second. If we don't, treat
+    // it as a failure and surface an informative error.
+    match check_http_ready("http://127.0.0.1:28789/", std::time::Duration::from_secs(1)) {
+        Ok(status) => {
+            eprintln!(
+                "[miracle-claw] openclaw-chat: gateway HTTP / returned {}",
+                status
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "[miracle-claw] openclaw-chat: gateway HTTP check failed: {}",
+                e
+            );
+            return Err(format!(
+                "OpenClaw gateway port is open but not serving the chat UI. \
+                 Please log out and back in to reset it. ({e})"
+            ));
+        }
     }
 
     // Spawn the chat window. Tauri 2 requires:
@@ -2037,6 +2308,75 @@ fn openclaw_open_window(
 
     eprintln!("[miracle-claw] openclaw-chat window created → {}", CHAT_URL);
     Ok("created")
+}
+
+/// Tauri command: open_register_url (v1.0.9, Lesson 462 companion).
+///
+/// Opens the supplied URL in the OS default browser via `cmd /c start ""`.
+/// Used by the login screen's "Create New Account" button so new users can
+/// register on milagrocloud.com without leaving the Tauri webview (we
+/// don't want to navigate the dashboard webview to a third-party site).
+///
+/// We allow-list the host client-side (`https://milagrocloud.com/register`)
+/// but defense-in-depth: the backend re-checks that the URL is https and
+/// points at a host in our allow-list. This prevents the frontend from
+/// being tricked into opening arbitrary URLs.
+#[tauri::command]
+fn open_register_url(url: String) -> Result<(), String> {
+    // Defense-in-depth: re-check the URL.
+    let url = url.trim().to_string();
+    if !url.starts_with("https://") {
+        return Err(format!(
+            "open_register_url requires https:// — got {:?}",
+            url
+        ));
+    }
+    let allowed_hosts = ["milagrocloud.com", "www.milagrocloud.com"];
+    let host_ok = allowed_hosts.iter().any(|h| {
+        url[8..]
+            .split('/')
+            .next()
+            .map(|first| first.eq_ignore_ascii_case(h))
+            .unwrap_or(false)
+    });
+    if !host_ok {
+        return Err(format!(
+            "open_register_url host not in allow-list: {:?}",
+            url
+        ));
+    }
+
+    eprintln!("[miracle-claw] open_register_url: opening {}", url);
+
+    #[cfg(target_os = "windows")]
+    {
+        // `cmd /c start "" <url>` opens in default browser without a
+        // console window flashing. Empty quotes suppress the title arg.
+        use std::process::Command;
+        let status = Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .status()
+            .map_err(|e| format!("cmd start failed: {e}"))?;
+        if !status.success() {
+            return Err(format!("cmd start exited with {:?}", status.code()));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // macOS: open, Linux: xdg-open. Future-proofing only.
+        use std::process::Command;
+        #[cfg(target_os = "macos")]
+        let mut cmd = Command::new("open");
+        #[cfg(not(target_os = "macos"))]
+        let mut cmd = Command::new("xdg-open");
+        cmd
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("browser open failed: {e}"))?;
+        Ok(())
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -2154,6 +2494,7 @@ pub fn run() {
             silent_relogin,
             start_gateway_after_login,
             openclaw_open_window,
+            open_register_url,
             // v1.0.7: tier + nudge surface
             mc_get_tier,
             mc_get_nudge,
