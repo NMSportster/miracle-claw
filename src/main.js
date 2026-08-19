@@ -81,6 +81,15 @@ function renderLogin(endpoint) {
           />
         </label>
 
+        <label class="checkbox">
+          <input
+            type="checkbox"
+            name="remember"
+            id="login-remember"
+          />
+          <span>Stay signed in (encrypts your password in this machine's secure store)</span>
+        </label>
+
         <button type="submit" id="login-submit">Sign in</button>
       </form>
 
@@ -110,9 +119,15 @@ function renderLogin(endpoint) {
 
     const email = document.getElementById("login-email").value.trim();
     const password = document.getElementById("login-password").value;
+    // Lesson 458 / v1.0.6: "Stay signed in" checkbox. Default UNCHECKED
+    // (explicit opt-in). When checked, MC encrypts email + password into
+    // the OS keychain so the OpenClaw child window can silently mint a
+    // new JWT when its session expires (instead of forcing a manual
+    // re-login). When unchecked, any prior keychain stash is wiped.
+    const remember = document.getElementById("login-remember").checked;
 
     try {
-      const result = await invoke("maic_login", { email, password });
+      const result = await invoke("maic_login", { email, password, remember });
       // Login succeeded → MAIC provider is now wired in openclaw.json
       // (the legacy SecretRef has been replaced with the literal JWT).
       // Now spawn the launcher with MAIC_API_KEY in env, so the openclaw

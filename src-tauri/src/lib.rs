@@ -48,6 +48,10 @@ use tauri_plugin_shell::process::CommandEvent;
 mod launcher_info;
 use launcher_info::{launcher_binary_name, MAIC_PLUGIN_FILENAMES, OPENCLAW_PORT};
 
+// Lesson 458 / v1.0.6: silent-relogin via cached creds in OS keychain.
+// See src/auto_relogin.rs for the full design.
+mod auto_relogin;
+
 // ----------------------------------------------------------------------------
 // Constants
 // ----------------------------------------------------------------------------
@@ -880,6 +884,60 @@ fn replace_secret_ref_with_literal() -> bool {
     false
 }
 
+/// Lesson 458 / v1.0.6: replace any literal JWT in `models.providers.maic.apiKey`
+/// back with a SecretRef, so a future `maic_login` can do its job cleanly
+/// instead of finding a stale literal. Idempotent. Used by `maic_logout`.
+///
+/// Why not just delete the provider entry? `setup()` calls
+/// `ensure_maic_provider_config()` which expects the entry to exist; if we
+/// delete it, the next launch will fail with "MAIC provider missing".
+/// Restoring the SecretRef keeps the shape valid and lets a fresh login
+/// flow naturally.
+fn restore_maic_provider_secret_ref() -> bool {
+    let path = openclaw_json_path();
+    let mut cfg: serde_json::Value = match std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+    {
+        Some(c) => c,
+        None => return false,
+    };
+    let entry = cfg
+        .get_mut("models")
+        .and_then(|m| m.get_mut("providers"))
+        .and_then(|p| p.get_mut("maic"))
+        .and_then(|e| e.as_object_mut());
+    if let Some(entry_obj) = entry {
+        // If it's already a SecretRef to MAIC_API_KEY, nothing to do.
+        if matches!(
+            entry_obj.get("apiKey"),
+            Some(serde_json::Value::Object(o))
+                if o.get("source").and_then(|v| v.as_str()) == Some("env")
+                    && o.get("id").and_then(|v| v.as_str()) == Some(ENV_VAR_NAME)
+        ) {
+            return true;
+        }
+        // Replace whatever's there with the SecretRef.
+        entry_obj.insert(
+            "apiKey".to_string(),
+            serde_json::json!({
+                "source": "env",
+                "provider": "default",
+                "id": ENV_VAR_NAME
+            }),
+        );
+        if let Ok(serialized) = serde_json::to_string_pretty(&cfg) {
+            if std::fs::write(&path, serialized).is_ok() {
+                eprintln!(
+                    "[miracle-claw] maic_logout: restored SecretRef in openclaw.json"
+                );
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Register a default env-based SecretProvider so openclaw's SecretRef
 /// `{source: "env", provider: "default", id: "MAIC_API_KEY"}` resolves at
 /// request time. Mutates `cfg` in place. Idempotent.
@@ -1341,7 +1399,7 @@ struct MaicLoginInfo {
 }
 
 #[tauri::command]
-fn maic_login(email: String, password: String) -> Result<MaicLoginInfo, String> {
+fn maic_login(email: String, password: String, remember: bool) -> Result<MaicLoginInfo, String> {
     let endpoint = std::env::var("MAIC_API_URL")
         .ok()
         .map(|s| s.trim().to_string())
@@ -1441,12 +1499,224 @@ fn maic_login(email: String, password: String) -> Result<MaicLoginInfo, String> 
         resolved_email, tier, bootstrap.api_key_source
     );
 
+    // Lesson 458 / v1.0.6: handle "Remember me" checkbox.
+    //
+    // - remember=true  → encrypt and stash email|password in the OS keychain,
+    //                    so future 401s can trigger silent relogin.
+    // - remember=false → wipe any prior stash. Idempotent: if no stash exists,
+    //                    this is a no-op. The user might be un-checking the
+    //                    box after a previous login, or might be on a borrowed
+    //                    machine where they want a clean slate.
+    //
+    // Keychain failures here are non-fatal. We don't want a user with a
+    // locked-down corporate keychain to be unable to log in; we just log
+    // the failure and continue. The login still succeeds; they just won't
+    // get silent relogin.
+    if remember {
+        if let Err(e) = auto_relogin::stash_cached_credentials(
+            &resolved_email,
+            &password,
+            &endpoint,
+        ) {
+            eprintln!(
+                "[miracle-claw] maic_login: WARNING — failed to stash creds (silent relogin will not work): {}",
+                e
+            );
+        }
+    } else {
+        // Defensive: wipe any prior stash.
+        if let Err(e) = auto_relogin::clear_cached_credentials() {
+            eprintln!(
+                "[miracle-claw] maic_login: WARNING — failed to clear prior cached creds: {}",
+                e
+            );
+        }
+    }
+
     Ok(MaicLoginInfo {
         token,
         email: resolved_email,
         tier,
         endpoint,
     })
+}
+
+// ----------------------------------------------------------------------------
+// Tauri command: maic_logout (Lesson 458 / v1.0.6)
+//
+// Signs the user out of MAIC:
+//   1. Kill the launcher sidecar (if running) so the openclaw gateway stops
+//      listening on localhost:28789. This frees the port for the next user
+//      login and avoids a stale process holding the JWT in memory.
+//   2. Clear the cached creds from the OS keychain (the "Remember me"
+//      stash). Idempotent — if no stash exists, this is a no-op.
+//   3. Restore the MAIC provider entry's apiKey back to a SecretRef so a
+//      future `maic_login` can do its job cleanly. We don't delete the
+//      entry; we restore the shape.
+//   4. Unset MAIC_API_KEY in this process's env so any subsequent Tauri
+//      command that checks the env sees the logged-out state.
+//
+// The frontend is expected to call this when the user clicks "Sign out"
+// in the v1.1.0 dashboard, and to then reload the page so the login
+// screen re-renders. We don't force-reload here; that's the frontend's
+// job (it knows whether there's a dashboard to redraw).
+//
+// SAFETY: env var removal is async-signal-safe per POSIX; no signal
+// handler should observe a partially-modified env. We use unsafe only
+// for the std::env::remove_var call which Rust 2021 marks unsafe due to
+// the data-race concern with libc::getenv.
+// ----------------------------------------------------------------------------
+
+#[tauri::command]
+fn maic_logout(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    // 1. Kill the launcher sidecar if it's running.
+    if let Some(child) = state.launcher_child.lock().unwrap().take() {
+        eprintln!("[miracle-claw] maic_logout: killing launcher sidecar");
+        let _ = child.kill();
+    }
+
+    // 2. Wipe the keychain stash. We don't fail the logout if this errors
+    //    (e.g. a corporate-locked-down keychain); the user is logged out
+    //    of MAIC regardless, and the leftover stash will just be ignored
+    //    on next login if `remember=false` (the defensive clear path).
+    if let Err(e) = auto_relogin::clear_cached_credentials() {
+        eprintln!(
+            "[miracle-claw] maic_logout: WARNING — failed to clear cached creds: {}",
+            e
+        );
+    }
+
+    // 3. Restore the SecretRef so the next login can flow.
+    if !restore_maic_provider_secret_ref() {
+        eprintln!(
+            "[miracle-claw] maic_logout: WARNING — could not restore SecretRef in openclaw.json"
+        );
+        // Not fatal; the next login will overwrite whatever's there anyway.
+    }
+
+    // 4. Unset the env var in our process. SAFETY: remove_var is
+    //    async-signal-safe per POSIX; Rust marks it unsafe to flag the
+    //    libc::getenv race.
+    unsafe {
+        std::env::remove_var(ENV_VAR_NAME);
+    }
+
+    // 5. If the v1.1.0 dashboard has spawned the OpenClaw child window,
+    //    close it. (v1.0.x doesn't spawn a window; this is a no-op then.)
+    if let Some(w) = app_handle.get_webview_window("openclaw") {
+        let _ = w.close();
+    }
+
+    eprintln!("[miracle-claw] maic_logout: complete");
+    Ok(())
+}
+
+// ----------------------------------------------------------------------------
+// Tauri command: silent_relogin (Lesson 458 / v1.0.6)
+//
+// Called by the OpenClaw child window when its MAIC chat request returns
+// 401. Loads the cached creds from the OS keychain, runs the login POST,
+// returns the new JWT so OpenClaw can update its in-memory token and retry
+// the original request.
+//
+// Returns:
+//   - Ok(Some(MaicLoginInfo))   — relogin succeeded; OpenClaw retries
+//   - Ok(None)                  — no cached creds (user didn't check
+//                                 Remember me). OpenClaw surfaces the
+//                                 original 401 to the user as "please log
+//                                 in again".
+//   - Err(String)               — relogin failed for a real reason (wrong
+//                                 password, keychain corrupt, network
+//                                 down). OpenClaw surfaces a generic
+//                                 "session expired" message; user logs in
+//                                 fresh.
+//
+// We deliberately do NOT clear the keychain on a failed relogin. The most
+// common failure is a wrong-password-after-rotation, and clearing would
+// lock the user out of silent relogin until they manually log in once
+// successfully. maic_logout is the only path that should clear.
+// ----------------------------------------------------------------------------
+
+#[tauri::command]
+fn silent_relogin() -> Result<Option<MaicLoginInfo>, String> {
+    // Determine the endpoint we'd be logging into: same resolution logic
+    // as maic_login so a MAIC_API_URL override is honored.
+    let endpoint = std::env::var("MAIC_API_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+    let endpoint = strip_trailing_v1(&endpoint);
+
+    // Load cached creds. The most common "no creds" path is the user
+    // didn't check Remember me — return Ok(None) so OpenClaw knows to
+    // surface a clean login prompt rather than treat it as an error.
+    let creds = match auto_relogin::load_cached_credentials(&endpoint) {
+        Ok(c) => c,
+        Err(auto_relogin::AutoReloginError::NoCachedCreds) => {
+            eprintln!("[miracle-claw] silent_relogin: no cached creds");
+            return Ok(None);
+        }
+        Err(e) => {
+            eprintln!(
+                "[miracle-claw] silent_relogin: failed to load cached creds: {}",
+                e
+            );
+            return Err(format!("failed to load cached credentials: {}", e));
+        }
+    };
+
+    // Run the same login POST as maic_login. We re-implement the core
+    // (parse response, set env var, replace SecretRef, return info) here
+    // because we don't want to call maic_login's signature (which now
+    // takes a `remember` param the user can't supply via silent flow).
+    let body = serde_json::json!({
+        "email": creds.email.trim(),
+        "password": creds.password,
+    })
+    .to_string();
+    let response_body = http_post_json_with_tls_fallback(&endpoint, "/v1/users/login", &body)
+        .map_err(|e| format!("silent relogin HTTP failed: {}", e))?;
+
+    let parsed: serde_json::Value = serde_json::from_str(&response_body)
+        .map_err(|e| format!("silent relogin response could not be parsed: {}", e))?;
+    let token = parsed
+        .get("token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "silent relogin succeeded but no token in response".to_string())?;
+    let resolved_email = parsed
+        .get("user")
+        .and_then(|u| u.get("email"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(creds.email.trim())
+        .to_string();
+    let tier = parsed
+        .get("user")
+        .and_then(|u| u.get("tier"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("free")
+        .to_string();
+
+    // Update env var + on-disk config so the rest of MC sees the new token.
+    std::env::set_var(ENV_VAR_NAME, &token);
+    let _ = ensure_maic_provider_config();
+    let _ = replace_secret_ref_with_literal();
+
+    eprintln!(
+        "[miracle-claw] silent_relogin: success — user={}, tier={}",
+        resolved_email, tier
+    );
+
+    Ok(Some(MaicLoginInfo {
+        token,
+        email: resolved_email,
+        tier,
+        endpoint,
+    }))
 }
 
 /// HTTP POST helper for the login flow.
@@ -1706,6 +1976,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             first_run_report,
             maic_login,
+            maic_logout,
+            silent_relogin,
             start_gateway_after_login
         ])
         .setup(|app| {

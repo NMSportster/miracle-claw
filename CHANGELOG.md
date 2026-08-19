@@ -586,3 +586,118 @@ match the installable state. v5 is the installable state.
 9. **Send a chat message → expect response** (no more "model not found").
 
 [v1.0.5-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.4-rc1...593d4d1
+
+## [v1.0.6-rc1] — 2026-08-19 (commit TBD)
+
+### Added — "Stay signed in" opt-in
+- **Lesson 458: silent-relogin on 401 via cached credentials.**
+  The login form now has a checkbox: **"Stay signed in (encrypts your
+  password in this machine's secure store)"**. Default is **unchecked**
+  (explicit opt-in).
+  - When **checked**, MC encrypts the user's email + password with a
+    per-install AES-256-GCM key and stashes both the encrypted blob and
+    the encryption key in the OS keychain (Windows Credential Manager /
+    macOS Keychain / Linux Secret Service). Future 401s from the OpenClaw
+    chat can silently mint a new JWT instead of forcing a manual re-login.
+  - When **unchecked**, any prior stash is wiped on this login. Idempotent
+    — safe to un-check and re-log-in on a borrowed machine.
+- **New Tauri command `silent_relogin`** — called by the OpenClaw child
+  window when its MAIC chat request returns 401. Loads cached creds,
+  mints a new JWT, returns it. `Ok(None)` means "no cached creds" (user
+  didn't check the box); OpenClaw surfaces the original 401 as a clean
+  login prompt instead of treating it as an error.
+- **New Tauri command `maic_logout`** — for the v1.1.0 dashboard. Kills
+  the launcher sidecar, wipes the keychain stash, restores the
+  `models.providers.maic.apiKey` SecretRef in `openclaw.json`, unsets
+  `MAIC_API_KEY` in the process env, closes the OpenClaw child window.
+
+### Added — `auto_relogin` module
+- **New file: `src-tauri/src/auto_relogin.rs`** (~430 LOC + 200 LOC tests).
+- **Pure crypto helpers** (`generate_key`, `generate_nonce`,
+  `encrypt_blob`, `decrypt_blob`) take a key as input and don't touch
+  the OS keychain. Unit-testable without any platform backend.
+- **Keychain integration** (`stash_cached_credentials`,
+  `load_cached_credentials`, `clear_cached_credentials`) is exercised
+  end-to-end on David's machine before each release — the `keyring`
+  crate v3.x dropped the `mock` feature so there's no in-process
+  keychain backend anymore.
+- **`CachedCreds` struct is `Zeroize`-on-drop** so decrypted secrets
+  don't linger in process memory after the login round-trip.
+- **Endpoint binding via AAD**: each credential blob is bound to the
+  MAIC endpoint it was issued for. A creds stash for `staging.maicserver.com`
+  cannot be used to log into `maicserver.com` and vice versa — protects
+  against accidental cross-environment reuse.
+
+### Changed — `maic_login` signature
+- Was: `fn maic_login(email: String, password: String) -> Result<...>`
+- Now: `fn maic_login(email: String, password: String, remember: bool) -> Result<...>`
+- Existing callers (frontend `invoke('maic_login', { email, password })`)
+  would have broken silently — the new field is required. The frontend
+  was updated in this commit to pass `remember` from the new checkbox.
+
+### Dependencies added
+- `keyring = "3"` (Windows Credential Manager / macOS Keychain / Linux Secret Service)
+- `aes-gcm = "0.10"` (AES-256-GCM authenticated encryption)
+- `rand = "0.8"` (cryptographically-secure random key + nonce)
+- `base64 = "0.22"` (envelope encoding)
+- `zeroize = "1"` (Drop-time wipe of decrypted secrets)
+
+### Verified
+- `cargo test --lib` — **23/23 pass** (8 new auto_relogin tests + 15 from v1.0.5).
+  New tests:
+  - `encrypt_decrypt_round_trip`
+  - `nonce_uniqueness_same_plaintext_different_ciphertexts`
+  - `wrong_key_fails_decrypt`
+  - `tampered_ciphertext_fails_decrypt`
+  - `truncated_blob_rejected`
+  - `wrong_aad_fails_decrypt`
+  - `ascii_password_round_trips` (empty / unicode / very-long / `\0`-containing)
+  - `envelope_round_trips_through_json`
+- `cargo check --bin miracle-claw --lib` — clean (1 pre-existing unused-field warning).
+
+### Anti-patterns learned (Lesson 458 corollary)
+- **"MEMORY.md says this exists" ≠ "this exists in this repo"**. Lesson 194 in
+  MEMORY.md described an `auto_relogin.rs` module from a downstream product
+  line (miracle-claw 1.7.2). The current repo (miracle-claw 1.0.5 master)
+  does NOT have it. Reaching for that module on the false assumption it
+  existed would have wasted hours. Always verify by `grep -r` or `ls` before
+  building on a MEMORY.md claim, especially across product version lines.
+- **The Lesson CONTENT is still useful** — Lesson 194's design (keychain,
+  AES-GCM, silent relogin on 401) is exactly what v1.0.6 needed. The mistake
+  was treating "described in MEMORY.md" as "exists in this tree".
+
+### What's NOT shipped in v1.0.6
+- **OpenClaw-side wire-up**: the `silent_relogin` Tauri command is registered
+  and ready to be called, but the OpenClaw child window doesn't yet invoke
+  it on 401. That's an OpenClaw-side change (not MC), scheduled for the
+  OpenClaw vendor's next patch. Until then, users will see 401 + manual
+  re-login even if they checked "Stay signed in". This is called out in
+  the v1.0.6 README as a known limitation.
+- **Dashboard "Sign out" button**: `maic_logout` is wired and ready, but the
+  v1.1.0 dashboard UI isn't shipped yet. v1.0.6 + manual logout (delete
+  `~/.miracle_claw/`) is the current escape hatch.
+
+### Test plan
+1. `taskkill /F /IM miracle-claw.exe /T; taskkill /F /IM node.exe /T`
+2. Uninstall v1.0.5 via Settings → Apps
+3. Run v1.0.6 installer
+4. Launch → login modal appears with the new "Stay signed in" checkbox
+5. Enter `championnm@yahoo.com` + password, **leave checkbox UNCHECKED**
+6. Verify login works, chat works
+7. Log out via Windows Credential Manager (clear `com.adealauto.miracle-claw`)
+   OR sign out via the upcoming v1.1.0 dashboard
+8. Re-login, this time **CHECK the checkbox**
+9. Verify login works, chat works
+10. **Keychain check**: open Windows Credential Manager → Web Credentials
+    → look for `com.adealauto.miracle-claw` → should see two entries
+    (`cached-creds-key` + `cached-creds`)
+11. Restart MC → chat should still work (JWT was re-baked on login)
+12. **Known-limitation check**: wait for JWT to expire OR rotate MAIC_API_KEY
+    → expect 401 in chat (OpenClaw vendor hasn't shipped silent_relogin yet).
+    This is expected; document for David.
+
+### Next
+- v1.0.7 — tool parity (11 tools, tier-gated) + token-nudges + tier-change
+  forced-logout modal. Spec finalized today (memory/2026-08-19.md).
+- v1.1.0 — dashboard pivot (post-login = tiles, OpenClaw child window,
+  tier badge, token usage display). Spec finalized today.

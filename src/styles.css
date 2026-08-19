@@ -110,6 +110,31 @@ label {
   color: var(--fg);
 }
 
+/* Lesson 458 / v1.0.6: "Stay signed in" checkbox. Horizontal layout
+   so it visually breaks from the vertical input labels above. */
+label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  margin-top: -4px;
+}
+
+label.checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+label.checkbox span {
+  line-height: 1.4;
+}
+
 input[type="email"],
 input[type="password"] {
   width: 100%;

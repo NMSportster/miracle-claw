@@ -1,6 +1,6 @@
 [package]
 name = "miracle-claw"
-version = "1.0.5"
+version = "1.0.6"
 description = "Miracle Claw — ADeal Auto Repair's desktop chat client for MAIC models"
 authors = ["ADeal Auto Repair"]
 edition = "2021"
@@ -38,6 +38,21 @@ sha2 = "0.10"
 # `blocking` feature (which would pull in tokio) — the sync API is enough
 # for one login POST.
 ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
+# Lesson 458 / v1.0.6: silent-relogin via cached email+password. Stashed in OS
+# keychain (Windows Credential Manager / macOS Keychain / Linux Secret Service)
+# encrypted with a per-install AES-256-GCM key. See src/auto_relogin.rs.
+#
+# v3.x dropped the `mock` feature — roundtrip tests are done against the
+# pure encrypt/decrypt helpers (`encrypt_blob`, `decrypt_blob`) which take
+# the key as input. The keychain integration is one end-to-end test that
+# runs on David's machine before each release.
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.22"
+# Used by auto_relogin to zero out decrypted secrets before drop, so they don't
+# linger in process memory.
+zeroize = { version = "1", features = ["zeroize_derive"] }
 
 [dev-dependencies]
 # Test-only dependency for unit tests in src/lib.rs. tempfile is well-
