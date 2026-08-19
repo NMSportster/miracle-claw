@@ -1961,11 +1961,12 @@ dependencies = [
 
 [[package]]
 name = "miracle-claw"
-version = "1.0.5"
+version = "1.0.7"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
  "keyring",
+ "once_cell",
  "rand",
  "serde",
  "serde_json",

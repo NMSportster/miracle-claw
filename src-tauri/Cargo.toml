@@ -1,6 +1,6 @@
 [package]
 name = "miracle-claw"
-version = "1.0.6"
+version = "1.0.7"
 description = "Miracle Claw — ADeal Auto Repair's desktop chat client for MAIC models"
 authors = ["ADeal Auto Repair"]
 edition = "2021"
@@ -22,6 +22,25 @@ path = "src/main.rs"
 name = "miracle-claw-launcher"
 path = "src/launcher.rs"
 
+# v1.0.7: local tool executor. Spawned by the MAIC plugin (the JS file
+# in `depot/maic-plugin/index.js`) when the model invokes one of the 7
+# paid-tier tools. Reads the tool name from argv[1], JSON params from
+# stdin, writes the result to stdout. Stdout is the tool result the
+# model sees; non-zero exit = error string on stderr.
+#
+# Why a separate binary instead of going through Tauri's invoke:
+#   - The plugin runs in OpenClaw's bundled Node process, which has no
+#     handle on Tauri's IPC. Shelling out to a known binary is the
+#     OpenClaw-blessed pattern.
+#   - Keeping the executor in its own process means a tool that
+#     panics (e.g. bad symlink handling) can't take down the chat
+#     UI.
+#   - The tool executor stays small (~ 300 KB) instead of bloating
+#     the chat process.
+[[bin]]
+name = "miracle-claw-tools"
+path = "src/tools_main.rs"
+
 [build-dependencies]
 tauri-build = { version = "=2.6.3", features = [] }
 
@@ -38,6 +57,9 @@ sha2 = "0.10"
 # `blocking` feature (which would pull in tokio) — the sync API is enough
 # for one login POST.
 ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
+# v1.0.7: lazy statics for tier + quota caches. Cheap, std::sync::Mutex
+# backed, ~no overhead.
+once_cell = "1"
 # Lesson 458 / v1.0.6: silent-relogin via cached email+password. Stashed in OS
 # keychain (Windows Credential Manager / macOS Keychain / Linux Secret Service)
 # encrypted with a per-install AES-256-GCM key. See src/auto_relogin.rs.

@@ -103,18 +103,36 @@ DOCKER_VOLUMES=(
 
 if $RUST_ONLY; then
     echo ">>> Rust-only build (compiles the .exe, no NSIS bundling)"
-    CMD='cd /io/src-tauri && cargo xwin build --release --target x86_64-pc-windows-msvc --bin miracle-claw'
+    CMD='cd /io/src-tauri && touch resources/miracle-claw-tools.exe && cargo xwin build --release --target x86_64-pc-windows-msvc --bin miracle-claw && cargo xwin build --release --target x86_64-pc-windows-msvc --bin miracle-claw-tools'
 elif $BUNDLE_ONLY; then
     EXE_PATH="$REPO_ROOT/src-tauri/target/x86_64-pc-windows-msvc/release/miracle-claw.exe"
+    TOOLS_EXE_PATH="$REPO_ROOT/src-tauri/target/x86_64-pc-windows-msvc/release/miracle-claw-tools.exe"
     if [[ ! -f "$EXE_PATH" ]]; then
         echo "ERROR: --bundle-only requires an existing $EXE_PATH" >&2
         exit 1
     fi
+    if [[ ! -f "$TOOLS_EXE_PATH" ]]; then
+        echo "ERROR: --bundle-only requires $TOOLS_EXE_PATH (run without --bundle-only first)" >&2
+        exit 1
+    fi
+    # bundle-runtime.sh just wiped resources/; re-copy the tools binary
+    # so Tauri's resource validation in its build script passes.
+    cp "$TOOLS_EXE_PATH" "$REPO_ROOT/src-tauri/resources/miracle-claw-tools.exe"
     echo ">>> Bundle-only rebuild (uses existing .exe, ~30s)"
     CMD='cd /io && npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis'
 else
     echo ">>> Running full cross-compile (5-15m cold, ~1m with sccache warm)"
-    CMD='cd /io && npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis'
+    # v1.0.7: build both binaries. The MAIC plugin spawns
+    # `miracle-claw-tools.exe` from the resources directory to
+    # execute local tools (read_file, write_file, etc.) — so the
+    # kernel has to find it next to `miracle-claw.exe` in the
+    # installed Resources dir.
+    #
+    # The `touch` creates a placeholder so Tauri's build script
+    # (which validates all resources/* paths in tauri.conf.json)
+    # doesn't fail. The `cp` after the build overwrites the
+    # placeholder with the real binary.
+    CMD='cd /io/src-tauri && touch resources/miracle-claw-tools.exe && cargo xwin build --release --target x86_64-pc-windows-msvc --bin miracle-claw --bin miracle-claw-tools && cp target/x86_64-pc-windows-msvc/release/miracle-claw-tools.exe resources/miracle-claw-tools.exe && cd /io && npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis'
 fi
 
 docker run --rm \

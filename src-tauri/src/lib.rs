@@ -52,6 +52,12 @@ use launcher_info::{launcher_binary_name, MAIC_PLUGIN_FILENAMES, OPENCLAW_PORT};
 // See src/auto_relogin.rs for the full design.
 mod auto_relogin;
 
+// v1.0.7: tier fetching + token-quota nudges.
+pub mod auth;
+// v1.0.7: 7 local tool schemas (paid tier only). Marked `pub` so the
+// `miracle-claw-tools` binary can `use` them via `crate::tools::...`.
+pub mod tools;
+
 // ----------------------------------------------------------------------------
 // Constants
 // ----------------------------------------------------------------------------
@@ -1499,6 +1505,15 @@ fn maic_login(email: String, password: String, remember: bool) -> Result<MaicLog
         resolved_email, tier, bootstrap.api_key_source
     );
 
+    // v1.0.7: publish the tier to MC_USER_TIER env so the OpenClaw MAIC
+    // plugin reads it at startup and decides whether to register the 7
+    // local tools. Also invalidate caches so the next dashboard read
+    // returns fresh data.
+    let parsed_tier = crate::auth::tier::Tier::from_str(&tier);
+    crate::auth::tier::publish_tier_env(parsed_tier);
+    crate::auth::tier::invalidate_tier_cache();
+    crate::auth::nudge::invalidate_quota_cache();
+
     // Lesson 458 / v1.0.6: handle "Remember me" checkbox.
     //
     // - remember=true  → encrypt and stash email|password in the OS keychain,
@@ -1969,6 +1984,110 @@ fn start_gateway_after_login(
     spawn_launcher_and_wait(&app_handle, OPENCLAW_PORT, Duration::from_secs(15))
 }
 
+// ----------------------------------------------------------------------------
+// v1.0.7: tier + quota + nudge Tauri commands.
+//
+// These are read-only from the frontend's perspective. They fetch from
+// MAIC over HTTP and cache results client-side. They do NOT mutate
+// openclaw.json — that's done by maic_login/maic_logout. Tier changes
+// detected here are reported via the `tier_changed` flag in the response
+// so the frontend can show a downgrade modal, but the actual tool
+// tear-down happens via `apply_tier_change` (separate command) which
+// the frontend calls explicitly.
+
+// v1.0.7: resolve the MAIC base URL the same way maic_login does — env
+// vars first, then system openclaw.json, then the bare default. Used by
+// all tier/nudge commands so they hit the same backend the chat session
+// is talking to.
+fn resolve_maic_base_url() -> String {
+    if let Ok(v) = std::env::var("MAIC_BASE") {
+        if !v.trim().is_empty() {
+            return v;
+        }
+    }
+    if let Ok(v) = std::env::var("MAIC_URL") {
+        if !v.trim().is_empty() {
+            return v;
+        }
+    }
+    if let Ok(v) = std::env::var("MILAGRO_MAIC_URL") {
+        if !v.trim().is_empty() {
+            return v;
+        }
+    }
+    if let Ok(Some(v)) = read_system_openclaw_maic_base_url() {
+        if !v.trim().is_empty() {
+            return v;
+        }
+    }
+    DEFAULT_ENDPOINT.to_string()
+}
+
+// Returns the current tier (cached, 5-min TTL). Used by the dashboard
+// to render the tier badge.
+#[tauri::command]
+fn mc_get_tier() -> Result<crate::auth::tier::TierInfo, String> {
+    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let maic_base = resolve_maic_base_url();
+    crate::auth::tier::fetch_tier_cached(&jwt, &maic_base)
+}
+
+// Returns the current quota + nudge decision. Used by the dashboard to
+// render the token usage indicator and the nudge modal.
+#[tauri::command]
+fn mc_get_nudge() -> Result<crate::auth::nudge::NudgeDecision, String> {
+    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let maic_base = resolve_maic_base_url();
+    let tier = crate::auth::tier::current_tier();
+    let quota = crate::auth::nudge::fetch_quota_cached(&jwt, &maic_base)?;
+    Ok(crate::auth::nudge::evaluate_nudge(tier, &quota))
+}
+
+// Returns the list of tool names the current tier can use. Used by the
+// dashboard to render "what you have access to" + the upgrade CTA.
+#[tauri::command]
+fn mc_list_tools() -> Vec<crate::tools::LocalToolName> {
+    let tier = crate::auth::tier::current_tier();
+    tools_for_tier(tier)
+}
+
+/// v1.0.7: tier-gated tool list. Returns the 7 local tool schemas for
+/// paid tiers, empty for free. Lives in `lib.rs` (not `tools/mod.rs`)
+/// because the lib-only `Tier` type isn't included in the
+/// `miracle-claw-tools` binary.
+fn tools_for_tier(tier: crate::auth::tier::Tier) -> Vec<crate::tools::LocalToolName> {
+    if tier.has_local_tools() {
+        crate::tools::ALL_LOCAL_TOOL_NAMES.to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
+// Force-refresh tier from MAIC (bypasses cache). Called by the dashboard
+// when the user clicks the tier badge.
+#[tauri::command]
+fn mc_refresh_tier() -> Result<crate::auth::tier::TierInfo, String> {
+    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let maic_base = resolve_maic_base_url();
+    crate::auth::tier::invalidate_tier_cache();
+    let info = crate::auth::tier::fetch_tier_fresh(&jwt, &maic_base)?;
+    crate::auth::tier::publish_tier_env(info.tier);
+    Ok(info)
+}
+
+// Apply a tier change: write the new tier to env (so the MAIC plugin
+// re-evaluates on next launch) and invalidate caches. The launcher
+// restart is the frontend's responsibility (it must re-spawn the OpenClaw
+// window so the MAIC plugin reads the new MC_USER_TIER).
+#[tauri::command]
+fn mc_apply_tier_change(new_tier_str: String) -> Result<(), String> {
+    let tier = crate::auth::tier::Tier::from_str(&new_tier_str);
+    crate::auth::tier::publish_tier_env(tier);
+    crate::auth::tier::invalidate_tier_cache();
+    crate::auth::nudge::invalidate_quota_cache();
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -1978,7 +2097,13 @@ pub fn run() {
             maic_login,
             maic_logout,
             silent_relogin,
-            start_gateway_after_login
+            start_gateway_after_login,
+            // v1.0.7: tier + nudge surface
+            mc_get_tier,
+            mc_get_nudge,
+            mc_list_tools,
+            mc_refresh_tier,
+            mc_apply_tier_change
         ])
         .setup(|app| {
             setup(app)?;
@@ -2035,6 +2160,34 @@ mod tests {
         match ENV_LOCK.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // v1.0.7: tools_for_tier gating
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn tools_for_tier_free_returns_empty() {
+        let tools = tools_for_tier(crate::auth::tier::Tier::Free);
+        assert!(tools.is_empty(), "free tier should have 0 local tools");
+    }
+
+    #[test]
+    fn tools_for_tier_paid_returns_all_seven() {
+        for t in [
+            crate::auth::tier::Tier::Pro,
+            crate::auth::tier::Tier::ProPlus,
+            crate::auth::tier::Tier::Team,
+            crate::auth::tier::Tier::Enterprise,
+        ] {
+            let tools = tools_for_tier(t);
+            assert_eq!(
+                tools.len(),
+                7,
+                "tier {:?} should have 7 local tools",
+                t
+            );
         }
     }
 

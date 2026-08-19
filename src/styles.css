@@ -239,3 +239,274 @@ code {
 .fatal a {
   color: var(--link);
 }
+
+/* ============================================================
+ * v1.0.7: Dashboard layout
+ * ============================================================ */
+
+:root {
+  --tile-bg: var(--card-bg);
+  --tile-border: var(--border);
+  --tile-hover: rgba(255, 255, 255, 0.04);
+  --tier-free: #6b7280;
+  --tier-pro: #3b82f6;
+  --tier-pro-plus: #8b5cf6;
+  --tier-team: #f59e0b;
+  --tier-enterprise: #ef4444;
+}
+
+.dashboard {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+
+.dashboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.dashboard-header .logo {
+  margin: 0;
+}
+
+.tier-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.1s ease, opacity 0.1s ease;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.tier-badge:hover {
+  transform: translateY(-1px);
+  opacity: 0.85;
+}
+
+.tier-badge[data-tier="free"] {
+  background: rgba(107, 114, 128, 0.18);
+  border-color: var(--tier-free);
+  color: var(--tier-free);
+}
+
+.tier-badge[data-tier="pro"] {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: var(--tier-pro);
+  color: var(--tier-pro);
+}
+
+.tier-badge[data-tier="pro_plus"] {
+  background: rgba(139, 92, 246, 0.18);
+  border-color: var(--tier-pro-plus);
+  color: var(--tier-pro-plus);
+}
+
+.tier-badge[data-tier="team"] {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: var(--tier-team);
+  color: var(--tier-team);
+}
+
+.tier-badge[data-tier="enterprise"] {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: var(--tier-enterprise);
+  color: var(--tier-enterprise);
+}
+
+.usage-bar {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 24px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.usage-text {
+  font-variant-numeric: tabular-nums;
+}
+
+.tiles {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tile {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px;
+  background: var(--tile-bg);
+  border: 1px solid var(--tile-border);
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  transition: background 0.1s ease, transform 0.05s ease, border-color 0.1s ease;
+}
+
+.tile:hover {
+  background: var(--tile-hover);
+  border-color: var(--link);
+  transform: translateY(-1px);
+}
+
+.tile:active {
+  transform: translateY(0);
+}
+
+.tile:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tile-icon {
+  font-size: 36px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.tile-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.tile-title {
+  font-size: 17px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.tile-description {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.tile-cta {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--link);
+}
+
+.dashboard-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.link-button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 8px;
+  font-family: inherit;
+}
+
+.link-button:hover {
+  color: var(--link);
+}
+
+/* ============================================================
+ * v1.0.7: Modals (tier-change + nudge)
+ * ============================================================ */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.15s ease;
+}
+
+.modal {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 480px;
+  width: 90%;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+  animation: slideUp 0.2s ease;
+}
+
+.modal h2 {
+  margin: 0 0 12px 0;
+  font-size: 18px;
+  color: var(--text);
+}
+
+.modal p {
+  margin: 0 0 16px 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.modal .cta {
+  display: inline-block;
+  background: var(--link);
+  color: white;
+  padding: 8px 16px;
+  border-radius: 6px;
+  text-decoration: none;
+  font-weight: 500;
+  margin-bottom: 16px;
+}
+
+.modal .cta:hover {
+  opacity: 0.9;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.modal-actions button {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.modal-actions button:hover {
+  background: var(--tile-hover);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}

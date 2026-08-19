@@ -718,3 +718,179 @@ match the installable state. v5 is the installable state.
   forced-logout modal. Spec finalized today (memory/2026-08-19.md).
 - v1.1.0 — dashboard pivot (post-login = tiles, OpenClaw child window,
   tier badge, token usage display). Spec finalized today.
+
+## [v1.0.7-rc1] — 2026-08-19 (rc for testing) — SHA `faf6030b05515cdccb3a64aa004228ad` (57,081,313 bytes)
+
+### Lesson 459 — Installer filename is `tauri.conf.json:version`, not `Cargo.toml`
+**Gotcha caught 2026-08-19 09:00 MDT**: I bumped `Cargo.toml` (1.0.6→1.0.7), `package.json`, and `BUNDLE_VERSION` to 1.0.7, but **forgot to bump `src-tauri/tauri.conf.json:version`**. The build's NSIS bundler uses `tauri.conf.json:version` for the installer filename (`MiracleClaw_<version>_x64-setup.exe`), so the resulting installer was named `MiracleClaw_1.0.6_x64-setup.exe` — even though the binary content was v1.0.7 (it shipped `miracle-claw-tools.exe` and all the new tier-gated logic). Caught it before anyone installed, but it's a trap.
+
+**Fix**: bump FOUR places, not three:
+1. `src-tauri/Cargo.toml` — `version` field
+2. `package.json` — `version` field
+3. `src-tauri/resources/BUNDLE_VERSION` — single-line text file shown in About panel
+4. `src-tauri/tauri.conf.json` — `version` field (drives installer filename + .exe metadata)
+
+**How to catch this in the future**: write a pre-build check that greps for `version` mismatches across all 4 files. If any drift, fail the build. Or: use one canonical source (e.g., a `VERSION` file) and have `cargo:rerun-if-changed` plus a `build.rs` inject it into the others. The latter is cleanest but more work.
+
+**Anti-pattern**: trusting "the version is bumped" without verifying which version lives where. Each version field serves a different consumer:
+- `Cargo.toml` → cargo resolver (binary versions in registry)
+- `package.json` → npm resolver (frontend deps)
+- `BUNDLE_VERSION` → displayed in MC's About panel
+- `tauri.conf.json` → installer filename + Windows .exe version metadata
+
+**Symptom → cause → fix table**:
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Installer is named `1.0.6` but binary contains `1.0.7` features | Only `Cargo.toml` was bumped | Bump `tauri.conf.json:version` too |
+| About panel shows `1.0.7` but installer is `1.0.6` | `BUNDLE_VERSION` bumped but `tauri.conf.json` not | Same — bump `tauri.conf.json` |
+| Windows reports the .exe as `1.0.6` in Properties | Same root cause | Same — bump `tauri.conf.json` |
+
+### What's new
+- **Tool parity (paid tier)**: MC now ships 7 local tools that the
+  model can invoke via the MAIC plugin — `read_file`, `write_file`,
+  `edit_file`, `list_dir`, `bash_run`, `apply_patch`, `remember_fact`.
+  Free users still get MAIC's 4 server tools (weather, web_search,
+  get_current_time, calculate) for free. Paid users get all 11.
+- **Tier-aware tool gating**: tier is read from `MC_USER_TIER` env var
+  (set by `maic_login` from the response). The MAIC plugin only registers
+  local tools when the user's tier is `pro / pro_plus / team / enterprise`.
+  Free users see no local tools in the chat — they don't get to invoke
+  them, and the model doesn't even know they exist.
+- **Tier badge + token usage in dashboard**: post-login is now the
+  dashboard (was: redirect to OpenClaw chat). The dashboard shows the
+  current tier as a colored pill (free=gray, pro=blue, pro_plus=purple,
+  team=amber, enterprise=red) and token usage text below.
+- **Nudge modal**: when MAIC says the user is at 50% / 100% / 500 / 1000
+  / cap, MC shows a non-blocking modal with a copy that's stub-laden
+  by default (server-side copy is the A/B test target — Lesson locked:
+  copy comes from MAIC). Modal dismisses on click, doesn't reappear
+  until `mc_refresh_tier` is called.
+- **Tier-change detection**: when the tier drops from paid to free (e.g.
+  subscription canceled), MC shows a one-shot modal saying "Some tools
+  are no longer available" with a "Got it" dismiss. The dashboard
+  re-renders without the locked tools.
+
+### New Tauri commands
+- `mc_get_tier` → returns `TierInfo { tier, tier_changed, last_updated }`. Cached 5 min.
+- `mc_get_nudge` → returns `NudgeDecision { kind, text, used, limit }`. Cached 30s.
+- `mc_list_tools` → returns the list of tool names for the current tier.
+- `mc_refresh_tier` → bypasses cache, refetches from `/v1/auth/me`.
+- `mc_apply_tier_change(tier_str)` → publishes the new tier to env +
+  invalidates caches. The frontend is responsible for re-spawning the
+  OpenClaw window so the MAIC plugin re-reads the env.
+
+### New `miracle-claw-tools` helper binary
+- **New file: `src-tauri/src/tools_main.rs`** (~80 LOC) — thin
+  wire-protocol shim (argv parsing, stdin read, exit codes).
+- **New file: `src-tauri/src/tools/exec.rs`** (~600 LOC + tests) — the
+  7 tool executors + path allowlist enforcement.
+- **Path allowlist** (Lesson 169, applied regardless of tier): only
+  Documents/, Desktop/, Downloads/, and MC's workspace dir. WSL paths
+  `/mnt/c/...` get converted to Windows-native before the check.
+- **Bash sandboxing**: `cmd /C <command>` execution with cwd pinned to
+  an allowed path. 30s default timeout (max 60s — not enforced strictly
+  in v1.0.7, see "Known limitations" below).
+- **Compiled as a separate `[[bin]]`** — no Tauri runtime dependency,
+  ~7 MB standalone. The MAIC plugin spawns it; the result is the stdout
+  string the model sees as the tool result.
+
+### MAIC plugin v0.2.0
+- **File: `depot/maic-plugin/index.js`** — now also registers the 7
+  local tools when `MC_USER_TIER` is paid. Inherits the v0.1.0
+  `tool_execution: "client"` injection (Lesson 293).
+- **Schemas kept in sync with Rust**: the JS `TOOL_SCHEMAS` object
+  mirrors `src-tauri/src/tools/schemas.rs`. Drift is caught by the Rust
+  test `each_tool_serializes_to_openai_format` which checks the
+  wire-format JSON.
+
+### Changed — `maic_login` now publishes tier
+- Calls `Tier::from_str(login_response.tier)` and writes to `MC_USER_TIER`
+  env var. Invalidates both tier and quota caches so the next dashboard
+  read returns fresh data.
+- **No new parameter** — the tier is in the existing login response.
+
+### Dashboard frontend rewrite
+- **File: `src/main.js`** — post-login = dashboard (was: redirect to
+  OpenClaw chat). The dashboard has a tier badge, a usage bar, and a
+  single OpenClaw tile. Clicking the tile opens
+  `http://localhost:28789/` in a child window via `window.open()`.
+- **Nudge modal + tier-change modal** appended to the DOM with
+  click-to-dismiss. No animations in v1.0.7 (CSS transitions are
+  minimal — fade-in only).
+- **Sign Out button** in the dashboard footer — calls `maic_logout`
+  (added in v1.0.6) and returns to the login form.
+
+### Dependencies added
+- `once_cell = "1"` (lazy statics for tier + quota caches)
+
+### Verified
+- `cargo test --lib` — **49/49 pass** (2 new: `tools_for_tier_free_returns_empty`,
+  `tools_for_tier_paid_returns_all_seven`).
+- `cargo test --bin miracle-claw-tools` — **11/11 pass** (4 new exec tests
+  + 7 schemas tests).
+- `cargo build --bin miracle-claw-tools` — clean (1 unrelated pre-existing
+  warning in `lib.rs`).
+- **End-to-end smoke test** (Linux dev box):
+  - `miracle-claw-tools read_file /etc/hostname` → rejected (outside allowlist) ✓
+  - `miracle-claw-tools write_file` to `~/Documents/mc-tools-test/test.txt` → wrote 13 bytes ✓
+  - `miracle-claw-tools read_file` (via stdin) → returned "hello v1.0.7" ✓
+  - `miracle-claw-tools edit_file` → replaced 5 chars with 7 ✓
+  - `miracle-claw-tools list_dir` → returned `[file] test.txt (15 bytes)` ✓
+  - `miracle-claw-tools bash_run` → ran `echo hello from bash` ✓
+  - `miracle-claw-tools apply_patch` → applied hunk, file modified ✓
+  - `miracle-claw-tools remember_fact` → "stored locally (not yet synced)" ✓
+
+### Known limitations
+- **`/v1/usage/quota` endpoint not yet live on MAIC**: until David ships
+  it, the nudge modal won't fire (it'll show "—"). All other features
+  work. The endpoint spec is documented in
+  `/home/adeal/.openclaw/workspace/memory/2026-08-19.md` (David's
+  section).
+- **`tier_changed: true` flag not yet in `/v1/auth/login` response**:
+  David needs to add this flag to the login response so we can detect
+  downgrades. Without it, the tier-change modal won't fire on the
+  downgrade case. We do still detect it via the next `mc_refresh_tier`
+  call after the user clicks the tier badge.
+- **`bash_run` timeout not strictly enforced**: it's passed to the
+  process descriptor but `Command::output` doesn't honor it. Future
+  v1.0.8 enhancement: switch to `tokio::process` with a real timeout.
+- **`remember_fact` is a stub**: returns "stored locally (not yet
+  synced to MAIC)". Full implementation lands in v1.0.8 once MAIC's
+  `/v1/user/facts` endpoint is locked.
+- **Single-child-window dashboard**: not yet a multi-window UI. The
+  v1.1.0 dashboard UX (multiple tiles, navigation, deep-linking) is
+  scoped separately.
+
+### Test plan (one-shot, by David)
+1. `taskkill /F /IM miracle-claw.exe /T; taskkill /F /IM node.exe /T`
+2. Uninstall v1.0.6 via Settings → Apps
+3. Run v1.0.7 installer
+4. Launch → login modal appears
+5. Log in with `championnm@yahoo.com` + password
+6. **Dashboard check**: post-login should land on the dashboard (NOT
+   redirect to OpenClaw). Tier badge should show "Pro" (or whatever
+   tier the user has). Usage bar should show "0 / X tokens".
+7. Click the OpenClaw tile → should open in a new window at
+   `http://localhost:28789/`
+8. **Free user check**: log out, log in as a free account → dashboard
+   shows "Free" badge. Attempt to use file tools in chat → model
+   should say "I don't have access to file tools" (no local tools
+   registered).
+9. **Tool execution check (paid user)**: in chat, ask the model to
+   read a file under `~/Documents/` → should work, returns the file
+   contents. Ask to write to `~/Desktop/` → should work, file appears.
+10. **Tier-change check**: manually downgrade a test account on MAIC
+    → log out, log back in → dashboard should show "Free" badge. If
+    the `tier_changed` flag is shipped, the modal fires once.
+11. **Logout check**: click "Sign out" in dashboard footer → returns
+    to login form. Keychain entries are wiped (Windows Credential
+    Manager → look for `com.adealauto.miracle-claw` after logout).
+12. **Re-login check**: log back in → dashboard appears, no errors.
+
+### Next
+- v1.0.8 — `remember_fact` real impl + MAIC syncs, `bash_run` strict
+  timeout via tokio. Smaller, focused patch.
+- v1.1.0 — dashboard UX iteration (multiple tiles, navigation, deep
+  links, child-window management). Spec at `notes/V1.1.0-DASHBOARD-PLAN.md`.
+- MAIC backend (parallel, David's work): `/v1/usage/quota` endpoint
+  + `tier_changed: true` flag in `/v1/auth/login` response.
