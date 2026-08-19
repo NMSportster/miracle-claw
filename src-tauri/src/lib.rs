@@ -439,10 +439,24 @@ fn migrate_legacy_mc_config(path: &Path) -> io::Result<bool> {
 //   IPs, so the Cloudflare endpoint is the only universally-reachable
 //   option for a fresh install.
 fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
+    // Lesson 431 v2: use openclaw's native SecretRef + SecretProvider mechanism
+    // (schema: zod-schema.core SecretInputSchema + SecretsConfigSchema) so that
+    // the apiKey can be resolved from the OS env at request time without us
+    // shipping a placeholder string. This matches steeler's system openclaw
+    // pattern exactly: secrets.providers.default (env source) + models.providers.
+    // maic.apiKey = { source: "env", provider: "default", id: "MAIC_API_KEY" }.
+    //
+    // If the user has already set MAIC_API_KEY in the env, we write the literal
+    // string value (avoids the SecretRef indirection cost and matches the
+    // openclaw-channel 'existing' path semantics). Otherwise we wire the
+    // SecretRef + register the env provider so the request-time resolver fills
+    // it in.
     const DEFAULT_ENDPOINT: &str = "https://maicserver.com";
     const DEFAULT_API: &str = "openai-completions";
     const DEFAULT_MODEL_ID: &str = "milagro-dev";
     const PROVIDER_ID: &str = "maic";
+    const ENV_VAR_NAME: &str = "MAIC_API_KEY";
+    const SECRET_PROVIDER_ALIAS: &str = "default";
 
     let path = openclaw_json_path();
 
@@ -466,14 +480,13 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
         .and_then(|p| p.get(PROVIDER_ID))
         .cloned();
 
-    // If the user already has a complete provider entry (apiKey + baseUrl),
-    // we are done. This is the idempotency guarantee — re-running setup()
-    // never overwrites a working config.
+    // If the user already has a complete provider entry (apiKey with non-empty
+    // value OR a SecretRef, baseUrl), we are done. This is the idempotency
+    // guarantee — re-running setup() never overwrites a working config.
     if let Some(entry) = existing.as_ref() {
         let has_key = entry
             .get("apiKey")
-            .and_then(|v| v.as_str())
-            .map(|s| !s.trim().is_empty())
+            .map(|v| !is_empty_api_key(v))
             .unwrap_or(false);
         let has_url = entry
             .get("baseUrl")
@@ -496,7 +509,7 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
 
     // Resolve apiKey from env, then from system openclaw. Whichever is
     // first non-empty wins.
-    let env_key = std::env::var("MAIC_API_KEY")
+    let env_key = std::env::var(ENV_VAR_NAME)
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
@@ -521,21 +534,19 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
         }
     };
 
-    // If we still don't have a key, we can't ship a working config.
-    // Log a clear remediation message and leave the config alone — the
-    // chat panel will fail loudly with the existing `missing-provider-auth`
-    // error (which already cites the authStorePath + agentDir and the
-    // `openclaw agents add <id>` remediation). Don't guess.
-    let Some(resolved_key) = resolved_key else {
-        eprintln!(
-            "[miracle-claw] MAIC provider config: NOT configured (no MAIC_API_KEY env, no system openclaw MAIC key). Chat will fail with 'missing-provider-auth' until you set MAIC_API_KEY in the env or add an auth profile via 'openclaw agents add main'."
-        );
-        return Ok(MaicProviderBootstrap {
-            provider_configured: false,
-            provider_id: PROVIDER_ID.to_string(),
-            api_key_source: MaicKeySource::None,
-            endpoint: env_url.clone().unwrap_or_else(|| DEFAULT_ENDPOINT.to_string()),
-        });
+    // If we still don't have a key, we can't ship a working config without
+    // deferring to the OS env. Lesson 431 v2: write a SecretRef + register
+    // a default env provider so openclaw's request-time resolver pulls
+    // MAIC_API_KEY from the process env. The user fixes the chat by setting
+    // MAIC_API_KEY + restarting; openclaw will surface a clear "secret not
+    // found in env" error instead of the opaque missing-provider-auth.
+    let (key_source, resolved_key) = match resolved_key {
+        Some(k) => (key_source, Some(k)),
+        None => {
+            // No literal key — wire a SecretRef so the user can set MAIC_API_KEY
+            // in their env and chat works without re-running setup().
+            (MaicKeySource::EnvRef, None)
+        }
     };
 
     let resolved_url = env_url
@@ -559,7 +570,27 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
     let entry_obj = provider_entry.as_object_mut().unwrap();
 
     entry_obj.entry("baseUrl".to_string()).or_insert(Value::String(resolved_url.clone()));
-    entry_obj.entry("apiKey".to_string()).or_insert(Value::String(resolved_key.clone()));
+    // Only stamp apiKey if the user hasn't already set one. If they have a
+    // non-empty literal string OR a SecretRef, leave it alone.
+    if !entry_obj.contains_key("apiKey") || is_empty_api_key(&entry_obj["apiKey"]) {
+        match &resolved_key {
+            Some(literal) => {
+                entry_obj.insert("apiKey".to_string(), Value::String(literal.clone()));
+            }
+            None => {
+                // Lesson 431 v2: emit a SecretRef so the user can set MAIC_API_KEY
+                // in their env and have chat work without re-running setup().
+                entry_obj.insert(
+                    "apiKey".to_string(),
+                    serde_json::json!({
+                        "source": "env",
+                        "provider": SECRET_PROVIDER_ALIAS,
+                        "id": ENV_VAR_NAME,
+                    }),
+                );
+            }
+        }
+    }
     entry_obj.entry("api".to_string()).or_insert(Value::String(DEFAULT_API.to_string()));
 
     // Models list — preserve any user additions, default to milagro-dev.
@@ -624,6 +655,14 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
     let providers = providers_obj.as_object_mut().unwrap();
     providers.insert(PROVIDER_ID.to_string(), provider_entry);
 
+    // Lesson 431 v2: if we wrote a SecretRef (no literal key was available),
+    // register the `default` env provider so the request-time resolver can
+    // pull MAIC_API_KEY from the OS env. Idempotent — we only register if
+    // missing.
+    if matches!(key_source, MaicKeySource::EnvRef) {
+        ensure_secrets_default_env_provider(&mut cfg, ENV_VAR_NAME, SECRET_PROVIDER_ALIAS);
+    }
+
     // Serialize back. We preserve the user's other fields exactly (no
     // schema-strip pass) — openclaw's gateway does its own validation
     // and we only added keys we know are valid.
@@ -647,11 +686,103 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
     })
 }
 
+/// Register a default env-based SecretProvider so openclaw's SecretRef
+/// `{source: "env", provider: "default", id: "MAIC_API_KEY"}` resolves at
+/// request time. Mutates `cfg` in place. Idempotent.
+///
+/// Schema (zod-schema.core `SecretsConfigSchema`):
+///   secrets.providers.default = { source: "env", allowlist: ["MAIC_API_KEY"] }
+///   secrets.defaults.env = "default"
+fn ensure_secrets_default_env_provider(cfg: &mut Value, env_var: &str, alias: &str) {
+    if !cfg.is_object() {
+        *cfg = serde_json::json!({});
+    }
+    let cfg_obj = cfg.as_object_mut().unwrap();
+
+    // secrets.providers[alias] = { source: "env", allowlist: [env_var] }
+    let secrets_obj = cfg_obj
+        .entry("secrets".to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !secrets_obj.is_object() {
+        *secrets_obj = Value::Object(Default::default());
+    }
+    let secrets = secrets_obj.as_object_mut().unwrap();
+
+    let providers_obj = secrets
+        .entry("providers".to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !providers_obj.is_object() {
+        *providers_obj = Value::Object(Default::default());
+    }
+    let providers = providers_obj.as_object_mut().unwrap();
+
+    // Only create the provider if it doesn't exist — never clobber a user's
+    // existing configuration with different sources/aliases.
+    let provider_entry = providers.entry(alias.to_string()).or_insert_with(|| {
+        serde_json::json!({
+            "source": "env",
+            "allowlist": [env_var],
+        })
+    });
+    if let Some(obj) = provider_entry.as_object_mut() {
+        // Set source=env if user has a stub entry without source.
+        obj.entry("source".to_string())
+            .or_insert(Value::String("env".to_string()));
+        // Append our env var to the allowlist if not already present.
+        let allowlist = obj
+            .entry("allowlist".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if let Some(arr) = allowlist.as_array_mut() {
+            let already = arr
+                .iter()
+                .any(|v| v.as_str() == Some(env_var));
+            if !already {
+                arr.push(Value::String(env_var.to_string()));
+            }
+        }
+    }
+
+    // secrets.defaults.env = alias  (so the 'default' alias resolves for
+    // any SecretRef that omits an explicit provider).
+    let defaults_obj = secrets
+        .entry("defaults".to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if let Some(defaults) = defaults_obj.as_object_mut() {
+        defaults
+            .entry("env".to_string())
+            .or_insert(Value::String(alias.to_string()));
+    }
+}
+
+/// Is `value` an "empty" apiKey? Accepts both literal strings and SecretRef
+/// objects. A literal empty string or a SecretRef with empty `id` is empty.
+/// Used by the idempotency check in `ensure_maic_provider_config`.
+fn is_empty_api_key(value: &Value) -> bool {
+    match value {
+        Value::String(s) => s.trim().is_empty(),
+        Value::Object(obj) => {
+            // SecretRef: source=env|file|exec; provider=alias; id=env var name
+            // or JSON pointer. Empty if id is missing or empty.
+            let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("").trim();
+            id.is_empty()
+        }
+        _ => true,
+    }
+}
+
 #[derive(Debug)]
 enum MaicKeySource {
+    /// MAIC_API_KEY env var was set; we wrote the literal string into apiKey.
     Env,
+    /// Inline SecretRef { source: "env", provider: "default", id: "MAIC_API_KEY" }
+    /// — openclaw resolves it at request time.
+    EnvRef,
+    /// Read from system openclaw's `models.providers.maic.apiKey`.
     SystemOpenClaw,
+    /// User already had a complete provider entry in their openclaw.json.
     Existing,
+    /// No key was available AND we fell back to EnvRef (legacy fallback path,
+    /// also implies the provider is still wired via SecretRef).
     None,
 }
 
@@ -936,4 +1067,302 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+// ----------------------------------------------------------------------------
+// Unit tests for ensure_maic_provider_config (Lesson 431 v2).
+//
+// These run with `cargo test --bin miracle-claw`. They use a per-test HOME
+// override so `openclaw_extensions_dir()` resolves to a temp dir, isolating
+// the test from the user's real MC state.
+//
+// What we verify:
+//  1. Env-var key wins: when MAIC_API_KEY is set, apiKey is written as a literal.
+//  2. Env-var no-key fallback: when MAIC_API_KEY is NOT set, apiKey is written
+//     as a SecretRef { source: "env", provider: "default", id: "MAIC_API_KEY" }
+//     AND secrets.providers.default + secrets.defaults.env are registered.
+//  3. Idempotency: running the function twice does not duplicate fields.
+//  4. Existing entry is preserved: a user-supplied provider entry is not
+//     overwritten.
+//  5. Schema correctness: the final JSON has the keys expected by openclaw's
+//     zod-schema.core (SecretInputSchema, SecretProviderSchema, ModelsConfigSchema).
+// ----------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::sync::Mutex;
+
+    // Tests that mutate process-global env vars run serially.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Set HOME to a fresh temp dir, return (temp_path, guard).
+    /// Guard clears MAIC_API_KEY / MAIC_API_URL on drop.
+    struct EnvGuard {
+        _temp: tempfile::TempDir,
+        prev_home: Option<String>,
+        prev_key: Option<String>,
+        prev_url: Option<String>,
+    }
+
+    fn fresh_env() -> EnvGuard {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_home = env::var("HOME").ok();
+        let prev_key = env::var("MAIC_API_KEY").ok();
+        let prev_url = env::var("MAIC_API_URL").ok();
+        env::set_var("HOME", temp.path());
+        env::remove_var("MAIC_API_KEY");
+        env::remove_var("MAIC_API_URL");
+        EnvGuard {
+            _temp: temp,
+            prev_home: prev_home,
+            prev_key: prev_key,
+            prev_url: prev_url,
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prev_home {
+                Some(v) => env::set_var("HOME", v),
+                None => env::remove_var("HOME"),
+            }
+            match &self.prev_key {
+                Some(v) => env::set_var("MAIC_API_KEY", v),
+                None => env::remove_var("MAIC_API_KEY"),
+            }
+            match &self.prev_url {
+                Some(v) => env::set_var("MAIC_API_URL", v),
+                None => env::remove_var("MAIC_API_URL"),
+            }
+        }
+    }
+
+    fn read_maic_root() -> serde_json::Value {
+        let path = openclaw_json_path();
+        let raw = std::fs::read_to_string(&path).expect("read openclaw.json");
+        serde_json::from_str(&raw).expect("parse openclaw.json")
+    }
+
+    #[test]
+    fn env_var_key_writes_literal_string() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "test-key-abc-123");
+
+        let result = ensure_maic_provider_config().expect("bootstrap ok");
+        assert!(result.provider_configured, "should be configured");
+        assert!(matches!(result.api_key_source, MaicKeySource::Env));
+        assert_eq!(result.endpoint, "https://maicserver.com");
+
+        let cfg = read_maic_root();
+        let entry = cfg
+            .get("models")
+            .and_then(|m| m.get("providers"))
+            .and_then(|p| p.get("maic"))
+            .expect("maic provider entry");
+        // apiKey should be the literal string, not a SecretRef.
+        assert_eq!(
+            entry.get("apiKey").and_then(|v| v.as_str()),
+            Some("test-key-abc-123")
+        );
+        assert_eq!(
+            entry.get("baseUrl").and_then(|v| v.as_str()),
+            Some("https://maicserver.com")
+        );
+        assert_eq!(
+            entry.get("api").and_then(|v| v.as_str()),
+            Some("openai-completions")
+        );
+        let models = entry.get("models").and_then(|m| m.as_array()).unwrap();
+        let has_default = models
+            .iter()
+            .any(|m| m.get("id").and_then(|v| v.as_str()) == Some("milagro-dev"));
+        assert!(has_default, "default model id should be present");
+    }
+
+    #[test]
+    fn no_env_var_writes_secret_ref_and_registers_provider() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = fresh_env();
+        // No MAIC_API_KEY set.
+
+        let result = ensure_maic_provider_config().expect("bootstrap ok");
+        assert!(result.provider_configured, "should be configured (via SecretRef)");
+        assert!(
+            matches!(result.api_key_source, MaicKeySource::EnvRef),
+            "key_source should be EnvRef, got {:?}",
+            result.api_key_source
+        );
+
+        let cfg = read_maic_root();
+        let entry = cfg
+            .get("models")
+            .and_then(|m| m.get("providers"))
+            .and_then(|p| p.get("maic"))
+            .expect("maic provider entry");
+
+        // apiKey should be a SecretRef object, NOT a literal string.
+        let api_key = entry.get("apiKey").expect("apiKey");
+        assert!(api_key.is_object(), "apiKey should be a SecretRef object, got: {}", api_key);
+        assert_eq!(api_key.get("source").and_then(|v| v.as_str()), Some("env"));
+        assert_eq!(
+            api_key.get("provider").and_then(|v| v.as_str()),
+            Some("default")
+        );
+        assert_eq!(api_key.get("id").and_then(|v| v.as_str()), Some("MAIC_API_KEY"));
+
+        // secrets.providers.default should be registered as env source with allowlist.
+        let secrets = cfg.get("secrets").expect("secrets block");
+        let default_provider = secrets
+            .get("providers")
+            .and_then(|p| p.get("default"))
+            .expect("default secret provider");
+        assert_eq!(
+            default_provider.get("source").and_then(|v| v.as_str()),
+            Some("env")
+        );
+        let allowlist = default_provider
+            .get("allowlist")
+            .and_then(|v| v.as_array())
+            .expect("allowlist");
+        assert!(
+            allowlist.iter().any(|v| v.as_str() == Some("MAIC_API_KEY")),
+            "allowlist should include MAIC_API_KEY"
+        );
+
+        // secrets.defaults.env should point at "default".
+        let defaults = secrets.get("defaults").expect("defaults");
+        assert_eq!(
+            defaults.get("env").and_then(|v| v.as_str()),
+            Some("default")
+        );
+    }
+
+    #[test]
+    fn idempotency_no_duplication() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "first-key");
+
+        let r1 = ensure_maic_provider_config().expect("first ok");
+        assert_eq!(r1.endpoint, "https://maicserver.com");
+
+        // Change the env var and re-run. The existing entry should NOT be
+        // overwritten (we have has_key+has_url).
+        env::set_var("MAIC_API_KEY", "second-key");
+        let r2 = ensure_maic_provider_config().expect("second ok");
+        assert!(matches!(r2.api_key_source, MaicKeySource::Existing));
+
+        let cfg = read_maic_root();
+        let entry = cfg
+            .get("models")
+            .and_then(|m| m.get("providers"))
+            .and_then(|p| p.get("maic"))
+            .expect("maic provider entry");
+        // apiKey should still be the FIRST key, not the second. Idempotency
+        // preserves user-supplied config.
+        assert_eq!(
+            entry.get("apiKey").and_then(|v| v.as_str()),
+            Some("first-key")
+        );
+    }
+
+    #[test]
+    fn existing_entry_with_secret_ref_is_preserved() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = fresh_env();
+        // Pre-write a user-supplied entry with a SecretRef.
+        let path = openclaw_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let pre_existing = serde_json::json!({
+            "gateway": {"mode": "local", "auth": {"mode": "none"}},
+            "models": {
+                "providers": {
+                    "maic": {
+                        "baseUrl": "https://custom.maic.example.com",
+                        "apiKey": {
+                            "source": "env",
+                            "provider": "default",
+                            "id": "MAIC_API_KEY"
+                        },
+                        "api": "openai-completions",
+                        "models": [
+                            {"id": "custom-model", "name": "Custom"}
+                        ]
+                    }
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&pre_existing).unwrap()).unwrap();
+
+        let result = ensure_maic_provider_config().expect("bootstrap ok");
+        assert!(matches!(result.api_key_source, MaicKeySource::Existing));
+        assert_eq!(result.endpoint, "https://custom.maic.example.com");
+
+        let cfg = read_maic_root();
+        let entry = cfg
+            .get("models")
+            .and_then(|m| m.get("providers"))
+            .and_then(|p| p.get("maic"))
+            .expect("maic provider entry");
+        // User's custom endpoint preserved.
+        assert_eq!(
+            entry.get("baseUrl").and_then(|v| v.as_str()),
+            Some("https://custom.maic.example.com")
+        );
+        // User's SecretRef preserved.
+        let api_key = entry.get("apiKey").expect("apiKey");
+        assert!(api_key.is_object());
+        assert_eq!(api_key.get("id").and_then(|v| v.as_str()), Some("MAIC_API_KEY"));
+        // User's custom model preserved.
+        let models = entry.get("models").and_then(|m| m.as_array()).unwrap();
+        assert!(models.iter().any(|m| m.get("id").and_then(|v| v.as_str()) == Some("custom-model")));
+    }
+
+    #[test]
+    fn tool_execution_param_pinned_to_client() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "any-key");
+
+        ensure_maic_provider_config().expect("ok");
+        let cfg = read_maic_root();
+        let params = cfg
+            .get("models")
+            .and_then(|m| m.get("providers"))
+            .and_then(|p| p.get("maic"))
+            .and_then(|m| m.get("params"))
+            .expect("params");
+        assert_eq!(
+            params.get("tool_execution").and_then(|v| v.as_str()),
+            Some("client"),
+            "MAIC plugin requires params.tool_execution='client' to return tool_calls"
+        );
+    }
+
+    #[test]
+    fn is_empty_api_key_literal_and_ref() {
+        // Literal empty string
+        assert!(is_empty_api_key(&serde_json::json!("")));
+        assert!(is_empty_api_key(&serde_json::json!("   ")));
+        // Literal non-empty
+        assert!(!is_empty_api_key(&serde_json::json!("abc")));
+        // SecretRef with empty id
+        assert!(is_empty_api_key(&serde_json::json!({
+            "source": "env", "provider": "default", "id": ""
+        })));
+        // SecretRef with non-empty id
+        assert!(!is_empty_api_key(&serde_json::json!({
+            "source": "env", "provider": "default", "id": "MAIC_API_KEY"
+        })));
+        // Object missing id
+        assert!(is_empty_api_key(&serde_json::json!({
+            "source": "env", "provider": "default"
+        })));
+        // Null
+        assert!(is_empty_api_key(&serde_json::json!(null)));
+        // Scalar
+        assert!(is_empty_api_key(&serde_json::json!(42)));
+    }
 }

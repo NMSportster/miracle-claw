@@ -48,7 +48,6 @@
     ],
     "resources": [
       "resources/node.exe",
-      "resources/node",
       "resources/openclaw.mjs",
       "resources/package.json",
       "resources/node_modules",
