@@ -2466,8 +2466,7 @@ fn openclaw_open_window(
     app_handle: tauri::AppHandle,
 ) -> Result<&'static str, String> {
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tauri::webview::{PageLoadEvent, PageLoadPayload};
-    use tauri::{WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
 
     const WINDOW_LABEL: &str = "openclaw-chat";
     // Lesson 461b: use 127.0.0.1, not localhost. WebView2 on some Windows
@@ -2548,21 +2547,26 @@ fn openclaw_open_window(
         }
     }
 
+    // Lesson 471 (rc7 fix): DELETE the WebView2 user-data-dir BEFORE building
+    // the chat window. Aggressive, but reliable. `incognito(true)` from rc6
+    // produced a log-aborting failure (build() panicked cleanly — no log
+    // line emitted) — possibly a Tauri 2.11 panic in the incognito path on
+    // this WebView2 build. Deleting the dir is THE most reliable cache-bust.
+    // We swallow errors because the dir may not exist on first run.
+    nuke_webview2_cache_dir();
+
     // Spawn the chat window. Tauri 2 requires:
     //   - A unique label (we use WINDOW_LABEL).
     //   - A WebviewUrl (we point at the bundled chat gateway).
     //   - The label must be allowed in capabilities/openclaw.json —
     //     otherwise the runtime rejects the window.
     //
-    // Lesson 470 (rc6 fix 1+3): incognito + on_page_load hook.
-    //   - `.incognito(true)` forces WebView2 to use a fresh, ephemeral
-    //     user-data-dir with no cache from prior installs. This is the
-    //     most reliable defense against cache-poisoned blank windows
-    //     because the WebView can't serve stale assets it doesn't have.
-    //   - `.on_page_load(...)` logs each page lifecycle event so we can
-    //     tell whether the chat UI actually mounted or whether we're
-    //     seeing the openclaw mount-fallback page. Critical post-mortem
-    //     signal when a blank window is reported.
+    // Lesson 471 (rc7): dropped `.incognito(true)` and `.on_page_load(...)` —
+    // both produced silent failures in rc6 (no log line, no window, no
+    // error). Replaced with: cache-buster URL + nuked WebView2 dir + a
+    // post-build polling probe that logs WebView state every 500ms for 10s.
+    // The polling probe is more reliable than Tauri 2's PageLoadEvent hook
+    // because it doesn't depend on WebView2 dispatching the event.
     let builder = WebviewWindowBuilder::new(
         &app_handle,
         WINDOW_LABEL,
@@ -2574,22 +2578,9 @@ fn openclaw_open_window(
     .inner_size(1280.0, 800.0)
     .min_inner_size(800.0, 560.0)
     .resizable(true)
-    .center()
-    .incognito(true)
-    .on_page_load(|window: WebviewWindow, payload: PageLoadPayload| {
-        let event = payload.event();
-        let url = payload.url();
-        let msg = match event {
-            PageLoadEvent::Started => format!("started loading {url}"),
-            PageLoadEvent::Finished => format!("finished loading {url}"),
-        };
-        log_to_file(&format!("openclaw-chat webview page-load: {msg}"));
-        // If the user closes the chat window, log it so we have a clean
-        // event trail in the post-mortem log.
-        let _ = window; // suppress unused warning
-    });
+    .center();
 
-    builder.build().map_err(|e| {
+    let built_window = builder.build().map_err(|e| {
         eprintln!("[miracle-claw] openclaw-chat spawn failed: {}", e);
         log_to_file(&format!(
             "openclaw-chat webview build FAILED: {e}"
@@ -2599,9 +2590,107 @@ fn openclaw_open_window(
 
     eprintln!("[miracle-claw] openclaw-chat window created → {}", chat_url);
     log_to_file(&format!(
-        "openclaw-chat window created → url={chat_url} incognito=true"
+        "openclaw-chat window created → url={chat_url} (WebView2 cache dir wiped before build)"
     ));
+
+    // Lesson 471 (rc7): post-build polling probe. Don't rely on Tauri 2's
+    // PageLoadEvent (it didn't fire in rc6). Spawn a std::thread that polls
+    // the window's URL and title every 500ms for 10s, logging each state
+    // transition. This is the diagnostic signal for blank-window reports.
+    // We use a plain thread (not tokio) to avoid pulling in `tokio` as a
+    // direct dependency.
+    let label_owned = WINDOW_LABEL.to_string();
+    let url_for_probe = chat_url.clone();
+    let app_for_probe = built_window.app_handle().clone();
+    std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        let mut last_logged: Option<String> = None;
+        let mut last_url: Option<String> = None;
+        while start.elapsed() < std::time::Duration::from_secs(10) {
+            if let Some(w) = app_for_probe.get_webview_window(&label_owned) {
+                let url = w.url().ok().map(|u| u.to_string()).unwrap_or_default();
+                let title = w.title().ok().unwrap_or_default();
+                let key = format!("url={url} title={title}");
+                if last_logged.as_ref() != Some(&key) {
+                    log_to_file(&format!(
+                        "openclaw-chat poll: t={}ms {}",
+                        start.elapsed().as_millis(),
+                        key
+                    ));
+                    last_logged = Some(key);
+                }
+                if last_url.as_ref() != Some(&url) {
+                    log_to_file(&format!(
+                        "openclaw-chat poll: url-changed {} → {}",
+                        last_url.as_deref().unwrap_or("?"),
+                        url
+                    ));
+                    last_url = Some(url);
+                }
+            } else {
+                log_to_file(&format!(
+                    "openclaw-chat poll: t={}ms window not found",
+                    start.elapsed().as_millis()
+                ));
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        log_to_file(&format!(
+            "openclaw-chat poll: probe ended after {:?} (target_url={})",
+            start.elapsed(),
+            url_for_probe
+        ));
+    });
+
     Ok("created")
+}
+
+/// Delete the WebView2 user-data-dir so the next window build gets a fresh
+/// cache. This is the most reliable fix for the "blank window after upgrade"
+/// pattern: WebView2 caches the asset bundle hash from the prior install,
+/// the new HTML's `<script src="./assets/index-XXXX.js"></script>` reference
+/// mismatch, JS modules fail to load, `<openclaw-app>` never mounts, blank
+/// window. By deleting the dir before build, we force WebView2 to refetch
+/// everything from the gateway.
+///
+/// Idempotent — shares Lesson 466 resource-state-idempotency pattern.
+fn nuke_webview2_cache_dir() {
+    let dirs: Vec<PathBuf> = vec![
+        // Standard Tauri 2 path on Windows
+        std::env::var("LOCALAPPDATA")
+            .ok()
+            .map(|d| PathBuf::from(d).join("MiracleClaw").join("EBWebView")),
+        // Sometimes under %APPDATA% instead
+        std::env::var("APPDATA")
+            .ok()
+            .map(|d| PathBuf::from(d).join("MiracleClaw").join("EBWebView")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    for dir in dirs {
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => log_to_file(&format!(
+                "nuke_webview2_cache_dir: removed {}",
+                dir.display()
+            )),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                log_to_file(&format!(
+                    "nuke_webview2_cache_dir: no-op (not found) {}",
+                    dir.display()
+                ));
+            }
+            Err(e) => {
+                log_to_file(&format!(
+                    "nuke_webview2_cache_dir: WARN failed to remove {}: {}",
+                    dir.display(),
+                    e
+                ));
+            }
+        }
+    }
 }
 
 /// Tauri command: open_register_url (v1.0.9, Lesson 462 companion).
