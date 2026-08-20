@@ -2019,3 +2019,56 @@ invalid HTML. Browsers usually execute them anyway (lenient parsing)
 but stricter parsers may refuse. New `*.html.insert` mode splices the
 patch before `</body>` for correct placement.
 
+
+## v1.0.9-rc18 — 2026-08-20 (Lesson 512: MAIC base URL shape mismatch — tier fix)
+
+User reported "Free" tier shown in dashboard, but MAIC's
+`/v1/auth/me` actually returns `tier: "enterprise"`. Root cause:
+MC was hitting `https://maicserver.com/v1/v1/auth/me` (double-`/v1`)
+which 404s on MAIC.
+
+### Why
+
+- `openclaw.json`'s `models.providers.maic.baseUrl` is the
+  **OpenAI-completions** endpoint, which conventionally includes
+  `/v1` (e.g. `https://maicserver.com/v1`).
+- `mc_get_tier` calls `fetch_tier_fresh(jwt, maic_base)` which
+  naively did `format!("{}/v1/auth/me", maic_base)` → produces
+  `https://maicserver.com/v1/v1/auth/me` → 404 → backend returns
+  Err → frontend falls back to `data-tier="free"`.
+
+### Fix
+
+Added `normalize_api_base()` helper in `src-tauri/src/auth/tier.rs`
+that strips trailing `/v1` (and `/`) from the base URL before the
+function appends `/v1/auth/me`. Applied the same fix to
+`fetch_quota_fresh` in `nudge.rs` so quota usage is also correct.
+
+### Files
+- `src-tauri/src/auth/tier.rs` — added `normalize_api_base()`,
+  used in `fetch_tier_fresh()`
+- `src-tauri/src/auth/nudge.rs` — same fix in `fetch_quota_fresh()`
+- `src-tauri/Cargo.toml` — version bumped to `1.0.9-rc18`
+- `src-tauri/tauri.conf.json` — version bumped to `1.0.9-rc18`
+- `package.json` — version bumped to `1.0.9-rc18`
+
+### Lesson 512 (NEW): When a config field holds an OpenAI-style
+base URL with `/v1`, and the same field is also used to build URLs
+for non-OpenAI endpoints (auth, quota, etc.), strip the `/v1` before
+appending the non-OpenAI path. Otherwise you get a double-`/v1` URL
+that 404s on servers that don't path-alias `/v1/v1/...` to `/v1/...`.
+
+**Symptom → cause → fix**:
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Tier badge shows "Free" or "Unknown" | `mc_get_tier` returned Err from MAIC 404 | Check the URL the backend actually hit — if it has double-`/v1`, fix the URL builder |
+| Quota usage bar shows "—" | Same: `mc_get_nudge` quota fetch 404'd | Same fix |
+| Auth-related endpoints silently fail | Same double-`/v1` | Same fix |
+
+**Verification**:
+
+- Pre-fix URL: `https://maicserver.com/v1/v1/auth/me` → 404
+- Post-fix URL: `https://maicserver.com/v1/auth/me` → 200,
+  returns `{"tier":"enterprise","plan_code":"team",...}`
+

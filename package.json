@@ -1,7 +1,7 @@
 {
   "name": "miracle-claw",
   "private": true,
-  "version": "1.0.9-rc17",
+  "version": "1.0.9-rc18",
   "type": "module",
   "description": "Miracle Claw — ADeal Auto Repair's desktop chat client for MAIC models",
   "scripts": {

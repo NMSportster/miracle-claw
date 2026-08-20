@@ -130,7 +130,12 @@ pub fn fetch_quota_cached(jwt: &str, maic_base: &str) -> Result<QuotaResponse, S
 }
 
 pub fn fetch_quota_fresh(jwt: &str, maic_base: &str) -> Result<QuotaResponse, String> {
-    let url = format!("{}/v1/usage/quota", maic_base.trim_end_matches('/'));
+    // Lesson 512: strip trailing /v1 from the base URL. `openclaw.json`'s
+    // `baseUrl` is the OpenAI-completions endpoint (e.g. `.../v1`), but the
+    // tier/quota endpoints live at the gateway root (`/v1/auth/me`),
+    // not under `/v1/`. Without stripping, requests double-up to
+    // `.../v1/v1/usage/quota` and 404. Shared with tier.rs.
+    let url = format!("{}/v1/usage/quota", crate::auth::tier::normalize_api_base(maic_base));
     let resp = ureq::get(&url)
         .set("Authorization", &format!("Bearer {}", jwt))
         .set("Accept", "application/json")

@@ -106,9 +106,32 @@ const CACHE_TTL: Duration = Duration::from_secs(300);
 static TIER_CACHE: once_cell::sync::Lazy<Mutex<Option<CachedTier>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(None));
 
+/// Normalize a MAIC base URL for `/v1/...` API calls.
+///
+/// `read_system_openclaw_maic_base_url()` returns `baseUrl` from
+/// `openclaw.json`, which is the **OpenAI-completions** endpoint
+/// (`https://maicserver.com/v1`). The tier endpoint at
+/// `/v1/auth/me` is one level HIGHER — it lives at the gateway root,
+/// not under `/v1/chat/completions`.
+///
+/// Without this strip, naive `format!("{}/v1/auth/me", maic_base)`
+/// produces `https://maicserver.com/v1/v1/auth/me` (double-`/v1`),
+/// which 404s on MAIC. Stripping the trailing `/v1` (and `/v1/`)
+/// makes the URL work for both shapes.
+///
+/// Lesson 512 (rc18): MAIC base URL shape mismatch.
+pub(crate) fn normalize_api_base(maic_base: &str) -> String {
+    let trimmed = maic_base.trim().trim_end_matches('/');
+    if let Some(stripped) = trimmed.strip_suffix("/v1") {
+        stripped.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// Fetch the tier fresh from MAIC. Caller must hold a valid JWT.
 pub fn fetch_tier_fresh(jwt: &str, maic_base: &str) -> Result<TierInfo, String> {
-    let url = format!("{}/v1/auth/me", maic_base.trim_end_matches('/'));
+    let url = format!("{}/v1/auth/me", normalize_api_base(maic_base));
     let resp = ureq::get(&url)
         .set("Authorization", &format!("Bearer {}", jwt))
         .set("Accept", "application/json")
