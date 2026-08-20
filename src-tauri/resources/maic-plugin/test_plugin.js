@@ -9,14 +9,18 @@
 //   - Always injects tool_execution: "client"
 //   - Doesn't crash on malformed input
 
-import { default as plugin } from "./index.js";
+import { default as plugin, buildSandboxSystemContext } from "./index.js";
 
 // Capture the provider object passed to registerProvider by calling register
 // with a fake api. The provider's extraParamsForTransport hook is what we test.
 let captured = null;
+let beforePromptBuildFn = null;
 const fakeApi = {
   registerProvider(provider) {
     captured = provider;
+  },
+  on(event, fn) {
+    if (event === "before_prompt_build") beforePromptBuildFn = fn;
   },
 };
 plugin.register(fakeApi);
@@ -119,6 +123,33 @@ console.log("=== MAIC plugin extraParamsForTransport smoke tests ===\n");
     r && r.patch && r.patch.tool_execution === "client_only",
     `got tool_execution=${r?.patch?.tool_execution}`
   );
+}
+
+console.log("\n=== Lesson 516 sandbox system-context tests ===\n");
+
+// 7. buildSandboxSystemContext returns a non-empty block that mentions all
+//    four allowed roots by path-style, NOT by name only.
+{
+  const ctx = buildSandboxSystemContext();
+  check("returns a non-empty string", typeof ctx === "string" && ctx.length > 200, `len=${ctx?.length}`);
+  check("mentions Documents path", ctx.includes("Documents"), `ctx=${ctx?.slice(0, 120)}…`);
+  check("mentions Desktop path",   ctx.includes("Desktop"),   `ctx=${ctx?.slice(0, 120)}…`);
+  check("mentions Downloads path", ctx.includes("Downloads"), `ctx=${ctx?.slice(0, 120)}…`);
+  check("mentions workspace dir",  ctx.includes("miracle-claw"), `ctx=${ctx?.slice(0, 120)}…`);
+  check("warns about other Users dirs being blocked", ctx.includes("AppData") || ctx.includes("ProgramData"), `ctx=${ctx?.slice(0, 120)}…`);
+  check("warns about bash cwd quirk",                  ctx.includes("bash") && ctx.includes("cwd"),          `ctx=${ctx?.slice(0, 120)}…`);
+}
+
+// 8. Plugin registers a before_prompt_build hook (api.on)
+{
+  check("register() wires up before_prompt_build hook", typeof beforePromptBuildFn === "function", `got ${typeof beforePromptBuildFn}`);
+}
+
+// 9. before_prompt_build hook returns { prependSystemContext }
+{
+  const r = await beforePromptBuildFn({ prompt: "hi", messages: [] }, {});
+  check("returns object with prependSystemContext", r && typeof r.prependSystemContext === "string", `got ${JSON.stringify(r)}`);
+  check("prependSystemContext mentions Documents",  r?.prependSystemContext?.includes("Documents"),  `ctx=${r?.prependSystemContext?.slice(0, 120)}…`);
 }
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`);

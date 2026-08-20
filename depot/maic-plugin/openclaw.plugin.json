@@ -1,8 +1,8 @@
 {
   "id": "maic",
   "name": "MAIC Provider",
-  "description": "Minimal MAIC provider plugin: injects tool_execution='client' into outbound OpenAI-compatible chat completion requests so MAIC returns tool_calls for client-side execution. Plus per-model extraParams passthrough from openclaw.json.",
-  "version": "0.1.0",
+  "description": "Minimal MAIC provider plugin: injects tool_execution='client' and per-model extraParams into outbound OpenAI-compatible chat completion requests, plus a filesystem-sandbox system context (Lesson 516) so the model knows exactly which paths it can reach.",
+  "version": "0.2.0",
   "configSchema": {
     "type": "object",
     "additionalProperties": true,

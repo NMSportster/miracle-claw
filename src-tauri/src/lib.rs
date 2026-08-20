@@ -970,6 +970,129 @@ fn replace_secret_ref_with_literal() -> bool {
     false
 }
 
+// ---------------------------------------------------------------------------
+// Lesson 517 (NEW, 2026-08-20): tier-conditional default model + fallbacks.
+//
+// On login (or any time we fetch a fresh tier), we write
+// `agents.defaults.model` into the user's openclaw.json so the chat panel
+// pre-selects the right model for the tier AND so openclaw's runtime
+// fallback walker has the chain it needs when the primary fails.
+//
+// Free  → primary = `milagro-dev`,       fallbacks = []                       (local only)
+// Paid  → primary = `milagro-oc-kimi`,   fallbacks = [MiniMax, GLM, local]   (cloud cascade)
+//
+// Idempotent: if the user's `agents.defaults.model` already matches the
+// tier-derived default, we don't rewrite it (preserves user choice of
+// a manual override that happens to match). If the user has set their
+// own primary that's NOT the tier default, we leave it alone — this
+// function is non-destructive by design.
+//
+// Returns `Ok(true)` if the file was written, `Ok(false)` if it was
+// already correct, `Err` on I/O / serialization failure (caller decides
+// whether to log + continue or abort).
+pub(crate) fn ensure_agents_default_model_for_tier(
+    tier: crate::auth::tier::Tier,
+) -> io::Result<bool> {
+    use crate::auth::tier::{tier_default_model_id, tier_default_fallbacks};
+
+    let primary = tier_default_model_id(tier);
+    let fallbacks: Vec<&str> = tier_default_fallbacks(tier).to_vec();
+
+    let path = openclaw_json_path();
+    let mut cfg: serde_json::Value = match std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+    {
+        Some(c) => c,
+        // No openclaw.json yet — `ensure_maic_provider_config` should
+        // have just created one. Skip; the next login round will retry.
+        None => return Ok(false),
+    };
+
+    // Walk to `agents.defaults.model`.
+    let agents = cfg
+        .as_object_mut()
+        .and_then(|o| o.get_mut("agents"))
+        .and_then(|a| a.as_object_mut());
+    let defaults: &mut serde_json::Value = match agents.and_then(|a| a.get_mut("defaults")) {
+        Some(d) if d.is_object() => d,
+        // agents.defaults missing — create it.
+        _ => {
+            if !cfg.is_object() {
+                cfg = serde_json::json!({});
+            }
+            let agents_obj = cfg
+                .as_object_mut()
+                .unwrap()
+                .entry("agents".to_string())
+                .or_insert_with(|| Value::Object(Default::default()));
+            if !agents_obj.is_object() {
+                *agents_obj = Value::Object(Default::default());
+            }
+            agents_obj
+                .as_object_mut()
+                .unwrap()
+                .entry("defaults".to_string())
+                .or_insert_with(|| Value::Object(Default::default()))
+        }
+    };
+
+    // Read the existing model entry to decide whether to write.
+    let existing_primary = defaults
+        .get("model")
+        .and_then(|m| m.get("primary"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    // Non-destructive: only write if no primary is set OR primary is empty.
+    // We deliberately do NOT overwrite an existing non-empty primary — that
+    // means the user picked one and we should respect it across logins.
+    let needs_write = match existing_primary.as_deref() {
+        None | Some("") => true,
+        Some(_) => false, // user already chose; don't clobber
+    };
+    if !needs_write {
+        return Ok(false);
+    }
+
+    let model_obj = defaults
+        .as_object_mut()
+        .unwrap()
+        .entry("model".to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !model_obj.is_object() {
+        *model_obj = Value::Object(Default::default());
+    }
+    let model_obj = model_obj.as_object_mut().unwrap();
+
+    model_obj.insert("primary".to_string(), Value::String(primary.to_string()));
+    if fallbacks.is_empty() {
+        // Free: clear any stale fallback array left over from a paid
+        // account's downgrade (so the dropdown shows just `milagro-dev`).
+        model_obj.remove("fallbacks");
+    } else {
+        let fb: Vec<Value> = fallbacks.iter().map(|s| Value::String(s.to_string())).collect();
+        model_obj.insert("fallbacks".to_string(), Value::Array(fb));
+    }
+
+    // Persist. Use atomic temp-file + rename so a crash mid-write doesn't
+    // leave the user with a half-written openclaw.json.
+    let serialized = serde_json::to_string_pretty(&cfg)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize: {e}")))?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serialized)?;
+    fs::rename(&tmp, &path)?;
+
+    eprintln!(
+        "[miracle-claw] tier: wrote agents.defaults.model primary={} fallbacks={:?} (tier={})",
+        primary, fallbacks, tier.as_str()
+    );
+    Ok(true)
+}
+
 /// Lesson 458 / v1.0.6: replace any literal JWT in `models.providers.maic.apiKey`
 /// back with a SecretRef, so a future `maic_login` can do its job cleanly
 /// instead of finding a stale literal. Idempotent. Used by `maic_logout`.
@@ -1762,6 +1885,17 @@ fn maic_login(email: String, password: String, remember: bool) -> Result<MaicLog
     crate::auth::tier::invalidate_tier_cache();
     crate::auth::nudge::invalidate_quota_cache();
 
+    // Lesson 517 / v1.0.9-rc20: route paid users to Kimi + fallbacks.
+    // Free stays on local `milagro-dev` (no cloud quota). The writer is
+    // non-destructive — if the user has already set a manual primary,
+    // we leave it alone. Idempotent across repeated logins.
+    if let Err(e) = ensure_agents_default_model_for_tier(parsed_tier) {
+        eprintln!(
+            "[miracle-claw] maic_login: WARNING — failed to write tier defaults: {}",
+            e
+        );
+    }
+
     // Lesson 458 / v1.0.6: handle "Remember me" checkbox.
     //
     // - remember=true  → encrypt and stash email|password in the OS keychain,
@@ -1968,6 +2102,18 @@ fn silent_relogin() -> Result<Option<MaicLoginInfo>, String> {
     std::env::set_var(ENV_VAR_NAME, &token);
     let _ = ensure_maic_provider_config();
     let _ = replace_secret_ref_with_literal();
+
+    // Lesson 517 / rc20: route the default model on silent relogin too.
+    // Critical for users whose first login happened on Free and whose
+    // MAIC plan was upgraded later — silent_relogin is how MC catches up.
+    let parsed_tier = crate::auth::tier::Tier::from_str(&tier);
+    crate::auth::tier::publish_tier_env(parsed_tier);
+    if let Err(e) = ensure_agents_default_model_for_tier(parsed_tier) {
+        eprintln!(
+            "[miracle-claw] silent_relogin: WARNING — failed to write tier defaults: {}",
+            e
+        );
+    }
 
     eprintln!(
         "[miracle-claw] silent_relogin: success — user={}, tier={}",
@@ -3196,6 +3342,11 @@ fn mc_refresh_tier() -> Result<crate::auth::tier::TierInfo, String> {
     crate::auth::tier::invalidate_tier_cache();
     let info = crate::auth::tier::fetch_tier_fresh(&jwt, &maic_base)?;
     crate::auth::tier::publish_tier_env(info.tier);
+    // Lesson 517 / rc20: re-route default model on tier refresh (handles
+    // upgrades from Free → Pro that happen mid-session without a re-login).
+    if let Err(e) = ensure_agents_default_model_for_tier(info.tier) {
+        eprintln!("[miracle-claw] mc_refresh_tier: WARNING — failed to write tier defaults: {}", e);
+    }
     Ok(info)
 }
 
@@ -3209,7 +3360,44 @@ fn mc_apply_tier_change(new_tier_str: String) -> Result<(), String> {
     crate::auth::tier::publish_tier_env(tier);
     crate::auth::tier::invalidate_tier_cache();
     crate::auth::nudge::invalidate_quota_cache();
+    // Lesson 517 / rc20: re-route default model on tier change.
+    if let Err(e) = ensure_agents_default_model_for_tier(tier) {
+        eprintln!("[miracle-claw] mc_apply_tier_change: WARNING — failed to write tier defaults: {}", e);
+    }
     Ok(())
+}
+
+// Lesson 517 / rc20: one-shot migration helper. The frontend can call
+// this after a successful login to force the tier default onto
+// `agents.defaults.model` even if the user previously picked something
+// else (e.g. Free users upgraded to Pro while their manual `milagro-dev`
+// was still primary). Returns `Ok(true)` if a write happened, `Ok(false)`
+// if already correct.
+//
+// Non-destructive by default: `ensure_agents_default_model_for_tier`
+// won't overwrite a non-empty primary. If `force = true`, we blank
+// the existing primary in-memory, call the writer, and let it stamp
+// the tier default. Use with care — it overrides user choice.
+#[tauri::command]
+fn mc_set_tier_defaults(force: Option<bool>) -> Result<bool, String> {
+    let tier = crate::auth::tier::current_tier();
+    let force = force.unwrap_or(false);
+    if force {
+        let path = openclaw_json_path();
+        if let Some(mut cfg) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        {
+            if let Some(primary) = cfg.pointer_mut("/agents/defaults/model/primary") {
+                *primary = serde_json::Value::String(String::new());
+            }
+            if let Ok(serialized) = serde_json::to_string_pretty(&cfg) {
+                let _ = std::fs::write(&path, serialized);
+            }
+        }
+    }
+    ensure_agents_default_model_for_tier(tier)
+        .map_err(|e| format!("set_tier_defaults: {}", e))
 }
 
 pub fn run() {
@@ -3230,7 +3418,8 @@ pub fn run() {
             mc_get_nudge,
             mc_list_tools,
             mc_refresh_tier,
-            mc_apply_tier_change
+            mc_apply_tier_change,
+            mc_set_tier_defaults
         ])
         .setup(|app| {
             setup(app)?;
@@ -3938,6 +4127,198 @@ mod tests {
         assert!(
             upgrade_legacy_maic_base_url("https://proxy.example.com/maic").is_none(),
             "user paths must be preserved by the migration policy"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Lesson 517: tier-conditional default model + fallbacks
+    // ---------------------------------------------------------------------
+
+    /// Build a minimal openclaw.json shape that mirrors what MC writes
+    /// after `ensure_maic_provider_config`. Returns the temp dir guard so
+    /// the file lives for the test scope.
+    ///
+    /// Note: openclaw_json_path() resolves to `<HOME>/.miracle-claw/openclaw.json`
+    /// on non-Windows builds (and `<APPDATA>/MiracleClaw/openclaw.json` on
+    /// Windows), NOT `<HOME>/.openclaw/openclaw.json` — that was a steeler
+    /// convention we don't use. This helper mirrors what the production
+    /// code resolves to.
+    fn fresh_openclaw_with_model(primary: Option<&str>, fallbacks: Option<Vec<&str>>) -> EnvGuard {
+        let g = fresh_env();
+        let path = if cfg!(windows) {
+            g._temp.path().join("MiracleClaw").join("openclaw.json")
+        } else {
+            g._temp.path().join(".miracle-claw").join("openclaw.json")
+        };
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut cfg = serde_json::json!({
+            "models": { "providers": { "maic": {} } }
+        });
+        if primary.is_some() || fallbacks.is_some() {
+            let mut model = serde_json::Map::new();
+            if let Some(p) = primary {
+                model.insert("primary".to_string(), serde_json::Value::String(p.to_string()));
+            }
+            if let Some(fb) = fallbacks {
+                let arr: Vec<serde_json::Value> =
+                    fb.iter().map(|s| serde_json::Value::String(s.to_string())).collect();
+                model.insert("fallbacks".to_string(), serde_json::Value::Array(arr));
+            }
+            cfg["agents"] = serde_json::json!({
+                "defaults": { "model": serde_json::Value::Object(model) }
+            });
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+        g
+    }
+
+    #[test]
+    fn lesson_517_free_writes_local_default_when_empty() {
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(None, None);
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
+            .expect("writer should succeed");
+        assert!(wrote, "should have written because no primary was set");
+
+        let path = openclaw_json_path();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let primary = cfg.pointer("/agents/defaults/model/primary").unwrap();
+        assert_eq!(primary, "milagro-dev");
+        // Free must NOT have fallbacks.
+        assert!(cfg.pointer("/agents/defaults/model/fallbacks").is_none(),
+                "Free must not have a fallbacks array");
+    }
+
+    #[test]
+    fn lesson_517_pro_writes_kimi_with_fallbacks() {
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(None, None);
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("writer should succeed");
+        assert!(wrote, "should have written because no primary was set");
+
+        let path = openclaw_json_path();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary").unwrap(),
+            "milagro-oc-kimi"
+        );
+        let fallbacks: Vec<String> = cfg
+            .pointer("/agents/defaults/model/fallbacks")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(fallbacks, vec!["milagro-oc-minimax", "milagro-oc-glm", "milagro-dev"]);
+    }
+
+    #[test]
+    fn lesson_517_does_not_overwrite_user_choice() {
+        let _env = lock_env();
+        // User picked a manual primary — writer must leave it alone so
+        // logins don't clobber their pick.
+        let _g = fresh_openclaw_with_model(Some("milagro-dev-coder"), None);
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("writer should succeed");
+        assert!(!wrote, "writer must report 'already correct' when user has a primary");
+
+        let path = openclaw_json_path();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // Primary still the user's pick, NOT Kimi.
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary").unwrap(),
+            "milagro-dev-coder"
+        );
+    }
+
+    #[test]
+    fn lesson_517_writes_when_existing_primary_is_empty_string() {
+        let _env = lock_env();
+        // Edge case: blank-string primary is treated as unset (not user
+        // choice). Writer should overwrite it.
+        let _g = fresh_openclaw_with_model(Some(""), None);
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Enterprise)
+            .expect("writer should succeed");
+        assert!(wrote, "empty primary must be treated as unset");
+
+        let path = openclaw_json_path();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary").unwrap(),
+            "milagro-oc-kimi"
+        );
+    }
+
+    #[test]
+    fn lesson_517_pro_plus_team_enterprise_share_routing() {
+        let _env = lock_env();
+        // Sanity: ProPlus, Team, Enterprise all route to the same Kimi +
+        // MiniMax + GLM + local chain. This is the invariant the user's
+        // request ("paid accounts use Kimi, fallback Minimax-m3, fallback
+        // glm") pins.
+        for tier in [
+            crate::auth::tier::Tier::ProPlus,
+            crate::auth::tier::Tier::Team,
+            crate::auth::tier::Tier::Enterprise,
+        ] {
+            let _g = fresh_openclaw_with_model(None, None);
+            let wrote = ensure_agents_default_model_for_tier(tier)
+                .expect("writer should succeed");
+            assert!(wrote, "{:?} should have written", tier);
+
+            let path = openclaw_json_path();
+            let cfg: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(
+                cfg.pointer("/agents/defaults/model/primary").unwrap(),
+                "milagro-oc-kimi",
+                "{:?} primary must be Kimi",
+                tier,
+            );
+            let fallbacks: Vec<String> = cfg
+                .pointer("/agents/defaults/model/fallbacks")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(fallbacks.len(), 3, "{:?} should have 3 fallbacks", tier);
+            assert_eq!(fallbacks[0], "milagro-oc-minimax");
+            assert_eq!(fallbacks[1], "milagro-oc-glm");
+            assert_eq!(fallbacks[2], "milagro-dev");
+        }
+    }
+
+    #[test]
+    fn lesson_517_free_clears_stale_paid_fallbacks_on_downgrade() {
+        let _env = lock_env();
+        // User paid → had Kimi+fallbacks. Downgraded to Free. Next login
+        // must clean up the stale fallbacks so the dropdown only shows
+        // `milagro-dev`. We model this by starting with Free default
+        // + a fallback array, then calling the writer with Free.
+        let _g = fresh_openclaw_with_model(Some(""), Some(vec!["milagro-oc-minimax", "milagro-dev"]));
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
+            .expect("writer should succeed");
+        assert!(wrote, "empty primary + non-empty fallbacks must trigger write");
+
+        let path = openclaw_json_path();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary").unwrap(),
+            "milagro-dev"
+        );
+        assert!(
+            cfg.pointer("/agents/defaults/model/fallbacks").is_none(),
+            "Free downgrade must clear the fallbacks array (was: {:?})",
+            cfg.pointer("/agents/defaults/model/fallbacks")
         );
     }
 }

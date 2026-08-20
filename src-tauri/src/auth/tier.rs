@@ -214,6 +214,73 @@ pub fn publish_tier_env(tier: Tier) {
     eprintln!("[miracle-claw] tier: published MC_USER_TIER={}", tier.as_str());
 }
 
+// ---------------------------------------------------------------------------
+// Lesson 517 (NEW, 2026-08-20): tier-conditional default model + fallbacks.
+//
+// David's instruction: paid accounts (Pro, ProPlus, Team, Enterprise) should
+// default to Kimi (cloud cascade via MAIC OpenChat) with MiniMax-M3 as
+// first fallback and GLM as second fallback. Free stays on the local 14B
+// (`milagro-dev`) because cloud-only models would silently break for users
+// with no quota.
+//
+// The default is written into `agents.defaults.model` in the user's
+// openclaw.json — exactly the shape openclaw's `resolveDefaultModelForAgent`
+// reads (see `model-selection-B9dihan1.js`). OpenClaw's runtime then
+// resolves `primary` → first model id, and on failure walks `fallbacks`
+// in order. Each entry can be a bare model id (resolved against the
+// `maic` provider configured by MC) or `provider/model`.
+//
+// We don't override user choice — if `agents.defaults.model.primary` is
+// already set, the caller should not call `ensure_agents_default_model`
+// with a non-empty `force` flag. The writer is opt-in per the caller
+// decision and is documented as such.
+
+/// The default model id for a given tier (primary in `agents.defaults.model.primary`).
+///
+/// Free: `milagro-dev` (14B local, fastest, no cloud dependency).
+/// Paid: `milagro-oc-kimi` (cloud cascade — best cost/quality for code+chat).
+///
+/// This is also what `mc_get_default_model` returns to the dashboard
+/// so the chat panel's pre-selected model matches the tier routing.
+pub fn tier_default_model_id(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Free => "milagro-dev",
+        // Pro / ProPlus / Team / Enterprise all use the cloud Kimi default.
+        // MAIC's plan_code → quota gate still applies server-side, so a
+        // downgraded user on this default just gets a clean error rather
+        // than a quota-bypass.
+        _ => "milagro-oc-kimi",
+    }
+}
+
+/// The ordered fallback chain for a given tier.
+///
+/// The chain is appended to `agents.defaults.model.fallbacks` (preserving
+/// openclaw's existing fallbacks if the caller has set any). It walks
+/// cheap → expensive models in order, so a transient Kimi outage degrades
+/// to MiniMax-M3 (still cloud, MAIC cascade), then GLM, then the local 14B.
+///
+/// Why this order (David's 2026-08-20 16:59 MDT):
+///   1. `milagro-oc-minimax` (MiniMax M3) — second-best cloud reasoning at
+///      similar latency to Kimi. Drop-in for long-context chat/code.
+///   2. `milagro-oc-glm` — third cloud option; good for code completion.
+///   3. `milagro-dev` — local 14B fallback if ALL cloud routes fail. Slow
+///      but never returns a network error.
+///
+/// Returns an empty slice for Free (Free users don't get auto-fallback —
+/// the local 14B is already their only option, and adding fallbacks to
+/// cloud models would silently burn quota they're not entitled to).
+pub fn tier_default_fallbacks(tier: Tier) -> &'static [&'static str] {
+    match tier {
+        Tier::Free => &[],
+        _ => &[
+            "milagro-oc-minimax",
+            "milagro-oc-glm",
+            "milagro-dev",
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +332,55 @@ mod tests {
         // we don't expose a setter; instead verify the public surface.
         invalidate_tier_cache();
         assert_eq!(current_tier(), Tier::Free);
+    }
+
+    // -----------------------------------------------------------------------
+    // Lesson 517 tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn free_default_is_local_14b() {
+        // Free users must default to the local model so the chat works
+        // even when their MAIC quota is exhausted / not provisioned.
+        assert_eq!(tier_default_model_id(Tier::Free), "milagro-dev");
+        // Free has no fallbacks (no cloud access by entitlement).
+        assert!(tier_default_fallbacks(Tier::Free).is_empty(),
+                "Free must not have cloud fallbacks (would silently burn quota)");
+    }
+
+    #[test]
+    fn paid_default_is_kimi() {
+        for tier in [Tier::Pro, Tier::ProPlus, Tier::Team, Tier::Enterprise] {
+            assert_eq!(
+                tier_default_model_id(tier),
+                "milagro-oc-kimi",
+                "{:?} must default to Kimi",
+                tier,
+            );
+        }
+    }
+
+    #[test]
+    fn paid_fallbacks_are_ordered_minimax_then_glm_then_local() {
+        for tier in [Tier::Pro, Tier::ProPlus, Tier::Team, Tier::Enterprise] {
+            let f = tier_default_fallbacks(tier);
+            assert_eq!(f.len(), 3, "{:?} should have exactly 3 fallbacks", tier);
+            assert_eq!(f[0], "milagro-oc-minimax", "{:?} fallback[0] must be MiniMax-M3", tier);
+            assert_eq!(f[1], "milagro-oc-glm",     "{:?} fallback[1] must be GLM", tier);
+            assert_eq!(f[2], "milagro-dev",        "{:?} fallback[2] must be local 14B", tier);
+        }
+    }
+
+    #[test]
+    fn fallback_chain_distinct_from_primary() {
+        // The fallback chain must NOT include the primary — otherwise
+        // openclaw's fallback walker would loop on the same model id.
+        for tier in [Tier::Pro, Tier::ProPlus, Tier::Team, Tier::Enterprise] {
+            let primary = tier_default_model_id(tier);
+            for f in tier_default_fallbacks(tier) {
+                assert_ne!(*f, primary, "{:?}: fallback {} must differ from primary", tier, f);
+            }
+        }
     }
 
     /// Pin the JSON shape of MAIC's `/v1/auth/me` so future schema

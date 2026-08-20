@@ -2226,3 +2226,125 @@ each custom command. Reference the `allow-*` identifiers in your
    model should emit `tool_calls` (check the request body to MAIC
    includes `tools: [...]` array with all 7 schemas).
 5. Tier badge should still show "Enterprise" (rc18 fix unchanged).
+
+## v1.0.9-rc20 — 2026-08-20 (Lesson 517: tier-conditional default model + Lesson 516 sandbox awareness)
+
+This rc bundles TWO independent fixes into one build per Lesson 513
+(12 min rebuild cost = one rc per natural batch point).
+
+### Fix 1 — Lesson 517: tier-conditional default model + fallbacks
+
+**Symptom**: After login, MC's chat defaulted to `milagro-dev` regardless
+of the user's MAIC tier. Paid accounts (Pro/ProPlus/Team/Enterprise)
+were missing out on the cloud cascade chain (Kimi → MiniMax-M3 → GLM
+→ local) that MAIC provides.
+
+**Decision** (David 2026-08-20 16:59 MDT): "paid accounts automatically
+set up with Kimi, fallback Minimax-m3 fallback glm etc, etc." Free
+users stay on local 14B (no cloud quota to burn).
+
+**Fix** (`src-tauri/src/auth/tier.rs` + `src-tauri/src/lib.rs`):
+
+| Tier | Primary | Fallbacks |
+|---|---|---|
+| Free | `milagro-dev` (local 14B) | *(none)* |
+| Pro / ProPlus / Team / Enterprise | `milagro-oc-kimi` (cloud) | `milagro-oc-minimax` → `milagro-oc-glm` → `milagro-dev` |
+
+- `tier_default_model_id(tier)` and `tier_default_fallbacks(tier)` —
+  pure helpers, pinned by 4 unit tests.
+- `ensure_agents_default_model_for_tier(tier)` — non-destructive writer
+  that walks `agents.defaults.model.{primary, fallbacks}` in
+  `openclaw.json` and stamps the tier defaults ONLY when no user choice
+  is present (empty/missing primary triggers; non-empty primary is left
+  alone so logins don't clobber manual picks).
+- Wired into `maic_login`, `silent_relogin`, `mc_refresh_tier`, and
+  `mc_apply_tier_change` — every place we learn a tier now writes the
+  routing config atomically (temp file + rename).
+- `mc_set_tier_defaults(force?: bool)` — frontend-callable migration
+  helper. `force=true` blanks an existing manual primary before
+  writing the tier default (used for Free→Pro upgrades on existing
+  installs that have already picked `milagro-dev`).
+- Atomic write: temp file + rename so a crash mid-write doesn't leave
+  the user with a half-written `openclaw.json`.
+
+**Tests added** (6 new, all passing): `lesson_517_free_writes_local_default_when_empty`,
+`lesson_517_pro_writes_kimi_with_fallbacks`, `lesson_517_does_not_overwrite_user_choice`,
+`lesson_517_writes_when_existing_primary_is_empty_string`,
+`lesson_517_pro_plus_team_enterprise_share_routing`,
+`lesson_517_free_clears_stale_paid_fallbacks_on_downgrade`. Plus 4
+helpers in `tier.rs` (`free_default_is_local_14b`, `paid_default_is_kimi`,
+`paid_fallbacks_are_ordered_minimax_then_glm_then_local`,
+`fallback_chain_distinct_from_primary`). Full suite: 60 passed, 0 failed.
+
+### Fix 2 — Lesson 516: MAIC plugin sandbox-awareness system prompt
+
+**Symptom**: When MC's OpenClaw agent (m1-t1, 7B ternary) tried to use
+`bash_run` or `write_file`, it hallucinated paths under
+`~/.openclaw/workspace/` (the OpenClaw **native** workspace convention)
+instead of MC's actual sandbox: `%LOCALAPPDATA%\miracle-claw\workspace\`
+on Windows or `~/.local/share/miracle-claw/workspace/` on Linux. The
+model produced plausible-looking paths that resolved to non-existent
+directories, and the user saw `ENOENT` errors.
+
+**Root cause**: The MAIC plugin added tool schemas (Lesson 507) but
+didn't tell the model **where** MC's sandbox is. The model fell back
+to "what I might know about openclaw's defaults" → wrong answer.
+
+**Fix** (`depot/maic-plugin/index.js` v0.2.0): add a
+`before_prompt_build` hook that injects a system-context block
+describing the sandbox:
+
+- Concrete allowed paths (Documents/Desktop/Downloads + workspace)
+  with the user's actual paths resolved at hook time.
+- Disallowed paths (AppData, ProgramData, other drives, WSL native,
+  relative paths).
+- Path style reminders (Windows backslash, `~/mnt/c/...` auto-convert,
+  `~` not expanded by bash).
+- Quirks (bash_run default CWD is the workspace, not the user's cwd).
+
+**Implementation notes** (lessons baked in):
+- Top-level `import os from "node:os"` (NOT lazy `require` — the
+  lazy `try { require() } catch {}` silently swallowed the ESM
+  context error and returned empty paths; the system prompt ended
+  up 1289 chars instead of 1444 and was missing all desktop paths).
+- Uses `os.homedir()` + `os.platform()` instead of the
+  `PluginHookAgentContext.workspaceDir` field, because that field
+  is only populated in the per-turn context (not the system-context
+  hook), and we want the same prompt regardless of OS / install state.
+- Returns `{ prependSystemContext: <block> }` — provider-cached, not
+  per-turn, so token cost is amortized across the whole conversation.
+
+**Tests added** (10 new in `depot/maic-plugin/test_plugin.js`,
+all passing): desktop paths, downloads path, Windows-style
+backslashes, non-Windows paths, sandbox awareness, hook installation,
+prepend vs append, no-regression on extraParamsForTransport, idempotent
+`onBeforePromptBuild` re-binding, ESM context (`require` failure
+fallback path).
+
+### Files
+- `src-tauri/src/auth/tier.rs` — `tier_default_model_id` +
+  `tier_default_fallbacks` + 4 unit tests
+- `src-tauri/src/lib.rs` — `ensure_agents_default_model_for_tier` +
+  `mc_set_tier_defaults` + 6 unit tests + wiring into 4 callers
+- `depot/maic-plugin/index.js` — v0.2.0 (Lesson 516 prefix + system
+  prompt builder)
+- `depot/maic-plugin/openclaw.plugin.json` — version bumped to 0.2.0
+- `depot/maic-plugin/package.json` — version bumped to 0.2.0
+- `depot/maic-plugin/test_plugin.js` — 21 tests (11 smoke + 10 Lesson 516)
+- `src-tauri/Cargo.toml` — version bumped to `1.0.9-rc20`
+- `src-tauri/tauri.conf.json` — version bumped to `1.0.9-rc20`
+- `package.json` — version bumped to `1.0.9-rc20`
+
+### Verification plan
+1. Install rc20 → log in with pro@adealauto.com → model dropdown
+   should show Kimi as primary, fallbacks listed below.
+2. Log in with free@adealauto.com → primary = `milagro-dev`,
+   no fallbacks.
+3. Send a message like "list files in C:\Users\Adeal\Documents" — the
+   agent should use the right path (no `~/.openclaw/workspace`
+   hallucination).
+4. Try `bash_run` with no `cwd` arg — the agent should warn about the
+   default CWD being the workspace.
+5. Verify the system prompt includes the sandbox-awareness block by
+   tailing `miracle-claw.log` for `prependSystemContext` length = 1444.
+6. `cargo test --lib` → 60 passed, 0 failed (regression check).
