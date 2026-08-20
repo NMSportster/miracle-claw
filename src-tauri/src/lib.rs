@@ -2465,7 +2465,9 @@ fn start_gateway_after_login(
 fn openclaw_open_window(
     app_handle: tauri::AppHandle,
 ) -> Result<&'static str, String> {
-    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tauri::webview::{PageLoadEvent, PageLoadPayload};
+    use tauri::{WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
     const WINDOW_LABEL: &str = "openclaw-chat";
     // Lesson 461b: use 127.0.0.1, not localhost. WebView2 on some Windows
@@ -2473,7 +2475,22 @@ fn openclaw_open_window(
     // first, the openclaw gateway binds only to 127.0.0.1 (IPv4), and the
     // page hangs loading. 127.0.0.1 forces IPv4 and matches the bind
     // mode=loopback default in the launcher.
-    const CHAT_URL: &str = "http://127.0.0.1:28789/";
+    const CHAT_BASE_URL: &str = "http://127.0.0.1:28789/";
+
+    // Lesson 470 (rc6 fix 2): cache-buster query string. Every launch gets a
+    // unique `?v=<unix-millis>` so WebView2 never serves a stale cached
+    // HTML/asset bundle from a prior install. This is the cheapest, most
+    // reliable defense against the "blank window after upgrade" pattern
+    // where the WebView2 cache holds bundle hashes from a previous
+    // server build that no longer match the current HTML's references.
+    let cache_buster = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let chat_url = format!("{CHAT_BASE_URL}?v={cache_buster}");
+    log_to_file(&format!(
+        "openclaw_open_window: cache_buster v={cache_buster}, chat_url={chat_url}"
+    ));
 
     // If the window already exists (user clicked the OpenClaw tile twice),
     // just focus it and bail. Don't create a second one.
@@ -2536,25 +2553,54 @@ fn openclaw_open_window(
     //   - A WebviewUrl (we point at the bundled chat gateway).
     //   - The label must be allowed in capabilities/openclaw.json —
     //     otherwise the runtime rejects the window.
+    //
+    // Lesson 470 (rc6 fix 1+3): incognito + on_page_load hook.
+    //   - `.incognito(true)` forces WebView2 to use a fresh, ephemeral
+    //     user-data-dir with no cache from prior installs. This is the
+    //     most reliable defense against cache-poisoned blank windows
+    //     because the WebView can't serve stale assets it doesn't have.
+    //   - `.on_page_load(...)` logs each page lifecycle event so we can
+    //     tell whether the chat UI actually mounted or whether we're
+    //     seeing the openclaw mount-fallback page. Critical post-mortem
+    //     signal when a blank window is reported.
     let builder = WebviewWindowBuilder::new(
         &app_handle,
         WINDOW_LABEL,
-        WebviewUrl::External(CHAT_URL.parse().map_err(|e| {
-            format!("invalid CHAT_URL {CHAT_URL:?}: {e}")
+        WebviewUrl::External(chat_url.parse().map_err(|e| {
+            format!("invalid chat_url {chat_url:?}: {e}")
         })?),
     )
     .title("MiracleClaw — OpenClaw Chat")
     .inner_size(1280.0, 800.0)
     .min_inner_size(800.0, 560.0)
     .resizable(true)
-    .center();
+    .center()
+    .incognito(true)
+    .on_page_load(|window: WebviewWindow, payload: PageLoadPayload| {
+        let event = payload.event();
+        let url = payload.url();
+        let msg = match event {
+            PageLoadEvent::Started => format!("started loading {url}"),
+            PageLoadEvent::Finished => format!("finished loading {url}"),
+        };
+        log_to_file(&format!("openclaw-chat webview page-load: {msg}"));
+        // If the user closes the chat window, log it so we have a clean
+        // event trail in the post-mortem log.
+        let _ = window; // suppress unused warning
+    });
 
     builder.build().map_err(|e| {
         eprintln!("[miracle-claw] openclaw-chat spawn failed: {}", e);
+        log_to_file(&format!(
+            "openclaw-chat webview build FAILED: {e}"
+        ));
         format!("could not create chat window: {e}")
     })?;
 
-    eprintln!("[miracle-claw] openclaw-chat window created → {}", CHAT_URL);
+    eprintln!("[miracle-claw] openclaw-chat window created → {}", chat_url);
+    log_to_file(&format!(
+        "openclaw-chat window created → url={chat_url} incognito=true"
+    ));
     Ok("created")
 }
 
