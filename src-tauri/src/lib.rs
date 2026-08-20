@@ -2599,23 +2599,52 @@ fn openclaw_open_window(
     // HTML that doesn't render as a chat UI → blank window). Verify we
     // get a real 2xx back from GET / within 1 second. If we don't, treat
     // it as a failure and surface an informative error.
-    match check_http_ready("http://127.0.0.1:28789/", std::time::Duration::from_secs(1)) {
-        Ok(status) => {
-            eprintln!(
-                "[miracle-claw] openclaw-chat: gateway HTTP / returned {}",
-                status
-            );
+    //
+    // Lesson 480 (rc9 hot-fix): retry the HTTP probe up to 3 times with
+    // 200ms backoff. The gateway can transiently fail HTTP during config
+    // hot-reload (when maic.apiKey is updated after login, the openclaw
+    // gateway tears down+rebuilds its HTTP listener — that takes ~600ms).
+    // If we hit it during that window, we get os error 10060 (read
+    // timeout). The gateway IS healthy, just busy. Retrying catches this
+    // without forcing the user to log out and back in.
+    let mut http_attempts: Vec<String> = Vec::new();
+    let mut last_err: Option<String> = None;
+    let mut http_ok = false;
+    for attempt in 1..=3 {
+        match check_http_ready("http://127.0.0.1:28789/", std::time::Duration::from_millis(1500)) {
+            Ok(status) => {
+                eprintln!(
+                    "[miracle-claw] openclaw-chat: gateway HTTP / returned {} (attempt {})",
+                    status, attempt
+                );
+                http_ok = true;
+                break;
+            }
+            Err(e) => {
+                let line = format!("attempt {}: {}", attempt, e);
+                eprintln!(
+                    "[miracle-claw] openclaw-chat: gateway HTTP check failed: {}",
+                    line
+                );
+                http_attempts.push(line.clone());
+                last_err = Some(line);
+                if attempt < 3 {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
         }
-        Err(e) => {
-            eprintln!(
-                "[miracle-claw] openclaw-chat: gateway HTTP check failed: {}",
-                e
-            );
-            return Err(format!(
-                "OpenClaw gateway port is open but not serving the chat UI. \
-                 Please log out and back in to reset it. ({e})"
-            ));
-        }
+    }
+    if !http_ok {
+        // Lesson 480: distinguish transient (reload-induced) from real
+        // failure. The original error message ("please log out and back
+        // in") is misleading — 10060 here is almost always the reload
+        // race, not a stuck gateway. Tell the user to retry.
+        return Err(format!(
+            "OpenClaw gateway is still initializing (this can happen when \
+             your MAIC login updates settings right at startup). Please \
+             wait 2 seconds and click OpenClaw again. ({})",
+            last_err.unwrap_or_else(|| "unknown".to_string())
+        ));
     }
 
     // Lesson 479 (rc9): probe a known asset path BEFORE building the

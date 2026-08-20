@@ -1558,3 +1558,99 @@ on Tauri 2.11 + WebView2 on David's machine, OR `PageLoadEvent` doesn't fire.
 - URL changes but title stays empty → custom-element mount problem
 - Polling never fires → build() panicked
 
+
+### RC7 RESULT (David installed 2026-08-19 21:15 MDT)
+
+**Blank window persists, but root cause now confirmed.**
+
+Last 3 lines of `miracle-claw.log`:
+```
+[1787195567] openclaw_open_window: cache_buster v=1787195567330, chat_url=http://127.0.0.1:28789/?v=1787195567330
+[1787195567] nuke_webview2_cache_dir: no-op (not found) C:\Users\Adeal\AppData\Local\MiracleClaw\EBWebView
+[1787195567] nuke_webview2_cache_dir: no-op (not found) C:\Users\Adeal\AppData\Roaming\MiracleClaw\EBWebView
+```
+
+No "window created", no "build FAILED", no `poll:` lines. **The polling
+thread never fired — `builder.build()` panicked silently before the
+thread spawned.**
+
+**Smoking gun in Tauri 2.11.5 source** (`window/mod.rs:339`):
+```rust
+let webview = window.webviews().first().unwrap().clone();
+```
+The `.unwrap()` panics if `build_internal` returns a window with zero
+webviews — happens on David's machine due to a WebView2 init edge case
+(corrupted user-data-dir, missing redistributable, AV interference,
+child-process spawn race). **Lesson 464 strikes again**: Tauri 2 GUI
+apps on Windows discard stderr, panic is invisible.
+
+**Cache theory ruled out**: `nuke_webview2_cache_dir` was a no-op
+(neither `EBWebView` dir existed on this fresh install). Lesson 470's
+cache-busting hypothesis was wrong from the start.
+
+---
+
+## v1.0.9-rc8 — 2026-08-20 00:36 MDT (Lesson 472: catch the panic)
+
+### The fix
+
+Three changes in `src-tauri/src/lib.rs`:
+
+1. **Install custom panic hook** in `setup()`:
+   ```rust
+   std::panic::set_hook(Box::new(|info| {
+       let msg = ...; // format panic payload
+       let location = info.location().map(...);
+       log_to_file(&format!("PANIC at {location}: {msg}"));
+   }));
+   ```
+   Writes panic message + source location to log file. Lesson 464-recovery:
+   even though stderr is invisible, our `log_to_file()` IS captured.
+
+2. **Wrap `builder.build()` in `std::panic::catch_unwind`**:
+   ```rust
+   let built_window = match std::panic::catch_unwind(
+       std::panic::AssertUnwindSafe(|| builder.build())
+   ) {
+       Ok(Ok(w)) => w,
+       Ok(Err(e)) => return Err(...),
+       Err(panic_payload) => return Err(format!("build panicked: {msg}")),
+   };
+   ```
+   Catches the silent panic in Tauri's `with_webview` and surfaces it
+   as a clean error to the frontend instead of disappearing.
+
+3. **Minimal builder chain** — dropped `.title()`, `.resizable()`,
+   `.center()`, `.min_inner_size()` to rule out builder-method
+   interaction with the panic path.
+
+### Lesson 472 (new — root cause confirmed)
+
+**Tauri 2.11.5's `WebviewWindowBuilder::build()` can panic silently
+inside `.with_webview()` at `window.webviews().first().unwrap()` when
+`build_internal` returns a window whose webview list is empty.** This
+is a `Result::unwrap()` anti-pattern in Tauri's own source code.
+
+**Defense pattern**:
+- Install `std::panic::set_hook(Box::new(|info| log_to_file(...)))`
+  in `setup()` — captures panics to log because stderr is invisible.
+- Wrap every Tauri webview creation in `std::panic::catch_unwind`
+  with `AssertUnwindSafe` to surface the silent panic as a clean error.
+- **Never** rely on stderr or console output in Tauri 2 GUI apps —
+  always log to file (Lesson 464).
+
+### Lesson 473 (new — diagnostic strategy)
+
+Three-mode polling-probe diagnostic for blank Tauri webview windows:
+1. **No poll lines at all** → `builder.build()` panicked (rc7 mode)
+2. **URL stuck at `about:blank`** → asset-load problem (CSP/network)
+3. **URL changes but title empty** → custom-element mount failed
+4. **URL + title populate but blank UI** → JS bundle error in page
+
+### Lesson 474 (new — diagnostic signal)
+
+`nuke_webview2_cache_dir: no-op (not found)` for both `LOCALAPPDATA`
+and `APPDATA` paths is a **diagnostic signal**: cache was NEVER the
+problem. Lesson 470 (cache-poisoning hypothesis) was wrong from the
+start — should have been retired on first blank-window after
+cache-buster deployed, not after.
