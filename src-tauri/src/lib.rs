@@ -1993,6 +1993,25 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 /// We append every call so the log is append-only across sessions. Old
 /// lines stay; size is bounded by occasional manual cleanup. For v1.0.9
 /// this is a diagnostic tool, not a long-term log.
+fn log_file_path() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("APPDATA").ok().map(|roam| {
+            std::path::PathBuf::from(roam)
+                .join("MiracleClaw")
+                .join("miracle-claw.log")
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var("HOME").ok().map(|home| {
+            std::path::PathBuf::from(home)
+                .join(".miracle-claw")
+                .join("miracle-claw.log")
+        })
+    }
+}
+
 fn log_to_file(msg: &str) {
     use std::io::Write;
 
@@ -2005,37 +2024,17 @@ fn log_to_file(msg: &str) {
         msg
     );
 
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(roam) = std::env::var("APPDATA") {
-            let dir = std::path::PathBuf::from(roam).join("MiracleClaw");
-            let _ = std::fs::create_dir_all(&dir);
-            let path = dir.join("miracle-claw.log");
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-            {
-                let _ = f.write_all(line.as_bytes());
-                let _ = f.flush();
-            }
+    if let Some(path) = log_file_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            let dir = std::path::PathBuf::from(home).join(".miracle-claw");
-            let _ = std::fs::create_dir_all(&dir);
-            let path = dir.join("miracle-claw.log");
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-            {
-                let _ = f.write_all(line.as_bytes());
-                let _ = f.flush();
-            }
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = f.write_all(line.as_bytes());
+            let _ = f.flush();
         }
     }
 }
@@ -2346,16 +2345,42 @@ fn spawn_launcher_and_wait(
 
     // Background log capture: pipe sidecar stdout/stderr to our stderr with a
     // tag so it's visible in Tauri's dev console.
+    //
+    // Lesson 478 (rc9): ALSO tee stdout/stderr to the log file via
+    // log_to_file. On Tauri 2 GUI apps on Windows stderr is discarded
+    // (Lesson 464), so without this tee the openclaw gateway's Node.js
+    // errors (404s for missing assets, panics, etc.) are invisible to
+    // post-mortem debugging. Tagged lines like "[launcher.stderr] <msg>"
+    // make it trivial to filter the log for gateway-side failures.
+    let log_path = log_file_path(); // captured before move into thread
     std::thread::spawn(move || {
         while let Some(event) = rx.blocking_recv() {
             match event {
                 CommandEvent::Stdout(bytes) => {
-                    eprint!("[launcher.stdout] {}", String::from_utf8_lossy(&bytes));
+                    let s = String::from_utf8_lossy(&bytes);
+                    eprint!("[launcher.stdout] {}", s);
                     let _ = std::io::stderr().flush();
+                    if let Some(p) = &log_path {
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true).append(true).open(p)
+                        {
+                            use std::io::Write as _;
+                            let _ = writeln!(f, "[launcher.stdout] {}", s);
+                        }
+                    }
                 }
                 CommandEvent::Stderr(bytes) => {
-                    eprint!("[launcher.stderr] {}", String::from_utf8_lossy(&bytes));
+                    let s = String::from_utf8_lossy(&bytes);
+                    eprint!("[launcher.stderr] {}", s);
                     let _ = std::io::stderr().flush();
+                    if let Some(p) = &log_path {
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true).append(true).open(p)
+                        {
+                            use std::io::Write as _;
+                            let _ = writeln!(f, "[launcher.stderr] {}", s);
+                        }
+                    }
                 }
                 CommandEvent::Error(e) => {
                     log_to_file(&format!("launcher.error: {}", e));
@@ -2428,27 +2453,52 @@ fn start_gateway_after_login(
     // chat UI. Real readiness = HTTP 2xx from GET /. check_http_ready
     // (already used by openclaw_open_window) does this in one round-trip.
     //
-    // If the gateway is genuinely serving, return Ok immediately — skip
-    // the entire kill+respawn cycle (rc3 fix for the per-tile-click orphan
-    // pattern). If port is unbound OR HTTP probe fails, fall through to
-    // the existing kill+respawn path so the stale state gets cleaned.
-    match check_http_ready(
-        "http://127.0.0.1:28789/",
-        std::time::Duration::from_millis(500),
-    ) {
-        Ok(status) => {
-            log_to_file(&format!(
-                "start_gateway_after_login: idempotent no-op — gateway already serving (HTTP {})",
-                status
-            ));
-            return Ok(());
+    // Lesson 477 (rc9): distinguish "TCP port closed" (gateway definitely
+    // dead — kill+respawn is correct) from "HTTP probe failed on a still-
+    // open port" (transient — gateway is up but busy, possibly mid-handling
+    // a WebView2 asset-burst request). rc8 conflated the two and would
+    // kill the gateway out from under an in-flight openclaw_open_window,
+    // which produced the "blank window" symptom because the new gateway
+    // took 12-15s to re-bind while WebView2 was already navigating to the
+    // old URL. New policy: only kill+respawn on TCP port CLOSED. If port
+    // is open but HTTP probe failed, log and bail (gateway will recover
+    // on its own once the asset burst settles).
+    let tcp_open = std::net::TcpStream::connect_timeout(
+        &"127.0.0.1:28789".parse().unwrap(),
+        std::time::Duration::from_millis(300),
+    ).is_ok();
+    if tcp_open {
+        match check_http_ready(
+            "http://127.0.0.1:28789/",
+            std::time::Duration::from_millis(500),
+        ) {
+            Ok(status) => {
+                log_to_file(&format!(
+                    "start_gateway_after_login: idempotent no-op — gateway already serving (HTTP {})",
+                    status
+                ));
+                return Ok(());
+            }
+            Err(e) => {
+                // Lesson 477: port is OPEN, so the gateway is alive. HTTP
+                // probe failed transiently (likely racing with the openclaw
+                // window's asset-burst). Do NOT kill+respawn — that would
+                // restart the gateway mid-load and cause a blank window.
+                // Just log and return Ok so the caller proceeds normally;
+                // the next call (or the openclaw window's own retry) will
+                // get a healthy gateway.
+                log_to_file(&format!(
+                    "start_gateway_after_login: TCP open but HTTP probe failed ({e}); \
+                     NOT killing gateway (rc9 Lesson 477 — port-open means alive)"
+                ));
+                return Ok(());
+            }
         }
-        Err(e) => {
-            log_to_file(&format!(
-                "start_gateway_after_login: HTTP probe failed ({}); proceeding to clean+respawn",
-                e
-            ));
-        }
+    } else {
+        log_to_file(
+            "start_gateway_after_login: TCP port 28789 closed; gateway is dead, \
+             proceeding to clean+respawn (Lesson 477)",
+        );
     }
 
     // If a previous launcher is still around (shouldn't be on first run, but
@@ -2565,6 +2615,45 @@ fn openclaw_open_window(
                 "OpenClaw gateway port is open but not serving the chat UI. \
                  Please log out and back in to reset it. ({e})"
             ));
+        }
+    }
+
+    // Lesson 479 (rc9): probe a known asset path BEFORE building the
+    // webview. The openclaw gateway serves dist/control-ui/ as static
+    // files; the HTML dynamically imports JS chunks like
+    // /assets/chat-page-DrPkxqJK.js. If the bundled dist/ is stale or
+    // incomplete, the HTML loads but every dynamic import 404s, leaving
+    // the user staring at a blank "Panel failed to load" recovery page.
+    // We hit /assets/ to confirm the gateway is actually serving the
+    // static root (a 200 OK from / alone doesn't prove the static
+    // subtree is wired up). If 404, log loudly — this is the openclaw
+    // dist itself, not a Tauri/WebView2 issue, and the user needs a
+    // bundled-asset reinstall to recover.
+    match check_http_ready(
+        "http://127.0.0.1:28789/assets/",
+        std::time::Duration::from_millis(800),
+    ) {
+        Ok(status) => {
+            log_to_file(&format!(
+                "openclaw-chat: /assets/ probe HTTP {} (Lesson 479 — static root wired up)",
+                status
+            ));
+        }
+        Err(e) => {
+            log_to_file(&format!(
+                "openclaw-chat: /assets/ probe FAILED ({}); the openclaw dist/ \
+                 bundle appears broken — dynamic imports will 404 in the webview. \
+                 (Lesson 479 — user needs bundled-asset reinstall.)",
+                e
+            ));
+            eprintln!(
+                "[miracle-claw] openclaw-chat WARNING: /assets/ probe failed ({}); \
+                 chat UI will likely render blank. See miracle-claw.log for details.",
+                e
+            );
+            // Non-fatal: continue building the window. The user will see
+            // a blank window, but we'll have the diagnostic in the log
+            // and the recovery panel will appear in the webview itself.
         }
     }
 
