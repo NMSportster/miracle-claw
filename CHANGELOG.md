@@ -1780,3 +1780,41 @@ Application Hang detection). Confirmed via:
 - `Get-CimInstance Win32_Process` — parent PID 11944 doesn't exist
 - Windows Application log — only yesterday's Application Hang event
   for miracle-claw; today's silent
+Application Hang detection). Confirmed via:
+- `tasklist` — `miracle-claw.exe` PID is GONE after the hang
+- `Get-CimInstance Win32_Process` — parent PID 11944 doesn't exist
+- Windows Application log — only yesterday's Application Hang event
+  for miracle-claw; today's silent
+
+## v1.0.9-rc14 — 2026-08-20 (Lesson 491 bugfix: pill click invoke path)
+
+rc13's same-window navigation worked, but the floating "← Dashboard"
+overlay (added by `src-tauri/src/openclaw-host-bridge.js`) clicked
+silently did nothing. David: "the dashboard hover window doesn't go
+back to the dashboard."
+
+Root cause: the rc13 bridge tried to invoke via
+`window.__TAURI__.invoke`, but Tauri 2.x with `withGlobalTauri: true`
+exposes invoke at `window.__TAURI__.core.invoke` — that's the path
+`src/main.js` already uses. The bridge was using a different (wrong)
+path, so the click handler called `undefined()` and nothing reached
+Rust.
+
+No log line was written because the invoke call never reached the
+Rust command boundary — it died in JS as a TypeError on
+`undefined.is not a function`.
+
+Fix: bridge now prefers `tauri.core.invoke` (canonical Tauri 2.x
+path), falls back to legacy `tauri.invoke` if `core` is missing.
+Same pattern the dashboard uses, so they share a contract.
+
+Verified path by inspecting `src/main.js` line 19:
+```js
+const { invoke } = window.__TAURI__.core;
+```
+
+Files touched:
+- `src-tauri/src/openclaw-host-bridge.js` — invoke path corrected
+- `src-tauri/Cargo.toml` — version bumped to `1.0.9-rc14`
+- `src-tauri/tauri.conf.json` — version bumped to `1.0.9-rc14`
+- `package.json` — version bumped to `1.0.9-rc14`
