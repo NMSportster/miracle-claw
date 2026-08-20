@@ -1875,3 +1875,32 @@ Files touched:
 - `src-tauri/Cargo.toml` — version bumped to `1.0.9-rc15`
 - `src-tauri/tauri.conf.json` — version bumped to `1.0.9-rc15`
 - `package.json` — version bumped to `1.0.9-rc15`
+
+## v1.0.9-rc15 — 2026-08-20 (Lesson 501: openclaw-dist patcher + chat-UI back-button fallback)
+
+While rc15 was building (the Lesson 495 diagnostic), David asked whether
+we could patch the chat UI HTML directly to add a back button. The answer
+is yes, but openclaw's dist gets re-extracted from the cached npm tarball
+on every `bundle-runtime.sh --force` run, so any manual edit to
+`src-tauri/resources/dist/...` gets wiped. We need a build-time patcher.
+
+Files added:
+- `scripts/patch-openclaw-dist.sh` — sentinel-aware patcher. Walks
+  `depot/openclaw-patches/`, applies each patch to its corresponding
+  path under `src-tauri/resources/`. Supports `.html` (APPEND with
+  marker), `.js`/`.css`/`.mjs`/`.cjs` (WRITE), `.json` (WRITE). Idempotent
+  via content comparison + marker detection. Logs to
+  `src-tauri/resources/.mc-applied-patches.log`.
+- `depot/openclaw-patches/dist/control-ui/index.html` — appends a
+  `<script type="module" src="./mc-back-button.js"></script>` to the
+  chat UI's `index.html` (with `<!-- MC-PATCH: mc-back-button -->` marker).
+- `depot/openclaw-patches/dist/control-ui/mc-back-button.js` — fallback
+  chat-UI back button. Detects `window.__openclawHostBridge.hosted`,
+  renders a "← Dashboard" button that navigates via
+  `window.location.href = 'tauri://localhost/index.html'` (no IPC).
+  Belt-and-suspenders to the bridge pill: works even if Tauri invoke
+  silently fails on the cross-origin page.
+
+Hookup needed in `build-windows-docker.sh` (NOT YET DONE): add
+`bash scripts/patch-openclaw-dist.sh` after `bundle-runtime.sh` and
+before the docker run. Until hookup, the chat UI button won't ship.

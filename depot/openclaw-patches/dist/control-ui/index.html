@@ -1,0 +1,7 @@
+<!-- MC-PATCH: mc-back-button -->
+<!-- Lesson 502: chat-UI button as fallback to bridge pill (Lesson 491).
+     The bridge pill uses Tauri IPC; this button uses window.location.href
+     so it works even if Tauri invoke fails silently on the cross-origin
+     page. Both render the same visual style; click handlers are
+     independent. Patch is idempotent: this marker prevents re-applying. -->
+<script type="module" src="./mc-back-button.js"></script>
