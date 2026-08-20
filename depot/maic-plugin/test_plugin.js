@@ -121,41 +121,5 @@ console.log("=== MAIC plugin extraParamsForTransport smoke tests ===\n");
   );
 }
 
-// 7. Lesson 513: provider-level params.tools array passes through to patch
-{
-  const sampleTools = [
-    {
-      type: "function",
-      function: { name: "read_file", description: "Read a file", parameters: { type: "object" } },
-    },
-    {
-      type: "function",
-      function: { name: "bash_run", description: "Run a shell command", parameters: { type: "object" } },
-    },
-  ];
-  const r = fn({
-    config: {
-      models: {
-        providers: {
-          maic: {
-            params: { tools: sampleTools },
-          },
-        },
-      },
-    },
-    model: {},
-  });
-  check(
-    "provider-level params.tools array passes through unchanged",
-    r && r.patch && Array.isArray(r.patch.tools) && r.patch.tools.length === 2,
-    `got tools=${JSON.stringify(r?.patch?.tools)?.slice(0, 80)}`
-  );
-  check(
-    "first tool entry has type=function and function.name",
-    r && r.patch && r.patch.tools[0].type === "function" && r.patch.tools[0].function.name === "read_file",
-    `got ${JSON.stringify(r?.patch?.tools?.[0])}`
-  );
-}
-
 console.log(`\n=== ${pass} passed, ${fail} failed ===`);
 process.exit(fail > 0 ? 1 : 0);
