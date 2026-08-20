@@ -1869,6 +1869,27 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
     let resources = resources_dir(&app_handle);
 
+    // Lesson 472 (rc8): install custom panic hook. Tauri 2 GUI apps on Windows
+    // discard stderr (Lesson 464), so default panic hook output is invisible.
+    // This hook ALSO writes panic messages + backtraces to our log file, so
+    // silent panics (like `WebviewWindowBuilder::build()` panicking inside
+    // `with_webview` at `window.webviews().first().unwrap()`) leave evidence.
+    std::panic::set_hook(Box::new(|info| {
+        let msg = match info.payload().downcast_ref::<&str>() {
+            Some(s) => s.to_string(),
+            None => match info.payload().downcast_ref::<String>() {
+                Some(s) => s.clone(),
+                None => "<non-string panic payload>".to_string(),
+            },
+        };
+        let location = info.location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+        log_to_file(&format!(
+            "PANIC at {location}: {msg} (backtrace disabled in release builds)"
+        ));
+    }));
+
     eprintln!(
         "[miracle-claw] setup: resources = {}",
         resources.display()
@@ -2561,32 +2582,62 @@ fn openclaw_open_window(
     //   - The label must be allowed in capabilities/openclaw.json —
     //     otherwise the runtime rejects the window.
     //
-    // Lesson 471 (rc7): dropped `.incognito(true)` and `.on_page_load(...)` —
-    // both produced silent failures in rc6 (no log line, no window, no
-    // error). Replaced with: cache-buster URL + nuked WebView2 dir + a
-    // post-build polling probe that logs WebView state every 500ms for 10s.
-    // The polling probe is more reliable than Tauri 2's PageLoadEvent hook
-    // because it doesn't depend on WebView2 dispatching the event.
+    // Lesson 472 (rc8): wrap builder.build() in std::panic::catch_unwind.
+    // Tauri 2.11.5's WebviewWindowBuilder::build() can panic inside
+    // `with_webview` at `window.webviews().first().unwrap().clone()` when
+    // `build_internal` returns a window whose webview list is empty
+    // (corrupted WebView2 user-data-dir, missing WebView2 redistributable,
+    // AV interference during child-process spawn, etc). The panic is
+    // SILENT because Lesson 464 — Tauri 2 GUI apps on Windows discard
+    // stderr. catch_unwind lets us surface the panic payload to our log
+    // file and return a clean error to the frontend.
+    //
+    // Lesson 472 (rc8): drop the cosmetic builder methods (.title(),
+    // .resizable(), .center(), .min_inner_size()) — they're not the bug,
+    // but minimal builder chain rules out any interaction with the
+    // `with_webview` panic path.
     let builder = WebviewWindowBuilder::new(
         &app_handle,
         WINDOW_LABEL,
         WebviewUrl::External(chat_url.parse().map_err(|e| {
             format!("invalid chat_url {chat_url:?}: {e}")
         })?),
-    )
-    .title("MiracleClaw — OpenClaw Chat")
-    .inner_size(1280.0, 800.0)
-    .min_inner_size(800.0, 560.0)
-    .resizable(true)
-    .center();
+    );
 
-    let built_window = builder.build().map_err(|e| {
-        eprintln!("[miracle-claw] openclaw-chat spawn failed: {}", e);
-        log_to_file(&format!(
-            "openclaw-chat webview build FAILED: {e}"
-        ));
-        format!("could not create chat window: {e}")
-    })?;
+    log_to_file("openclaw-chat: about to call builder.build() (Lesson 472 catch_unwind armed)");
+
+    let built_window = match std::panic::catch_unwind(
+        std::panic::AssertUnwindSafe(|| builder.build())
+    ) {
+        Ok(Ok(w)) => {
+            log_to_file("openclaw-chat: builder.build() returned Ok");
+            w
+        }
+        Ok(Err(e)) => {
+            eprintln!("[miracle-claw] openclaw-chat spawn failed: {}", e);
+            log_to_file(&format!(
+                "openclaw-chat webview build FAILED: {e}"
+            ));
+            return Err(format!("could not create chat window: {e}"));
+        }
+        Err(panic_payload) => {
+            let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "<non-string panic payload>".to_string()
+            };
+            eprintln!("[miracle-claw] openclaw-chat spawn PANICKED: {}", msg);
+            log_to_file(&format!(
+                "openclaw-chat webview build PANICKED: {msg} \
+                 (see earlier PANIC line from panic hook for location)"
+            ));
+            return Err(format!(
+                "openclaw chat window build panicked: {msg}"
+            ));
+        }
+    };
 
     eprintln!("[miracle-claw] openclaw-chat window created → {}", chat_url);
     log_to_file(&format!(

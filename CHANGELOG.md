@@ -1535,3 +1535,26 @@ filename that doesn't exist. Use
 - Promote Lesson 459 4th strike to MEMORY.md (this is a recurring
   bug — fix the script properly or add a pre-build version-sync check)
 - Once rc5 verified → bump 1.0.9-rc5 → 1.0.9 (final)
+
+## v1.0.9-rc7 — 2026-08-19 (Lesson 471: blank window round 2)
+
+**NOT YET SHIPPED — build in progress.**
+
+rc6 (Lesson 470) failed: cache-buster URL was logged, but neither
+`on_page_load` hook nor `build FAILED` log line ever appeared.
+Diagnosis: `incognito(true)` likely panicked silently in WebviewWindowBuilder
+on Tauri 2.11 + WebView2 on David's machine, OR `PageLoadEvent` doesn't fire.
+
+**Three changes**:
+
+1. **`nuke_webview2_cache_dir()`** — delete `%LOCALAPPDATA%\MiracleClaw\EBWebView`
+   before build. Most reliable cache-bust: nothing to cache, no poisoned references.
+2. **Drop `incognito(true)` and `on_page_load(...)`** — both were suspect.
+3. **Polling probe** — std::thread, 10s, 500ms interval, logs URL+title
+   every state transition. This is the post-mortem signal that rc6 lacked.
+
+**Polling probe troubleshooting guide**:
+- URL never moves past `about:blank` → asset-load problem (CSP/network)
+- URL changes but title stays empty → custom-element mount problem
+- Polling never fires → build() panicked
+
