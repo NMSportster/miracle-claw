@@ -1904,3 +1904,71 @@ Files added:
 Hookup needed in `build-windows-docker.sh` (NOT YET DONE): add
 `bash scripts/patch-openclaw-dist.sh` after `bundle-runtime.sh` and
 before the docker run. Until hookup, the chat UI button won't ship.
+
+## v1.0.9-rc16 — 2026-08-20 (Lesson 506: Tauri ACL `remote` URL fix)
+
+David installed rc15 and the on-screen toast told us exactly what was
+wrong: `[mc-brdg] All invoke paths failed - first error: command
+openclaw_back_to_dashboard not allowed by ACL`. That is **not** the
+WebView2 init issue we'd been theorizing about — the invoke call IS
+reaching the Rust IPC handler; the Rust ACL is rejecting it.
+
+**Root cause** (verified in `tauri-2.11.5/src/webview/mod.rs:1819-1853`):
+
+```rust
+if (plugin_command.is_some() || has_app_acl_manifest || !is_local)
+    && request.cmd != crate::ipc::channel::FETCH_CHANNEL_DATA_COMMAND
+    && invoke.acl.is_none()
+{
+    invoke.resolver.reject(format!("Command {} not allowed by ACL", request.cmd));
+    return;
+}
+```
+
+The main window is loaded with `tauri://localhost/index.html`. We navigate
+the main window to `http://127.0.0.1:28789/` via `openclaw_open_window`.
+After the navigation, `request.url = http://127.0.0.1:28789/`, which is
+NOT considered "local" by `is_local_url()` (Tauri's URL classification
+only treats `tauri://`, `frontendDist` relatives, and user-registered
+custom protocols as local). So `is_local = false`, and the ACL gate
+fires.
+
+`resolve_access()` returns `None` because none of our capabilities grant
+access to a `Remote { url: http://127.0.0.1:28789/ }` origin. The two
+existing capabilities (`main.json`, `openclaw.json`) only have
+`local: true` (default) and no `remote.urls`, so they don't match the
+remote origin.
+
+**Fix**: add a new capability `bridge.json` scoped to the `main` window
+with `local: false` and `remote.urls: ["http://127.0.0.1:28789/*",
+"http://localhost:28789/*"]`, granting only `core:default`. The
+`shell:allow-execute` permission stays locked to the `main.json`
+capability (local-only), so a compromised chat UI page cannot spawn the
+launcher sidecar.
+
+This was the simplest possible fix — no code changes, no rebuild of the
+bridge script, no patcher required. Pure ACL config.
+
+**Files added**:
+- `src-tauri/capabilities/bridge.json` — new capability for bridge context
+
+**Files modified**:
+- `src-tauri/Cargo.toml` — version bumped to `1.0.9-rc16`
+- `src-tauri/tauri.conf.json` — version bumped to `1.0.9-rc16`
+- `package.json` — version bumped to `1.0.9-rc16`
+
+**Lesson 506 (NEW)**: When debugging "command not allowed by ACL" errors
+in Tauri 2.x:
+
+1. Determine the request URL origin. If it's a remote origin
+   (`http://`, `https://`, custom port), it will be classified as
+   `Origin::Remote`, NOT `Origin::Local`, regardless of the webview
+   window label.
+2. Check the `tauri::ipc::authority::resolve_access` logic in
+   `webview/mod.rs:1819-1853`. The check fires if
+   `is_local == false && invoke.acl.is_none()`.
+3. Add a capability with `remote.urls` matching the origin pattern.
+4. **ALWAYS** keep dangerous permissions (`shell:allow-execute`,
+   filesystem write) in a local-only capability. The `remote` field
+   applies to ALL permissions in the capability. Split into multiple
+   capabilities for defense in depth.

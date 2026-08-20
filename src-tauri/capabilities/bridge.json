@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "bridge-capability",
+  "description": "Miracle Claw bridge capability — grants the openclaw-host-bridge.js (running on the openclaw gateway at 127.0.0.1:28789 inside the main webview) access to invoke custom Tauri commands. Activated only on the http://127.0.0.1:28789 origin via the `remote` URL pattern. Deliberately scoped to `core:default` only — NO shell:allow-execute or filesystem permissions. The main.json capability (local-only) retains those dangerous permissions and remains the only path to invoke them from the dashboard (tauri://localhost/index.html).",
+  "local": false,
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:28789/*", "http://localhost:28789/*"]
+  },
+  "permissions": [
+    "core:default"
+  ]
+}
