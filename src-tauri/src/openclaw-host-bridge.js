@@ -103,12 +103,21 @@
     });
     overlay.addEventListener('click', async function () {
       try {
-        const tauri = window.__TAURI__ || (window.__TAURI_INTERNALS__ && {
-          invoke: window.__TAURI_INTERNALS__.invoke,
-        });
-        if (tauri && typeof tauri.invoke === 'function') {
-          await tauri.invoke('openclaw_back_to_dashboard');
+        // Tauri 2.x with `withGlobalTauri: true` exposes `invoke` at
+        // `window.__TAURI__.core.invoke` (NOT `window.__TAURI__.invoke`).
+        // Lesson 491 bug: the rc13 bridge originally called
+        // `window.__TAURI__.invoke` which is undefined → click silently
+        // did nothing. Use the canonical path the dashboard's own
+        // `src/main.js` uses.
+        const tauri = window.__TAURI__;
+        const invoke = tauri && tauri.core && typeof tauri.core.invoke === 'function'
+          ? tauri.core.invoke.bind(tauri.core)
+          : (typeof tauri?.invoke === 'function' ? tauri.invoke.bind(tauri) : null);
+        if (!invoke) {
+          console.error('[mc-host-bridge] no Tauri invoke() found on window.__TAURI__', tauri);
+          return;
         }
+        await invoke('openclaw_back_to_dashboard');
       } catch (e) {
         console.error('[mc-host-bridge] back-to-dashboard invoke failed', e);
       }
