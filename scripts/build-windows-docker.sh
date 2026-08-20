@@ -93,6 +93,15 @@ fi
 echo ">>> bundle-runtime.sh complete. resources/node.exe:"
 file "$REPO_ROOT/src-tauri/resources/node.exe" || true
 
+# Lesson 501: apply MiracleClaw patches to the freshly-extracted openclaw
+# dist (bundle-runtime.sh just wiped our previous patches). Idempotent —
+# skip-on-no-change. Patch source-of-truth: depot/openclaw-patches/.
+echo ">>> Applying openclaw-dist patches..."
+if ! bash "$REPO_ROOT/scripts/patch-openclaw-dist.sh"; then
+    echo "FATAL: patch-openclaw-dist.sh failed" >&2
+    exit 1
+fi
+
 # Lesson 471 (rc6 follow-up): serialize NSIS runs. Two parallel docker
 # builds both call `makensis` into the same target/bundle/nsis dir,
 # racing on the same .exe file → corrupt installer (NSIS integrity
