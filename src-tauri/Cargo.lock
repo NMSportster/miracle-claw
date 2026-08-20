@@ -1961,7 +1961,7 @@ dependencies = [
 
 [[package]]
 name = "miracle-claw"
-version = "1.0.9-rc10"
+version = "1.0.9-rc11"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",

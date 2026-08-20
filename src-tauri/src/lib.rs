@@ -1570,6 +1570,48 @@ fn maic_login(email: String, password: String, remember: bool) -> Result<MaicLog
     // working key — guarantee that explicitly here.
     replace_secret_ref_with_literal();
 
+    // Lesson 483 (rc12): block until the gateway has consumed the
+    // openclaw.json rewrite and is actually serving HTTP. Writing the
+    // file triggers the gateway's MAIC hot-reload (config change detected
+    // → HTTP listener rebuild → ~600-1000ms outage). Without this wait,
+    // a user who clicks OpenClaw within ~1.5s of clicking Login will
+    // hit the Lesson 480 race: TCP probe passes (listener exists), HTTP
+    // probe times out 3x (server is mid-rebuild). The auth round-trip
+    // gets slower by ~1-2s, but the OpenClaw window opens reliably on
+    // the first click — much better UX than "please wait 2 seconds and
+    // try again" with each retry pushing further from the actual reload.
+    //
+    // 15s ceiling: hot-reload itself is ~600ms; HTTP listener rebuild +
+    // plugin re-init can stretch to a few seconds on Windows under AV
+    // scan. 15s is a generous ceiling that covers the worst observed
+    // reload (~5s in rc11 testing) while still failing fast on a real
+    // gateway crash. The progress bar already shows during login so
+    // users don't notice the extra wait.
+    eprintln!(
+        "[miracle-claw] maic_login: post-write gateway settle (Lesson 483, 15s ceiling)"
+    );
+    log_to_file(
+        "maic_login: post-write gateway settle (wait_for_gateway_ready 15s) — \
+         openclaw.json was just modified; gateway is hot-reloading MAIC provider",
+    );
+    if let Err(e) = wait_for_gateway_ready(OPENCLAW_PORT, Duration::from_secs(15)) {
+        // Non-fatal — log loudly but don't fail login. The gateway may
+        // already be healthy (file watch might not have fired on this
+        // platform); the user clicking OpenClaw will retry.
+        log_to_file(&format!(
+            "maic_login: post-write gateway settle TIMEOUT ({}); \
+             login still succeeds but OpenClaw click may need a retry",
+            e
+        ));
+        eprintln!(
+            "[miracle-claw] maic_login: WARNING — post-write gateway \
+             settle timeout ({}); gateway may still be reloading",
+            e
+        );
+    } else {
+        log_to_file("maic_login: post-write gateway settle Ok — gateway stable");
+    }
+
     eprintln!(
         "[miracle-claw] maic_login: success — user={}, tier={}, key_source={:?}",
         resolved_email, tier, bootstrap.api_key_source
@@ -2607,11 +2649,19 @@ fn openclaw_open_window(
     // If we hit it during that window, we get os error 10060 (read
     // timeout). The gateway IS healthy, just busy. Retrying catches this
     // without forcing the user to log out and back in.
+    //
+    // Lesson 483 (rc12): bumped to 6 attempts × 2s timeout each + 500ms
+    // backoff = ~13s budget. The hot-reload race window is variable
+    // depending on what's being reloaded (just apiKey = ~600ms; full
+    // provider re-init = up to ~5s in rc11 testing). The user's
+    // expectation is "I clicked OpenClaw, the window should open." A
+    // 13s wait that succeeds is better UX than a 5s wait that fails and
+    // asks them to retry.
     let mut http_attempts: Vec<String> = Vec::new();
     let mut last_err: Option<String> = None;
     let mut http_ok = false;
-    for attempt in 1..=3 {
-        match check_http_ready("http://127.0.0.1:28789/", std::time::Duration::from_millis(1500)) {
+    for attempt in 1..=6 {
+        match check_http_ready("http://127.0.0.1:28789/", std::time::Duration::from_millis(2000)) {
             Ok(status) => {
                 eprintln!(
                     "[miracle-claw] openclaw-chat: gateway HTTP / returned {} (attempt {})",
@@ -2628,8 +2678,8 @@ fn openclaw_open_window(
                 );
                 http_attempts.push(line.clone());
                 last_err = Some(line);
-                if attempt < 3 {
-                    std::thread::sleep(std::time::Duration::from_millis(200));
+                if attempt < 6 {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
                 }
             }
         }
