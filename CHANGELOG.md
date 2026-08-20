@@ -1818,3 +1818,60 @@ Files touched:
 - `src-tauri/Cargo.toml` — version bumped to `1.0.9-rc14`
 - `src-tauri/tauri.conf.json` — version bumped to `1.0.9-rc14`
 - `package.json` — version bumped to `1.0.9-rc14`
+
+## v1.0.9-rc15 — 2026-08-20 (Lesson 495: multi-layered invoke + visible diagnostics)
+
+rc14's `tauri.core.invoke` path fix (Lesson 493) didn't help: David's
+pill click still doesn't reach Rust — log file shows no
+`openclaw_back_to_dashboard:` entry after click, and chat UI's WS /
+all API calls succeed (so IPC is fine in general). The bridge click
+is dying silently in JS.
+
+We confirmed via `strings` dump of the installed binary that:
+- `window.__TAURI__.core.invoke` IS the resolved path
+- `tauri.core.invoke.bind(tauri.core)` IS embedded in the bridge
+- The Rust `openclaw_back_to_dashboard` command IS registered
+
+So either:
+A. `window.__TAURI__` is `undefined` on the cross-origin
+   http://127.0.0.1:28789 page (high-level global API didn't
+   inject). Most likely cause.
+B. `__TAURI_INTERNALS__` IS present (lower-level, injected by
+   `add_script_to_execute_on_document_created`) and works, but
+   `__TAURI__` IIFE didn't run.
+C. Click event isn't reaching the bridge (verified z-index —
+   bridge pill is at 2147483647, chat UI max is 100, so no
+   overlay conflict).
+
+rc15: don't guess — make the failure visible.
+
+1. **Multi-layered invoke fallback** (Lesson 495 fix):
+   Try in order: `__TAURI__.core.invoke` →
+   `__TAURI_INTERNALS__.invoke` → legacy `__TAURI__.invoke`.
+   Whichever resolves first is used. If it rejects, try the next.
+
+2. **Visible on-screen toast** (the killer diagnostic):
+   WebView2 production builds don't expose DevTools, so David
+   has zero visibility into bridge failures. rc15 adds a
+   floating toast (top-left, z-index 2147483647) that displays
+   on click:
+   - Which invoke path was tried
+   - Whether it succeeded or failed
+   - Error message on failure
+   - Auto-fades after 6s (12s for errors)
+
+   David can now READ what's happening on click without any
+   DevTools.
+
+3. **Lazy resolution at click time** instead of at script load:
+   The previous versions resolved invoke once when the bridge
+   loaded. If `__TAURI__` was undefined at load but appears later
+   (or after navigation), the bridge would have a stale `null`
+   invoke. rc15 resolves fresh on every click.
+
+Files touched:
+- `src-tauri/src/openclaw-host-bridge.js` — multi-layered
+  fallback + toast helper + lazy resolve
+- `src-tauri/Cargo.toml` — version bumped to `1.0.9-rc15`
+- `src-tauri/tauri.conf.json` — version bumped to `1.0.9-rc15`
+- `package.json` — version bumped to `1.0.9-rc15`

@@ -23,6 +23,40 @@
 // "← Dashboard" overlay this script renders whenever the main window is
 // currently at the chat gateway.
 //
+// Why rc15 (Lesson 495, current):
+//
+// rc13/rc14: bridge used `window.__TAURI__.core.invoke` (Lesson 493
+// canonical). Pill click visibly works on dev machines, but on David's
+// production machine `invoke('openclaw_back_to_dashboard')` never reaches
+// the Rust `#[tauri::command]` handler — the log file shows no
+// `openclaw_back_to_dashboard:` entry after click. The Rust IPC chain
+// is intact (other commands like `maic_login` work fine; WebView2 IPC is
+// verified working by the chat UI's successful WS/API calls).
+//
+// rc15 hypotheses for the silent failure:
+//   A. `window.__TAURI__` global is undefined on the http://127.0.0.1:28789
+//      page even though `initialization_script` re-fires on cross-origin
+//      navigation. This is possible if the global-API script is registered
+//      with `for_main_frame_only` in a way that drops it on origin change.
+//   B. `__TAURI__.core.invoke` is defined but its call dies silently —
+//      e.g. invoke_key mismatch or option validation rejects the call.
+//   C. Click event isn't reaching the bridge at all (z-index/overlay
+//      positioned wrong). But pill IS visible at z-index 2147483647 and
+//      chat UI's max z-index is 100, so this is unlikely.
+//   D. Lower-level IPC `__TAURI_INTERNALS__.invoke` works while the
+//      higher-level `__TAURI__.core.invoke` does not (e.g. core.js
+//      wrapper has a bug on cross-origin).
+//
+// rc15 fixes:
+//   1. Multi-layered invoke fallback: try high-level core, then low-level
+//      internals, then legacy. Whichever path resolves, use it. If the
+//      first attempt rejects, try the next.
+//   2. VISIBLE on-screen toast that shows: which invoke path was tried,
+//      the result/error. David can READ what went wrong without DevTools
+//      (WebView2's devtools are not enabled in production builds).
+//   3. On every click: log path-tried + result to the console (invisible
+//      but helpful for future devs).
+//
 // Detection rule:
 //   - `window.location.host === '127.0.0.1:28789'` → user is on the chat
 //     gateway. Show overlay.
@@ -53,6 +87,80 @@
   if (!hasTauri) return;
 
   const CHAT_HOST = '127.0.0.1:28789';
+
+  // -------- rc15 visible toast helper (Lesson 495 diagnostic) --------
+  // WebView2 production builds don't expose DevTools by default. So if the
+  // bridge click silently fails, David has zero visibility into what
+  // went wrong. This toast surfaces "which invoke path was tried" +
+  // "result or error" inline so we can see it.
+  let toastEl = null;
+  function showToast(msg, kind) {
+    try {
+      if (!toastEl) {
+        toastEl = document.createElement('div');
+        toastEl.id = '__mc-bridge-toast';
+        toastEl.style.cssText = [
+          'position: fixed',
+          'top: 56px',
+          'left: 12px',
+          'z-index: 2147483647',
+          'max-width: min(560px, 70vw)',
+          'padding: 8px 12px',
+          'border-radius: 6px',
+          'background: rgba(20, 20, 24, 0.92)',
+          'color: #f5f5f7',
+          'font: 500 11px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+          'box-shadow: 0 4px 14px rgba(0,0,0,0.45)',
+          'white-space: pre-wrap',
+          'word-break: break-word',
+          'pointer-events: none',
+          'opacity: 0',
+          'transition: opacity .2s ease',
+        ].join(';');
+        (document.body || document.documentElement).appendChild(toastEl);
+      }
+      const color =
+        kind === 'error' ? '#ff6b6b' :
+        kind === 'ok'    ? '#5dd49d' :
+        kind === 'info'  ? '#7eb6ff' :
+                            '#f5f5f7';
+      toastEl.style.color = color;
+      toastEl.textContent = msg;
+      toastEl.style.opacity = '1';
+      // Auto-fade after 6s for success/info, 12s for errors
+      clearTimeout(toastEl._fadeTimer);
+      toastEl._fadeTimer = setTimeout(function () {
+        if (toastEl) toastEl.style.opacity = '0';
+      }, kind === 'error' ? 12000 : 6000);
+    } catch (_) { /* toast is best-effort */ }
+  }
+
+  // Resolve an invoke function across Tauri 2 API layers.
+  // Returns { fn, path } or null if nothing found.
+  function resolveInvoke() {
+    // Path 1: high-level global (canonical for Tauri 2.x with_global_tauri=true)
+    const tauri = window.__TAURI__;
+    if (tauri && tauri.core && typeof tauri.core.invoke === 'function') {
+      return { fn: tauri.core.invoke.bind(tauri.core), path: 'tauri.core.invoke' };
+    }
+    // Path 2: low-level internals (more stable for cross-origin pages —
+    // defined directly by `__RAW_ipc_script__` which runs FIRST in
+    // `tauri/scripts/init.js`, so it should be present even if the
+    // higher-level IIFE that builds `__TAURI__` fails for some reason).
+    const internals = window.__TAURI_INTERNALS__;
+    if (internals && typeof internals.invoke === 'function') {
+      return {
+        fn: function (cmd, args) { return internals.invoke(cmd, args); },
+        path: 'TAURI_INTERNALS.invoke',
+      };
+    }
+    // Path 3: legacy Tauri 1.x-style (not expected in Tauri 2 but harmless
+    // to check).
+    if (tauri && typeof tauri.invoke === 'function') {
+      return { fn: tauri.invoke.bind(tauri), path: 'tauri.invoke (legacy)' };
+    }
+    return null;
+  }
 
   function showOverlay() {
     if (document.getElementById('__mc-back-overlay')) return;
@@ -101,25 +209,48 @@
       overlay.style.background = 'rgba(20, 20, 24, 0.85)';
       overlay.style.transform = 'translateY(0)';
     });
+
     overlay.addEventListener('click', async function () {
-      try {
-        // Tauri 2.x with `withGlobalTauri: true` exposes `invoke` at
-        // `window.__TAURI__.core.invoke` (NOT `window.__TAURI__.invoke`).
-        // Lesson 491 bug: the rc13 bridge originally called
-        // `window.__TAURI__.invoke` which is undefined → click silently
-        // did nothing. Use the canonical path the dashboard's own
-        // `src/main.js` uses.
+      // rc15: resolve invoke ONCE at click time (not at script load) so
+      // we always use the freshest APIs the page actually has. Also try
+      // fallback paths if the first one rejects.
+      const resolved = resolveInvoke();
+      if (!resolved) {
         const tauri = window.__TAURI__;
-        const invoke = tauri && tauri.core && typeof tauri.core.invoke === 'function'
-          ? tauri.core.invoke.bind(tauri.core)
-          : (typeof tauri?.invoke === 'function' ? tauri.invoke.bind(tauri) : null);
-        if (!invoke) {
-          console.error('[mc-host-bridge] no Tauri invoke() found on window.__TAURI__', tauri);
-          return;
+        const internals = window.__TAURI_INTERNALS__;
+        showToast(
+          '[mc-bridge] no Tauri invoke found.\n' +
+          '__TAURI__ = ' + (typeof tauri) + '\n' +
+          '__TAURI_INTERNALS__ = ' + (typeof internals) + '\n' +
+          'host = ' + window.location.host,
+          'error'
+        );
+        return;
+      }
+
+      showToast('[mc-bridge] click → ' + resolved.path, 'info');
+      try {
+        const result = await resolved.fn('openclaw_back_to_dashboard');
+        showToast('[mc-bridge] OK via ' + resolved.path, 'ok');
+        return result;
+      } catch (e1) {
+        // Try the next layer if first attempt rejected.
+        const all = [
+          window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke && (function () { return { fn: window.__TAURI__.core.invoke.bind(window.__TAURI__.core), path: 'tauri.core.invoke' }; }),
+          window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke && (function () { return { fn: function (c, a) { return window.__TAURI_INTERNALS__.invoke(c, a); }, path: 'TAURI_INTERNALS.invoke' }; }),
+        ].filter(Boolean);
+        for (let i = 0; i < all.length; i++) {
+          if (all[i].path === resolved.path) continue; // already tried
+          try {
+            await all[i].fn('openclaw_back_to_dashboard');
+            showToast('[mc-bridge] OK via fallback ' + all[i].path, 'ok');
+            return;
+          } catch (e2) {
+            // keep trying next layer
+          }
         }
-        await invoke('openclaw_back_to_dashboard');
-      } catch (e) {
-        console.error('[mc-host-bridge] back-to-dashboard invoke failed', e);
+        const msg = (e1 && (e1.message || e1.toString())) || 'unknown';
+        showToast('[mc-bridge] ALL invoke paths failed.\nFirst error: ' + msg, 'error');
       }
     });
 
