@@ -11,7 +11,9 @@
 # Patches live in depot/openclaw-patches/<subpath>/. The naming convention
 # determines how each patch is applied:
 #
-#   <name>.html         APPEND to src-tauri/resources/<relpath>
+#   <name>.html         APPEND to end of src-tauri/resources/<relpath>
+#   <name>.html.insert  INSERT before </body> in src-tauri/resources/<relpath>
+#                       (correct HTML placement; Lesson 511)
 #   <name>.js           WRITE  to src-tauri/resources/<relpath>
 #   <name>.json         WRITE  to src-tauri/resources/<relpath> (merge? skip)
 #   <name>.delete       RECORD only (mark for future deletion)
@@ -97,6 +99,12 @@ skipped=0
 
 while IFS= read -r patch_file; do
     rel="${patch_file#$PATCHES_DIR/}"
+    # *.html.insert patches target the same-named .html file (Lesson 511).
+    # The .insert suffix is a patcher-internal mode marker, not part of
+    # the destination filename.
+    if [[ "$rel" == *.html.insert ]]; then
+        rel="${rel%.insert}"
+    fi
     target="$RESOURCES_DIR/$rel"
     target_dir="$(dirname "$target")"
 
@@ -107,9 +115,69 @@ while IFS= read -r patch_file; do
     fi
 
     case "$patch_file" in
+        *.html.insert)
+            # INSERT patch (Lesson 511). Inserts patch contents immediately
+            # before `</body>`, which is the correct HTML placement for a
+            # <script> tag. Append-only patches land AFTER </html>, which
+            # is invalid HTML and can fail to load in stricter parsers.
+            #
+            # Idempotency: first line must be `<!-- MC-PATCH: <id> -->`.
+            # If that marker is already in the target (anywhere), skip.
+            first_line=$(head -n 1 "$patch_file")
+            marker=""
+            if [[ "$first_line" =~ ^\<!--[[:space:]]*MC-PATCH:[[:space:]]*([^[:space:]]+)[[:space:]]*--\>$ ]]; then
+                marker="<!-- MC-PATCH: ${BASH_REMATCH[1]} -->"
+            fi
+
+            if [[ -z "$marker" ]]; then
+                echo "  SKIP $rel — *.html.insert patches require first line `<!-- MC-PATCH: <id> -->`"
+                skipped=$((skipped + 1))
+                continue
+            fi
+
+            if grep -qF "$marker" "$target" 2>/dev/null; then
+                echo "  SKIP $rel (marker $marker already present)"
+                skipped=$((skipped + 1))
+                continue
+            fi
+
+            if ! grep -qF '</body>' "$target" 2>/dev/null; then
+                echo "  SKIP $rel — target has no </body> sentinel (openclaw HTML structure changed?)"
+                skipped=$((skipped + 1))
+                continue
+            fi
+
+            if ! $DRY_RUN; then
+                # Strip the leading marker line from the patch file (the
+                # patcher injects it as a marker before insertion).
+                body="$(tail -n +2 "$patch_file")"
+                tmp="$(mktemp)"
+                {
+                    echo "$marker"
+                    echo "<!-- Lesson 511: inserted by scripts/patch-openclaw-dist.sh before </body> -->"
+                    printf '%s\n' "$body"
+                } > "$tmp"
+                # Insert before </body>: split target, splice in tmp, recombine.
+                awk -v ins="$tmp" '
+                    /<\/body>/ && !inserted {
+                        while ((getline line < ins) > 0) print line
+                        close(ins)
+                        inserted = 1
+                    }
+                    { print }
+                ' "$target" > "$target.new" && mv "$target.new" "$target"
+                rm -f "$tmp"
+                echo "$rel $marker" >> "$APPLIED_LOG"
+            fi
+            echo "  INSERT $rel (marker $marker, before </body>)"
+            applied=$((applied + 1))
+            ;;
+
         *.html)
             # APPEND patch. Idempotency: first line must be `<!-- MC-PATCH: <id> -->`.
             # If that marker is in the target, skip.
+            # NOTE: append-only patches land AFTER </html>, which is invalid
+            # HTML placement for <script>. Prefer *.html.insert for new patches.
             first_line=$(head -n 1 "$patch_file")
             marker=""
             if [[ "$first_line" =~ ^\<!--[[:space:]]*MC-PATCH:[[:space:]]*([^[:space:]]+)[[:space:]]*--\>$ ]]; then
@@ -178,7 +246,7 @@ while IFS= read -r patch_file; do
             ;;
 
         *)
-            echo "  SKIP $rel — unknown file type (only .html, .js, .css, .mjs, .cjs, .json supported)"
+            echo "  SKIP $rel — unknown file type (only .html, .html.insert, .js, .css, .mjs, .cjs, .json supported)"
             skipped=$((skipped + 1))
             ;;
     esac

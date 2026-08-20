@@ -1972,3 +1972,50 @@ in Tauri 2.x:
    filesystem write) in a local-only capability. The `remote` field
    applies to ALL permissions in the capability. Split into multiple
    capabilities for defense in depth.
+
+## v1.0.9-rc17 — 2026-08-20 (Lesson 511: chat-UI back button as primary fix)
+
+David reported rc16 still failed with the same ACL error. The bridge
+pill couldn't recover. Per Lesson 502 plan, this release makes the
+chat-UI back-button the PRIMARY navigation path back to the dashboard,
+with the bridge pill as diagnostic-only.
+
+### Changes
+- `depot/openclaw-patches/dist/control-ui/index.html.insert` — renamed
+  from `index.html`. Patcher now uses INSERT mode (insert before
+  `</body>`) instead of APPEND (after `</html>`). Lesson 511.
+- `depot/openclaw-patches/dist/control-ui/mc-back-button.js` — removed
+  `__openclawHostBridge.hosted` gate. Now uses
+  `window.location.host === '127.0.0.1:28789'` directly. Lesson 511.
+  Renders the back button regardless of whether Tauri's bridge
+  initialization_script ran on the cross-origin page.
+- `scripts/patch-openclaw-dist.sh` — added `*.html.insert` mode that
+  splices the patch in before `</body>` (correct HTML placement).
+  Also fixed rel-path bug where `.insert` suffix was treated as part
+  of the filename.
+
+### Lesson 511 (NEW): Belt-and-suspenders patterns must NOT share dependencies
+
+The original Lesson 502 design gated the chat-UI button on
+`window.__openclawHostBridge.hosted === true`. That depends on the
+bridge initialization_script running on the cross-origin page. That's
+the SAME dependency that causes the bridge pill to fail. Belt-and-
+suspenders with the same dependency is no belt-and-suspenders.
+
+New design: detect the host context via `window.location.host`. That
+signal is always available on the chat page, regardless of Tauri
+state. The two buttons now have INDEPENDENT detection mechanisms:
+
+- Bridge pill: `window.__TAURI__.core.invoke` (Tauri IPC)
+- Chat-UI button: `window.location.href` (DOM navigation)
+
+Either can fail independently. If Tauri IPC silently dies (rc13-rc16
+scenario), the chat-UI button still works.
+
+### Lesson 511 sub-lesson: HTML patch placement matters
+
+Append-mode patches that add `<script>` tags land AFTER `</html>` —
+invalid HTML. Browsers usually execute them anyway (lenient parsing)
+but stricter parsers may refuse. New `*.html.insert` mode splices the
+patch before `</body>` for correct placement.
+

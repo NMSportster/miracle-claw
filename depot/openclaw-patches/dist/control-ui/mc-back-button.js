@@ -1,19 +1,27 @@
-// MiracleClaw back-to-dashboard button (Lesson 502).
+// MiracleClaw back-to-dashboard button (Lesson 502 + Lesson 511).
 //
 // Injected into control-ui/index.html by scripts/patch-openclaw-dist.sh.
 // Adds a "← Dashboard" button to the chat UI ONLY when hosted inside
-// MiracleClaw's Tauri webview (detected via window.__openclawHostBridge.hosted,
-// which the bridge initialization_script sets before this script runs).
+// MiracleClaw's Tauri webview.
 //
-// Click uses `window.location.href = 'tauri://localhost/index.html'` instead
-// of Tauri IPC. This is a deliberate, redundant fallback to the bridge pill:
-// - On the dashboard page (tauri://localhost) `window.location.href` does
-//   nothing useful — the button is hidden there because we're not on the
-//   chat page.
-// - On the chat page (http://127.0.0.1:28789) the cross-scheme navigation
-//   is followed by WebView2 natively (the same primitive `openclaw_open_window`
-//   uses to navigate the main window dashboard→chat). No IPC dependency,
-//   no invoke chain, no `__TAURI__` globals needed.
+// Detection strategy (Lesson 511 — IPC-INDEPENDENT):
+// We previously gated on `window.__openclawHostBridge.hosted === true`,
+// which depends on the bridge initialization_script running on the
+// cross-origin chat page. That's the SAME dependency that causes the
+// bridge pill to fail — if Tauri globals are missing, the bridge pill
+// click fails, AND the chat-UI button doesn't render. Useless
+// belt-and-suspenders.
+//
+// New detection: check `window.location.host === '127.0.0.1:28789'`
+// directly. That's a stable, IPC-free signal that we're on the
+// OpenClaw chat page hosted by MC. No Tauri globals needed, no bridge
+// script needed.
+//
+// Click uses `window.location.href = 'tauri://localhost/index.html'`
+// instead of Tauri IPC. WebView2 follows cross-scheme navigation
+// natively (the same primitive `openclaw_open_window` uses to navigate
+// the main window dashboard→chat). No IPC dependency, no invoke chain,
+// no `__TAURI__` globals needed.
 //
 // Why two buttons (bridge pill + this one):
 // The bridge pill is the primary path: it logs every click to the Rust
@@ -24,12 +32,12 @@
 // Idempotent: detects existing button by ID and skips.
 (function () {
   try {
-    // Only render if hosted inside MC. On the standalone web (or any
-    // non-MC context) the bridge global is undefined or hosted === false.
-    var bridge = window.__openclawHostBridge;
-    if (!bridge || !bridge.hosted) return;
-    // Only render on the chat page (host is the openclaw gateway).
-    if (!bridge.isChatPage || !bridge.isChatPage()) return;
+    // IPC-INDEPENDENT gate (Lesson 511). Render on any page whose host is
+    // the OpenClaw gateway. This works whether or not the bridge
+    // initialization_script ran on this page — the location itself tells
+    // us we're inside MC's webview (MC is the only thing that navigates
+    // to 127.0.0.1:28789).
+    if (!window.location || window.location.host !== '127.0.0.1:28789') return;
     // Skip if already injected (defense in depth — patch is idempotent but
     // also survives accidental double-injection).
     if (document.getElementById('mc-back-button')) return;
