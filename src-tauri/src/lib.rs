@@ -2077,8 +2077,67 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // 6. Webview URL pre-configured in tauri.conf.json → http://localhost:28789/.
-    //    The webview loads as soon as the renderer fires; nothing to do here.
+    // 6. Create the main dashboard window programmatically (Lesson 491,
+    //    rc13). Pre-rc13 the main window was declared in
+    //    `tauri.conf.json`'s `app.windows[0]` and Tauri created it before
+    //    `setup()` ran. rc13 moves creation here so we can attach an
+    //    `initialization_script()` that runs in EVERY page the window
+    //    navigates to — including `http://127.0.0.1:28789/` (the chat
+    //    gateway URL), where there's no way to inject a `<script>` tag
+    //    because the chat HTML is served by the openclaw gateway, not by
+    //    our bundled assets.
+    //
+    //    The bridge script (`openclaw-host-bridge.js`) sets a
+    //    `__openclawHostBridge` global on the page so any page can
+    //    detect it's hosted in MC, AND injects a floating "← Dashboard"
+    //    pill whenever the main window is at the chat URL. The pill
+    //    calls `invoke('openclaw_back_to_dashboard')` when clicked,
+    //    which navigates the main window back to
+    //    `tauri://localhost/index.html`.
+    //
+    //    We embed the bridge JS via `include_str!` so it ships in the
+    //    binary (no runtime file lookup, no path resolution).
+    if let Err(e) = create_main_window(&app_handle) {
+        log_to_file(&format!(
+            "setup(): create_main_window FAILED: {e}"
+        ));
+        eprintln!("[miracle-claw] main window creation failed: {}", e);
+        // Not fatal — Tauri might still have created it via a fallback.
+        // setup() continues so the user at least sees a launcher process.
+    } else {
+        log_to_file("setup(): main window created (rc13 Lesson 491)");
+    }
+
+    Ok(())
+}
+
+/// Lesson 491 (rc13): create the main dashboard window programmatically
+/// instead of via tauri.conf.json's `app.windows[]`. Reason: we need to
+/// attach `initialization_script()` so the bridge JS runs on EVERY page
+/// the main window navigates to (dashboard + chat).
+fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    // Embed the bridge script at compile time so it ships in the binary.
+    // The script lives in `src-tauri/src/openclaw-host-bridge.js` and is
+    // referenced via `include_str!` so cargo recompiles when it changes.
+    let bridge_js = include_str!("openclaw-host-bridge.js");
+
+    WebviewWindowBuilder::new(
+        app_handle,
+        "main",
+        WebviewUrl::App("index.html".into()),
+    )
+    .title("MiracleClaw")
+    .inner_size(1200.0, 820.0)
+    .min_inner_size(800.0, 560.0)
+    .resizable(true)
+    .center()
+    .visible(true)
+    .decorations(true)
+    .initialization_script(bridge_js)
+    .build()
+    .map_err(|e| format!("WebviewWindowBuilder::build() failed for main window: {e}"))?;
 
     Ok(())
 }
@@ -2635,22 +2694,31 @@ fn openclaw_open_window(
     app_handle: tauri::AppHandle,
 ) -> Result<&'static str, String> {
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tauri::{WebviewUrl, WebviewWindowBuilder};
 
-    const WINDOW_LABEL: &str = "openclaw-chat";
-    // Lesson 461b: use 127.0.0.1, not localhost. WebView2 on some Windows
-    // machines has a known quirk where `localhost` resolves to ::1 (IPv6)
-    // first, the openclaw gateway binds only to 127.0.0.1 (IPv4), and the
-    // page hangs loading. 127.0.0.1 forces IPv4 and matches the bind
-    // mode=loopback default in the launcher.
+    // Lesson 491 (rc13): navigate the existing main webview to the chat
+    // URL instead of building a second webview window. Pre-rc13 we called
+    // `WebviewWindowBuilder::new(...).build()` to create a sibling window
+    // that loaded http://127.0.0.1:28789/. On David's system that hangs
+    // deterministically inside Tauri's webview2 init path (Lesson 487 —
+    // Tauri 2.11.5 + multi-runtime WebView2 + uncached-cleared user-data-
+    // dir) and the main process gets killed by Windows Application Hang
+    // detection after ~7 minutes.
+    //
+    // The main webview is already running and successfully renders the
+    // dashboard. Navigating it to the chat URL is an in-place op that
+    // avoids `builder.build()` entirely. The user gets the chat UI in the
+    // same window; to go back, they click the floating "← Dashboard"
+    // overlay injected by `src/openclaw-host-bridge.js` (an
+    // initializationScript registered on the main window in
+    // tauri.conf.json).
     const CHAT_BASE_URL: &str = "http://127.0.0.1:28789/";
 
     // Lesson 470 (rc6 fix 2): cache-buster query string. Every launch gets a
     // unique `?v=<unix-millis>` so WebView2 never serves a stale cached
-    // HTML/asset bundle from a prior install. This is the cheapest, most
-    // reliable defense against the "blank window after upgrade" pattern
-    // where the WebView2 cache holds bundle hashes from a previous
-    // server build that no longer match the current HTML's references.
+    // HTML/asset bundle from a prior install. Important here because we
+    // navigate the same webview, and WebView2 caches by URL including
+    // query params — without the buster, an upgrade might render a stale
+    // blank chat page.
     let cache_buster = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -2660,21 +2728,17 @@ fn openclaw_open_window(
         "openclaw_open_window: cache_buster v={cache_buster}, chat_url={chat_url}"
     ));
 
-    // If the window already exists (user clicked the OpenClaw tile twice),
-    // just focus it and bail. Don't create a second one.
-    if let Some(existing) = app_handle.get_webview_window(WINDOW_LABEL) {
-        let _ = existing.set_focus();
-        let _ = existing.unminimize();
-        eprintln!("[miracle-claw] openclaw-chat window already open — focusing");
-        return Ok("focused");
-    }
+    // Pre-flight: gateway must be reachable AND actually serving HTTP. If
+    // the gateway is down, navigating the main webview to the URL would
+    // just produce a blank "connection refused" page instead of a
+    // working chat. The HTTP probe loop catches:
+    //   - gateway not running at all (TCP refused)
+    //   - gateway mid-hot-reload (TCP open, HTTP times out with 10060)
+    //   - gateway up but static root broken (/assets/ 404 — Lesson 479)
+    // All of these should bubble up to the user as a friendly error
+    // instead of a silent blank chat.
 
-    // Sanity: verify the gateway is actually serving HTTP BEFORE we spawn
-    // the window. wait_for_gateway_ready only checked a TCP port, not that
-    // HTTP responses actually succeed. v1.0.9 (Lesson 462): we now also do
-    // a quick HTTP GET on / — if it doesn't return a 2xx, we know the
-    // server isn't actually serving the chat UI, and we surface that as an
-    // error instead of letting the user see a blank window.
+    // TCP probe (Lesson 466)
     match std::net::TcpStream::connect_timeout(
         &"127.0.0.1:28789".parse().unwrap(),
         std::time::Duration::from_millis(500),
@@ -2685,35 +2749,14 @@ fn openclaw_open_window(
         Err(e) => {
             eprintln!("[miracle-claw] openclaw-chat: gateway NOT reachable: {}", e);
             return Err(format!(
-                "OpenClaw gateway is not responding on port 28789. \
-                 Try logging out and back in. ({e})"
+                "OpenClaw gateway is not responding on port 28789.                  Try logging out and back in. ({e})"
             ));
         }
     }
 
-    // v1.0.9 (Lesson 462): HTTP-level readiness check. A port being open
-    // does NOT mean the gateway is serving the chat UI (an orphaned
-    // gateway from a previous session can hold the port and respond with
-    // HTML that doesn't render as a chat UI → blank window). Verify we
-    // get a real 2xx back from GET / within 1 second. If we don't, treat
-    // it as a failure and surface an informative error.
-    //
-    // Lesson 480 (rc9 hot-fix): retry the HTTP probe up to 3 times with
-    // 200ms backoff. The gateway can transiently fail HTTP during config
-    // hot-reload (when maic.apiKey is updated after login, the openclaw
-    // gateway tears down+rebuilds its HTTP listener — that takes ~600ms).
-    // If we hit it during that window, we get os error 10060 (read
-    // timeout). The gateway IS healthy, just busy. Retrying catches this
-    // without forcing the user to log out and back in.
-    //
-    // Lesson 483 (rc12): bumped to 6 attempts × 2s timeout each + 500ms
-    // backoff = ~13s budget. The hot-reload race window is variable
-    // depending on what's being reloaded (just apiKey = ~600ms; full
-    // provider re-init = up to ~5s in rc11 testing). The user's
-    // expectation is "I clicked OpenClaw, the window should open." A
-    // 13s wait that succeeds is better UX than a 5s wait that fails and
-    // asks them to retry.
-    let mut http_attempts: Vec<String> = Vec::new();
+    // HTTP probe loop (Lesson 480/483 — 6 attempts, 2s timeout each, 500ms
+    // backoff = ~13s budget). Hot-reload races produce transient 10060s
+    // that retry handles.
     let mut last_err: Option<String> = None;
     let mut http_ok = false;
     for attempt in 1..=6 {
@@ -2732,7 +2775,6 @@ fn openclaw_open_window(
                     "[miracle-claw] openclaw-chat: gateway HTTP check failed: {}",
                     line
                 );
-                http_attempts.push(line.clone());
                 last_err = Some(line);
                 if attempt < 6 {
                     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -2741,29 +2783,14 @@ fn openclaw_open_window(
         }
     }
     if !http_ok {
-        // Lesson 480: distinguish transient (reload-induced) from real
-        // failure. The original error message ("please log out and back
-        // in") is misleading — 10060 here is almost always the reload
-        // race, not a stuck gateway. Tell the user to retry.
         return Err(format!(
-            "OpenClaw gateway is still initializing (this can happen when \
-             your MAIC login updates settings right at startup). Please \
-             wait 2 seconds and click OpenClaw again. ({})",
+            "OpenClaw gateway is still initializing (this can happen when              your MAIC login updates settings right at startup). Please              wait 2 seconds and click OpenClaw again. ({})",
             last_err.unwrap_or_else(|| "unknown".to_string())
         ));
     }
 
-    // Lesson 479 (rc9): probe a known asset path BEFORE building the
-    // webview. The openclaw gateway serves dist/control-ui/ as static
-    // files; the HTML dynamically imports JS chunks like
-    // /assets/chat-page-DrPkxqJK.js. If the bundled dist/ is stale or
-    // incomplete, the HTML loads but every dynamic import 404s, leaving
-    // the user staring at a blank "Panel failed to load" recovery page.
-    // We hit /assets/ to confirm the gateway is actually serving the
-    // static root (a 200 OK from / alone doesn't prove the static
-    // subtree is wired up). If 404, log loudly — this is the openclaw
-    // dist itself, not a Tauri/WebView2 issue, and the user needs a
-    // bundled-asset reinstall to recover.
+    // Static-root probe (Lesson 479). 404 here = broken openclaw dist,
+    // non-fatal but loud-log so we can diagnose if it ever happens.
     match check_http_ready(
         "http://127.0.0.1:28789/assets/",
         std::time::Duration::from_millis(800),
@@ -2776,149 +2803,113 @@ fn openclaw_open_window(
         }
         Err(e) => {
             log_to_file(&format!(
-                "openclaw-chat: /assets/ probe FAILED ({}); the openclaw dist/ \
-                 bundle appears broken — dynamic imports will 404 in the webview. \
-                 (Lesson 479 — user needs bundled-asset reinstall.)",
+                "openclaw-chat: /assets/ probe FAILED ({}); the openclaw dist/                  bundle appears broken — dynamic imports will 404 in the webview.                  (Lesson 479 — user needs bundled-asset reinstall.)",
                 e
             ));
             eprintln!(
-                "[miracle-claw] openclaw-chat WARNING: /assets/ probe failed ({}); \
-                 chat UI will likely render blank. See miracle-claw.log for details.",
+                "[miracle-claw] openclaw-chat WARNING: /assets/ probe failed ({});                  chat UI will likely render blank. See miracle-claw.log for details.",
                 e
             );
-            // Non-fatal: continue building the window. The user will see
-            // a blank window, but we'll have the diagnostic in the log
-            // and the recovery panel will appear in the webview itself.
         }
     }
 
-    // Lesson 471 (rc7 fix): DELETE the WebView2 user-data-dir BEFORE building
-    // the chat window. Aggressive, but reliable. `incognito(true)` from rc6
-    // produced a log-aborting failure (build() panicked cleanly — no log
-    // line emitted) — possibly a Tauri 2.11 panic in the incognito path on
-    // this WebView2 build. Deleting the dir is THE most reliable cache-bust.
-    // We swallow errors because the dir may not exist on first run.
-    nuke_webview2_cache_dir();
-
-    // Spawn the chat window. Tauri 2 requires:
-    //   - A unique label (we use WINDOW_LABEL).
-    //   - A WebviewUrl (we point at the bundled chat gateway).
-    //   - The label must be allowed in capabilities/openclaw.json —
-    //     otherwise the runtime rejects the window.
-    //
-    // Lesson 472 (rc8): wrap builder.build() in std::panic::catch_unwind.
-    // Tauri 2.11.5's WebviewWindowBuilder::build() can panic inside
-    // `with_webview` at `window.webviews().first().unwrap().clone()` when
-    // `build_internal` returns a window whose webview list is empty
-    // (corrupted WebView2 user-data-dir, missing WebView2 redistributable,
-    // AV interference during child-process spawn, etc). The panic is
-    // SILENT because Lesson 464 — Tauri 2 GUI apps on Windows discard
-    // stderr. catch_unwind lets us surface the panic payload to our log
-    // file and return a clean error to the frontend.
-    //
-    // Lesson 472 (rc8): drop the cosmetic builder methods (.title(),
-    // .resizable(), .center(), .min_inner_size()) — they're not the bug,
-    // but minimal builder chain rules out any interaction with the
-    // `with_webview` panic path.
-    let builder = WebviewWindowBuilder::new(
-        &app_handle,
-        WINDOW_LABEL,
-        WebviewUrl::External(chat_url.parse().map_err(|e| {
-            format!("invalid chat_url {chat_url:?}: {e}")
-        })?),
-    );
-
-    log_to_file("openclaw-chat: about to call builder.build() (Lesson 472 catch_unwind armed)");
-
-    let built_window = match std::panic::catch_unwind(
-        std::panic::AssertUnwindSafe(|| builder.build())
-    ) {
-        Ok(Ok(w)) => {
-            log_to_file("openclaw-chat: builder.build() returned Ok");
-            w
-        }
-        Ok(Err(e)) => {
-            eprintln!("[miracle-claw] openclaw-chat spawn failed: {}", e);
+    // The actual change in rc13: navigate the existing main webview instead
+    // of building a new window. Main window is guaranteed to exist (it was
+    // created by tauri.conf.json at app boot and is always running), but we
+    // fall back gracefully if it isn't.
+    let main_label = "main";
+    let main_window = match app_handle.get_webview_window(main_label) {
+        Some(w) => w,
+        None => {
             log_to_file(&format!(
-                "openclaw-chat webview build FAILED: {e}"
-            ));
-            return Err(format!("could not create chat window: {e}"));
-        }
-        Err(panic_payload) => {
-            let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                s.to_string()
-            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "<non-string panic payload>".to_string()
-            };
-            eprintln!("[miracle-claw] openclaw-chat spawn PANICKED: {}", msg);
-            log_to_file(&format!(
-                "openclaw-chat webview build PANICKED: {msg} \
-                 (see earlier PANIC line from panic hook for location)"
+                "openclaw_open_window: main window {:?} not found — this should never happen",
+                main_label
             ));
             return Err(format!(
-                "openclaw chat window build panicked: {msg}"
+                "MiracleClaw main window not found; cannot navigate to chat.                  Please restart MiracleClaw."
             ));
         }
     };
 
-    eprintln!("[miracle-claw] openclaw-chat window created → {}", chat_url);
+    // Lesson 491: navigate the existing webview. WebView2 will load the
+    // chat URL in-place; the dashboard is replaced by the chat UI in the
+    // same window. The bridge script (`openclaw-host-bridge.js`) detects
+    // `window.location.host === '127.0.0.1:28789'` and overlays a
+    // "← Dashboard" pill in the top-left that calls back into
+    // `openclaw_back_to_dashboard` to restore the dashboard.
+    if let Err(e) = main_window.navigate(chat_url.parse().map_err(|err| {
+        format!("invalid chat_url {chat_url:?}: {err}")
+    })?) {
+        log_to_file(&format!(
+            "openclaw_open_window: main_window.navigate() failed: {e}"
+        ));
+        return Err(format!("could not navigate to chat window: {e}"));
+    }
+
+    // Bring main window forward in case it was minimized / backgrounded.
+    let _ = main_window.set_focus();
+    let _ = main_window.unminimize();
+
+    eprintln!(
+        "[miracle-claw] openclaw-chat: navigated main window → {}",
+        chat_url
+    );
     log_to_file(&format!(
-        "openclaw-chat window created → url={chat_url} (WebView2 cache dir wiped before build)"
+        "openclaw_open_window: navigated main window to {chat_url} (rc13 — no second webview)"
     ));
 
-    // Lesson 471 (rc7): post-build polling probe. Don't rely on Tauri 2's
-    // PageLoadEvent (it didn't fire in rc6). Spawn a std::thread that polls
-    // the window's URL and title every 500ms for 10s, logging each state
-    // transition. This is the diagnostic signal for blank-window reports.
-    // We use a plain thread (not tokio) to avoid pulling in `tokio` as a
-    // direct dependency.
-    let label_owned = WINDOW_LABEL.to_string();
-    let url_for_probe = chat_url.clone();
-    let app_for_probe = built_window.app_handle().clone();
-    std::thread::spawn(move || {
-        let start = std::time::Instant::now();
-        let mut last_logged: Option<String> = None;
-        let mut last_url: Option<String> = None;
-        while start.elapsed() < std::time::Duration::from_secs(10) {
-            if let Some(w) = app_for_probe.get_webview_window(&label_owned) {
-                let url = w.url().ok().map(|u| u.to_string()).unwrap_or_default();
-                let title = w.title().ok().unwrap_or_default();
-                let key = format!("url={url} title={title}");
-                if last_logged.as_ref() != Some(&key) {
-                    log_to_file(&format!(
-                        "openclaw-chat poll: t={}ms {}",
-                        start.elapsed().as_millis(),
-                        key
-                    ));
-                    last_logged = Some(key);
-                }
-                if last_url.as_ref() != Some(&url) {
-                    log_to_file(&format!(
-                        "openclaw-chat poll: url-changed {} → {}",
-                        last_url.as_deref().unwrap_or("?"),
-                        url
-                    ));
-                    last_url = Some(url);
-                }
-            } else {
-                log_to_file(&format!(
-                    "openclaw-chat poll: t={}ms window not found",
-                    start.elapsed().as_millis()
-                ));
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-        log_to_file(&format!(
-            "openclaw-chat poll: probe ended after {:?} (target_url={})",
-            start.elapsed(),
-            url_for_probe
-        ));
-    });
+    Ok("navigated")
+}
 
-    Ok("created")
+/// Tauri command: openclaw_back_to_dashboard (Lesson 491, rc13).
+///
+/// Called by the chat page's "← Dashboard" overlay (injected by
+/// `src/openclaw-host-bridge.js` when the main window is at the chat
+/// gateway). Navigates the main webview back to the bundled dashboard
+/// (`index.html` served via the `tauri://localhost` scheme).
+///
+/// Why this lives in Rust rather than JS:
+///
+/// The chat page is loaded from `http://127.0.0.1:28789/` (the openclaw
+/// gateway), not from the bundled dashboard assets. The bridge script has
+/// no way to know the dashboard's Tauri URL except by asking the Rust
+/// side via a Tauri command. Hardcoding `tauri://localhost/index.html`
+/// in the bridge would couple it to Tauri's scheme — better to have Rust
+/// own the navigation logic.
+#[tauri::command]
+fn openclaw_back_to_dashboard(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let main_label = "main";
+    let main_window = match app_handle.get_webview_window(main_label) {
+        Some(w) => w,
+        None => {
+            log_to_file(&format!(
+                "openclaw_back_to_dashboard: main window {:?} not found",
+                main_label
+            ));
+            return Err(format!(
+                "MiracleClaw main window not found; cannot return to dashboard."
+            ));
+        }
+    };
+
+    // The bundled dashboard is served at `index.html` under the tauri://
+    // localhost scheme. tauri.conf.json `app.windows[0].url: "index.html"`
+    // is the source of truth — we replicate that here so a future change
+    // to the URL is a single-edit thing.
+    const DASHBOARD_URL: &str = "tauri://localhost/index.html";
+    if let Err(e) = main_window.navigate(DASHBOARD_URL.parse().map_err(|err| {
+        format!("invalid dashboard URL {DASHBOARD_URL:?}: {err}")
+    })?) {
+        log_to_file(&format!(
+            "openclaw_back_to_dashboard: main_window.navigate() failed: {e}"
+        ));
+        return Err(format!("could not navigate back to dashboard: {e}"));
+    }
+    let _ = main_window.set_focus();
+    let _ = main_window.unminimize();
+
+    log_to_file("openclaw_back_to_dashboard: navigated main window back to dashboard");
+    Ok(())
 }
 
 /// Delete the WebView2 user-data-dir so the next window build gets a fresh
@@ -3152,6 +3143,7 @@ pub fn run() {
             silent_relogin,
             start_gateway_after_login,
             openclaw_open_window,
+            openclaw_back_to_dashboard,
             open_register_url,
             // v1.0.7: tier + nudge surface
             mc_get_tier,

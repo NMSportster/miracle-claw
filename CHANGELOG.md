@@ -1654,3 +1654,129 @@ and `APPDATA` paths is a **diagnostic signal**: cache was NEVER the
 problem. Lesson 470 (cache-poisoning hypothesis) was wrong from the
 start — should have been retired on first blank-window after
 cache-buster deployed, not after.
+
+## v1.0.9-rc12 — 2026-08-20 09:58 MDT (Lesson 482 + 483: CSP + race fix)
+
+### The fix
+
+Two changes:
+
+1. **CSP fix** (Lesson 482, was originally rc11): Tauri CSP
+   allowlisted `http://localhost:28789 ws://localhost:28789` but the
+   webview loaded `http://127.0.0.1:28789/?v=<ts>`. WebView2 treats
+   `localhost` and `127.0.0.1` as different hosts → CSP blocks all
+   connect-src requests → empty UI. Added `http://127.0.0.1:28789`
+   and `ws://127.0.0.1:28789` to every relevant directive in
+   `tauri.conf.json` security.csp alongside the existing localhost
+   entries.
+
+2. **Race fix** (Lesson 483): MAIC login writes the JWT to openclaw.json,
+   triggering an async chokidar hot-reload in the openclaw gateway
+   (~600ms–5s). User clicking OpenClaw immediately after login races
+   against this reload. Two-layer fix:
+   - In `maic_login`, after the JWT write: `wait_for_gateway_ready(15s)
+     + 1.5s stable window` (6 consecutive Ok probes) before returning Ok.
+   - Bumped `openclaw_open_window`'s HTTP probe retry budget from
+     3×1.5s + 2×200ms (4.9s) to 6×2s + 5×500ms (13s) as defense-in-depth.
+
+### Result on David's system
+
+rc12 installed cleanly. CSP fix shipped (verified by extracting the
+installer and grepping the CSP string). All fixes verified present in
+the binary. **But the blank chat window persisted.** The crash was
+deeper than CSP or the hot-reload race — see rc13.
+
+## v1.0.9-rc13 — 2026-08-20 (Lesson 491: same-window navigation)
+
+### The fix
+
+**Stop creating a second webview window. Navigate the existing main
+webview to the chat URL.**
+
+Pre-rc13 `openclaw_open_window` called
+`WebviewWindowBuilder::new("openclaw-chat", WebviewUrl::External(...)).build()`
+to spawn a sibling webview. On David's system this hangs deterministically
+inside Tauri's webview2 init path (Lesson 487 — Tauri 2.11.5 + multiple
+WebView2 runtimes + WebView2 user-data-dir that wasn't actually being
+cleaned because of Lesson 488's path bug). The Tauri main process gets
+killed by Windows Application Hang detection after ~7 minutes with no
+log line, no panic message, no error dialog.
+
+rc13 architecture:
+1. **`openclaw_open_window`** (`src-tauri/src/lib.rs`) — gets the
+   existing `main` window (created at app boot by tauri.conf.json),
+   calls `w.navigate(chat_url)` to load the chat UI in-place. The
+   `WebviewWindowBuilder` path is removed entirely. All the upstream
+   layers (TCP probe, HTTP probe with 13s retry budget, /assets/ probe)
+   are preserved — they catch gateway-down and gateway-mid-reload
+   cases the same way they did before.
+2. **`openclaw_back_to_dashboard`** (`src-tauri/src/lib.rs`) — new
+   Tauri command registered in `invoke_handler`. Called by the
+   chat page's "← Dashboard" overlay to navigate back to
+   `tauri://localhost/index.html`.
+3. **`src/openclaw-host-bridge.js`** (new file) — initialization script
+   registered on the main window in `tauri.conf.json`
+   (`app.windows[0].initializationScripts`). Runs at document creation
+   on every page loaded in the main window. Detects
+   `window.location.host === '127.0.0.1:28789'` (chat URL) and renders
+   a floating "← Dashboard" pill in the top-left corner. The pill calls
+   `invoke('openclaw_back_to_dashboard')` when clicked.
+4. **`tauri.conf.json`** — version bumped to `1.0.9-rc13`. Main window
+   config gains `initializationScripts: ["../src/openclaw-host-bridge.js"]`.
+
+### Why this works even though Lesson 487's hang persists
+
+The hang is in `WebviewWindowBuilder::build()` — the path that creates
+a NEW webview. The existing main webview is already running successfully
+(rc11/rc12 dashboard renders fine in it), so navigating it is an
+in-place op that doesn't touch Tauri's webview2 init path. Whatever
+combination of Tauri bugs + WebView2 quirks + multi-runtime directory
+state caused the hang, none of it applies to navigating an already-
+running webview.
+
+### Lesson 491 (new — same-window chat)
+
+When a Tauri 2 desktop app's `WebviewWindowBuilder::build()` hangs in
+your environment and you can't easily diagnose which underlying
+component is the culprit, navigate an existing webview instead of
+creating a new one. The webview is a Chromium tab — Chromium tabs can
+navigate between URLs without re-spawning the renderer process. As
+long as your UX is OK with a single window transforming between
+views, this sidesteps the multi-webview init path entirely.
+
+### Lesson 488 (new — confirmed in rc12 log)
+
+`nuke_webview2_cache_dir()` hardcodes `MiracleClaw\EBWebView` but
+Tauri's WebView2 user-data-dir uses the bundle identifier, so the
+actual path is `com.adealauto.miracle-claw\EBWebView`. The nuke is
+a no-op every time on David's system. Lesson 470's
+"cache-poisoning is the root cause" hypothesis was wrong, but the
+nuke-path bug is independently a real bug worth fixing in a future
+release.
+
+### Lesson 489 (new — rc13 candidate cleanup)
+
+David's system has three parallel WebView2 runtimes installed
+(`151.0.4129.78`, `.86`, `.93`). Registry says current is `.93` but
+the old ones are still on disk. Wry/Tauri may pick a stale version
+when spawning `msedgewebview2.exe`. Manual cleanup:
+- Run `setup.exe --force-uninstall` on each version dir under
+  `C:\Program Files (x86)\Microsoft\EdgeWebView\Application\`
+  (keep only `.93`)
+- Reboot
+- This is a one-shot fix and may also help future installs even
+  after rc13 navigates around the multi-webview init path.
+
+### Lesson 487 (new — confirmed via log trace)
+
+`WebviewWindowBuilder::build()` hangs deterministically at the
+`with_webview` callback in Tauri 2.11.5 when creating a second webview
+in an environment with multiple WebView2 runtimes and an uncleaned
+WebView2 user-data-dir. Last log line is always
+`openclaw-chat: about to call builder.build() (Lesson 472 catch_unwind
+armed)`. No panic message. Process dies after ~7 minutes (Windows
+Application Hang detection). Confirmed via:
+- `tasklist` — `miracle-claw.exe` PID is GONE after the hang
+- `Get-CimInstance Win32_Process` — parent PID 11944 doesn't exist
+- Windows Application log — only yesterday's Application Hang event
+  for miracle-claw; today's silent
