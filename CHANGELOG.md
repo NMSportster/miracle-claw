@@ -1413,3 +1413,125 @@ HELLO/EHLO for SMTP, PING for Redis, etc.) before declaring readiness.
 - v1.1.0 dashboard pivot — still deferred.
 - Once rc4 verified → bump 1.0.9-rc4 → 1.0.9 (final) and promote Lesson
   466 + Lesson 467 to MEMORY.md.
+
+## [v1.0.9-rc5] — 2026-08-19 18:35 MDT (HTTP probe in wait_for_gateway_ready + 30s budget)
+
+### Symptom David saw
+
+Fresh `MiracleClaw_1.0.9-rc4_x64-setup.exe` install, cold boot, click
+OpenClaw tile → 15-20 second "sits there loading" → eventually either
+chat opens OR frontend surfaces "Could not open OpenClaw: gateway did
+not bind port 28789 within 15s".
+
+rc4 was supposed to fix the cold-boot failure with the HTTP-level probe
+in `start_gateway_after_login` and `openclaw_open_window`. But the
+**third call site** — `wait_for_gateway_ready` itself, used by `setup()`
+at boot — was still TCP-only. That's the call site that produced the
+user-visible "gateway did not bind port 28789 within 15s" error.
+
+### Diagnostic data (mc-rc4-fresh-fb.log)
+
+```
+[1787173445] wait_for_gateway_ready: start port=28789 timeout=15s
+[1787173459] wait_for_gateway_ready: TCP connect failed iter=12 elapsed=509ms err=connection timed out
+[1787173460] wait_for_gateway_ready: TIMEOUT after 12 iters; gateway did not bind port 28789 within 15s
+```
+
+All 9 attempts in David's log show: **iter=1 to iter=11 time out at
+~510ms**, then **iter=12 either succeeds with elapsed=415µs OR
+times out**. The race is that:
+
+- The gateway consistently binds at ~T+14s from probe start.
+- iter=12 starts at T+13.5s and gets 500ms to complete its connect.
+- When the bind lands during iter=12's connect attempt → SUCCESS
+  (415µs, instant).
+- When the bind lands slightly later (T+13.6s or after) → iter=12
+  times out → loop exits → Err.
+
+The 15s budget gave iter=12 only a 1.5s window to catch the bind.
+**Marginal by ~100ms.** Every run is a coin flip.
+
+### The fix
+
+Two changes in `src-tauri/src/lib.rs`:
+
+1. **`wait_for_gateway_ready` now uses `check_http_ready` for final
+   confirmation** after each successful TCP connect. The TCP probe
+   stays for port-bound detection (faster, cheap), but the function
+   no longer returns Ok on TCP connect alone — it confirms HTTP 2xx
+   from `GET /`. Closes the Lesson 469 race: TCP succeeds the moment
+   bind() lands, but the HTTP server may not be accepting yet.
+
+2. **Probe timeout extended from 15s → 30s** in both `setup()` and
+   `start_gateway_after_login`. With the HTTP probe as the readiness
+   signal, 30s gives us a 16-second safety margin over the observed
+   14s cold-boot bind time.
+
+3. **Build script regex fixed** (Lesson 459 4th strike): the regex
+   `[0-9]+\.[0-9]+\.[0-9]+` in `scripts/build-windows-docker.sh`
+   stripped pre-release suffixes (`-rc4`, `-rc5`, `-hotfix`), so the
+   script looked for `MiracleClaw_1.0.9_x64-setup.exe` when tauri
+   actually built `MiracleClaw_1.0.9-rc5_x64-setup.exe`. Silently
+   failed to copy to Desktop. Updated regex to
+   `[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?`.
+
+### Lesson 469 (new — promoted)
+
+**For Tauri 2 GUI apps wrapping an HTTP-served gateway, the readiness
+probe must be HTTP-level, not TCP-only.**
+
+TCP `connect()` succeeds the moment `bind()` lands, but the HTTP server
+may not be accepting/responding yet — worker pool still spinning up,
+plugin pre-warm still in progress, auth middleware not yet wired.
+openclaw emits `[gateway] http server listening` BEFORE `[gateway]
+ready`, and there's a 0.5-1.5s gap where TCP probes return Ok but the
+server can't actually serve a 200.
+
+**Symptom signature**: TCP connect succeeds but the actual operation
+(HTTP GET) times out. The service is bound-but-not-ready.
+
+**Fix**: probe at the application layer (`GET /` returning 2xx for
+HTTP services). TCP probe is a necessary precondition but not
+sufficient. Reuse `check_http_ready` with a 500ms per-iteration
+ceiling; loop until 2xx or deadline.
+
+### Lesson 459 4th strike (new — promoted)
+
+Build scripts that extract semver from `tauri.conf.json` MUST preserve
+optional pre-release suffixes. The regex
+`grep -oE '[0-9]+\.[0-9]+\.[0-9]+'` is wrong for any version like
+`1.0.9-rc4` — it returns `1.0.9` and the script then looks for a
+filename that doesn't exist. Use
+`[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?` instead.
+
+### Files changed
+
+- `src-tauri/src/lib.rs` — `wait_for_gateway_ready` now does
+  HTTP-level final confirmation (~50 line delta from rc4)
+- `src-tauri/src/lib.rs` — `setup()` and `start_gateway_after_login`
+  timeouts bumped 15s → 30s (2 line delta)
+- `scripts/build-windows-docker.sh` — regex preserves pre-release
+  suffix (1 line delta)
+- `src-tauri/{Cargo.toml,tauri.conf.json}`, `package.json` — version
+  bump 1.0.9-rc4 → 1.0.9-rc5
+
+### What David needs to do for v1.0.9-rc5
+
+1. Install `MiracleClaw_1.0.9-rc5_x64-setup.exe` over rc4
+2. Cold boot: open MC → login → click OpenClaw tile
+3. Expected: chat opens in <5 seconds after tile click (was 15-20s in rc4)
+4. Verify `setup()` no longer prints "gateway NOT ready: gateway did
+   not bind port 28789 within 15s" — should print "gateway READY"
+   within ~5-15s.
+5. Share `%APPDATA%\MiracleClaw\miracle-claw.log` for the trace.
+   Expected new log lines:
+   - `wait_for_gateway_ready: HTTP ready iter=N http_status=200`
+   - `setup(): spawn_launcher_and_wait Ok — gateway READY port=28789`
+
+### Known follow-ups (deferred)
+
+- v1.1.0 dashboard pivot
+- Promote Lesson 469 to MEMORY.md
+- Promote Lesson 459 4th strike to MEMORY.md (this is a recurring
+  bug — fix the script properly or add a pre-build version-sync check)
+- Once rc5 verified → bump 1.0.9-rc5 → 1.0.9 (final)

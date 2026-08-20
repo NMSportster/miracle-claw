@@ -93,6 +93,19 @@ fi
 echo ">>> bundle-runtime.sh complete. resources/node.exe:"
 file "$REPO_ROOT/src-tauri/resources/node.exe" || true
 
+# Lesson 471 (rc6 follow-up): serialize NSIS runs. Two parallel docker
+# builds both call `makensis` into the same target/bundle/nsis dir,
+# racing on the same .exe file → corrupt installer (NSIS integrity
+# check fails on David's machine). Acquire an exclusive flock before
+# starting the build, release on exit. Subsequent runs block until
+# the in-flight build finishes, then run cleanly.
+LOCK_FILE="$REPO_ROOT/.build-windows-docker.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "FATAL: another build-windows-docker.sh is already running (held $LOCK_FILE). Wait for it to finish, or kill the stale lock holder." >&2
+    exit 1
+fi
+
 DOCKER_VOLUMES=(
     -v "$REPO_ROOT:/io"
     -v "$HOME/.cargo/registry:/usr/local/cargo/registry"
