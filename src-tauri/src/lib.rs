@@ -1253,9 +1253,18 @@ fn read_system_openclaw_maic_base_url() -> io::Result<Option<String>> {
 }
 
 // ----------------------------------------------------------------------------
-// Health poll: TCP connect to 127.0.0.1:28789 until the port is bound.
-// (openclaw accepts the connection the moment the port is bound; we don't
-// need HTTP semantics — the webview's first GET will validate auth/MAIC.)
+// Health poll: wait until the openclaw gateway is actually serving HTTP 2xx
+// responses on 127.0.0.1:PORT. TCP-only probing races with the gateway's
+// `http server listening` → `ready` gap (Lesson 467 + 469): the OS accepts
+// our SYN the instant `bind()` lands, but the HTTP server may not be
+// accepting/responding yet because worker pool / plugin pre-warm / auth
+// middleware are still wiring up.
+//
+// rc5 change: use `check_http_ready` for the final confirmation instead of
+// trusting a successful TCP connect. Also extended timeout from 15s to 30s
+// because observed cold-boot bind time is ~14s on David's machine
+// (mc-rc4-fresh-fb.log), which gave the 15s budget only a 1s margin — the
+// probe would consistently fail by ~100ms when the bind landed slightly late.
 // ----------------------------------------------------------------------------
 
 fn wait_for_gateway_ready(port: u16, timeout: Duration) -> Result<(), String> {
@@ -1264,9 +1273,10 @@ fn wait_for_gateway_ready(port: u16, timeout: Duration) -> Result<(), String> {
     let max_backoff = Duration::from_millis(1000);
     let addrs = format!("127.0.0.1:{}", port);
     let poll_timeout = Duration::from_millis(500); // per-iteration TCP connect ceiling
+    let url = format!("http://127.0.0.1:{}/", port);
 
     log_to_file(&format!(
-        "wait_for_gateway_ready: start port={} timeout={:?}",
+        "wait_for_gateway_ready: start port={} timeout={:?} (rc5: HTTP-level final probe, 30s budget)",
         port, timeout
     ));
 
@@ -1277,8 +1287,8 @@ fn wait_for_gateway_ready(port: u16, timeout: Duration) -> Result<(), String> {
         // Use connect_timeout so a single iteration cannot block past
         // poll_timeout. Without this, TcpStream::connect against an unbound
         // port on Windows blocks for the OS-default TCP retry timeout
-        // (~21s) — which would consume our 15s outer deadline in one
-        // iteration and prevent polling the actual bind.
+        // (~21s) — which would consume our budget in one iteration and
+        // prevent polling the actual bind.
         let conn_result = TcpStream::connect_timeout(
             &addrs.parse().map_err(|e| format!("invalid addr: {e}"))?,
             poll_timeout,
@@ -1286,11 +1296,32 @@ fn wait_for_gateway_ready(port: u16, timeout: Duration) -> Result<(), String> {
         let elapsed = started.elapsed();
         match conn_result {
             Ok(_stream) => {
-                log_to_file(&format!(
-                    "wait_for_gateway_ready: TCP connect succeeded iter={} elapsed={:?}",
-                    iter, elapsed
-                ));
-                return Ok(());
+                // Port is bound. Now confirm the gateway is actually serving
+                // HTTP (Lesson 467 + 469: TCP-only probe is insufficient). If
+                // check_http_ready succeeds, we're done. If it returns Err,
+                // the bind landed but the server isn't responding yet — keep
+                // polling within the deadline.
+                let http_start = Instant::now();
+                let http_result = check_http_ready(&url, Duration::from_millis(500));
+                let http_elapsed = http_start.elapsed();
+                match http_result {
+                    Ok(status) => {
+                        log_to_file(&format!(
+                            "wait_for_gateway_ready: HTTP ready iter={} tcp_elapsed={:?} http_status={} http_elapsed={:?}",
+                            iter, elapsed, status, http_elapsed
+                        ));
+                        return Ok(());
+                    }
+                    Err(http_err) => {
+                        // Port bound, server not ready. Log and keep polling.
+                        if iter == 1 || iter % 10 == 0 || Instant::now() + backoff >= deadline {
+                            log_to_file(&format!(
+                                "wait_for_gateway_ready: TCP bound but HTTP not ready iter={} tcp_elapsed={:?} http_err={} http_elapsed={:?}",
+                                iter, elapsed, http_err, http_elapsed
+                            ));
+                        }
+                    }
+                }
             }
             Err(e) => {
                 // Don't spam the log — only the last failure and every 10th
@@ -1306,7 +1337,7 @@ fn wait_for_gateway_ready(port: u16, timeout: Duration) -> Result<(), String> {
         backoff = std::cmp::min(backoff * 2, max_backoff);
     }
     let err_msg = format!(
-        "gateway did not bind port {} within {:?}",
+        "gateway did not become ready on port {} within {:?}",
         port, timeout
     );
     log_to_file(&format!(
@@ -1902,7 +1933,7 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         log_to_file(&format!(
             "setup(): spawn_launcher_and_wait start (provider_configured=true)"
         ));
-        match spawn_launcher_and_wait(&app_handle, OPENCLAW_PORT, Duration::from_secs(15)) {
+        match spawn_launcher_and_wait(&app_handle, OPENCLAW_PORT, Duration::from_secs(30)) {
             Ok(()) => {
                 eprintln!("[miracle-claw] gateway READY on port {}", OPENCLAW_PORT);
                 log_to_file(&format!(
@@ -2412,7 +2443,7 @@ fn start_gateway_after_login(
     log_to_file(
         "start_gateway_after_login: spawn_launcher_and_wait start (after login)",
     );
-    let result = spawn_launcher_and_wait(&app_handle, OPENCLAW_PORT, Duration::from_secs(15));
+    let result = spawn_launcher_and_wait(&app_handle, OPENCLAW_PORT, Duration::from_secs(30));
     log_to_file(&format!(
         "start_gateway_after_login: spawn_launcher_and_wait returned {:?}",
         result.as_ref().map(|_| "Ok").map_err(|e| e.as_str())
