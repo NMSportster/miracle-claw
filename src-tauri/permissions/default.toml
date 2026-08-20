@@ -1,0 +1,19 @@
+# Default permission set for the MiracleClaw app — exposes all custom
+# Tauri commands. Referenced as `default` in capabilities/<file>.json.
+[default]
+description = "Default permissions for MiracleClaw backend commands."
+permissions = [
+  "allow-back-to-dashboard",
+  "allow-first-run-report",
+  "allow-maic-login",
+  "allow-maic-logout",
+  "allow-silent-relogin",
+  "allow-start-gateway-after-login",
+  "allow-openclaw-open-window",
+  "allow-open-register-url",
+  "allow-mc-get-tier",
+  "allow-mc-get-nudge",
+  "allow-mc-list-tools",
+  "allow-mc-refresh-tier",
+  "allow-mc-apply-tier-change"
+]

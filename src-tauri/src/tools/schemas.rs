@@ -271,6 +271,39 @@ pub fn all_local_tools_slice() -> &'static [LocalTool] {
     CACHE.get_or_init(all_local_tools)
 }
 
+/// Serialize a single `LocalTool` into the OpenAI function-calling JSON
+/// shape that the chat-completions `tools: [...]` array expects.
+///
+/// Wire format (Lesson 513 / Lesson 169 family):
+/// ```json
+/// {
+///   "type": "function",
+///   "function": {
+///     "name": "read_file",
+///     "description": "...",
+///     "parameters": { "type": "object", "properties": {...}, ... }
+///   }
+/// }
+/// ```
+pub fn local_tool_to_openai(tool: &LocalTool) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": tool.name.as_str(),
+            "description": tool.description,
+            "parameters": tool.parameters,
+        }
+    })
+}
+
+/// Build the full `tools: [...]` array for the OpenAI chat-completions
+/// request body. Tier-gated by the caller (pass only the tools the
+/// user's tier is allowed to call). MAIC will return `tool_calls`
+/// only for tools listed here; missing = not callable from the model.
+pub fn local_tools_to_openai_array(tools: &[LocalTool]) -> Value {
+    Value::Array(tools.iter().map(local_tool_to_openai).collect())
+}
+
 /// Tools that are flagged as "potentially destructive" so the UI can
 /// require a per-tool confirmation prompt (not just a global tool
 /// permission). These write/modify the filesystem or run commands.

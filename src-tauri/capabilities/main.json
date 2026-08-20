@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Miracle Claw main window — spawn the launcher sidecar to boot the bundled chat gateway, then host the chat UI at localhost:28789/. The launcher sidecar is the only executable the webview is permitted to invoke; the bundled Node runtime is kept off the permission boundary by being exec'd FROM the launcher rather than directly.",
+  "description": "Miracle Claw main window — spawn the launcher sidecar to boot the bundled chat gateway, then host the chat UI at localhost:28789/. The launcher sidecar is the only executable the webview is permitted to invoke; the bundled Node runtime is kept off the permission boundary by being exec'd FROM the launcher rather than directly. Permissions include all 13 custom Tauri commands declared in src-tauri/permissions/ (Lesson 513 rc19).",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -19,6 +19,19 @@
           ]
         }
       ]
-    }
+    },
+    "allow-back-to-dashboard",
+    "allow-first-run-report",
+    "allow-maic-login",
+    "allow-maic-logout",
+    "allow-silent-relogin",
+    "allow-start-gateway-after-login",
+    "allow-openclaw-open-window",
+    "allow-open-register-url",
+    "allow-mc-get-tier",
+    "allow-mc-get-nudge",
+    "allow-mc-list-tools",
+    "allow-mc-refresh-tier",
+    "allow-mc-apply-tier-change"
   ]
 }

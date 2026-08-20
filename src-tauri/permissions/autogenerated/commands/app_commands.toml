@@ -1,0 +1,133 @@
+# Permission manifest for MiracleClaw custom Tauri commands.
+# Auto-discovered by Tauri's permission loader at build time.
+# See https://v2.tauri.app/security/capabilities/
+
+[[permission]]
+identifier = "allow-back-to-dashboard"
+description = "Enables the openclaw_back_to_dashboard command without any pre-configured scope."
+commands.allow = ["openclaw_back_to_dashboard"]
+
+[[permission]]
+identifier = "deny-back-to-dashboard"
+description = "Denies the openclaw_back_to_dashboard command without any pre-configured scope."
+commands.deny = ["openclaw_back_to_dashboard"]
+
+[[permission]]
+identifier = "allow-first-run-report"
+description = "Enables the first_run_report command."
+commands.allow = ["first_run_report"]
+
+[[permission]]
+identifier = "deny-first-run-report"
+description = "Denies the first_run_report command."
+commands.deny = ["first_run_report"]
+
+[[permission]]
+identifier = "allow-maic-login"
+description = "Enables the maic_login command."
+commands.allow = ["maic_login"]
+
+[[permission]]
+identifier = "deny-maic-login"
+description = "Denies the maic_login command."
+commands.deny = ["maic_login"]
+
+[[permission]]
+identifier = "allow-maic-logout"
+description = "Enables the maic_logout command."
+commands.allow = ["maic_logout"]
+
+[[permission]]
+identifier = "deny-maic-logout"
+description = "Denies the maic_logout command."
+commands.deny = ["maic_logout"]
+
+[[permission]]
+identifier = "allow-silent-relogin"
+description = "Enables the silent_relogin command."
+commands.allow = ["silent_relogin"]
+
+[[permission]]
+identifier = "deny-silent-relogin"
+description = "Denies the silent_relogin command."
+commands.deny = ["silent_relogin"]
+
+[[permission]]
+identifier = "allow-start-gateway-after-login"
+description = "Enables the start_gateway_after_login command."
+commands.allow = ["start_gateway_after_login"]
+
+[[permission]]
+identifier = "deny-start-gateway-after-login"
+description = "Denies the start_gateway_after_login command."
+commands.deny = ["start_gateway_after_login"]
+
+[[permission]]
+identifier = "allow-openclaw-open-window"
+description = "Enables the openclaw_open_window command."
+commands.allow = ["openclaw_open_window"]
+
+[[permission]]
+identifier = "deny-openclaw-open-window"
+description = "Denies the openclaw_open_window command."
+commands.deny = ["openclaw_open_window"]
+
+[[permission]]
+identifier = "allow-open-register-url"
+description = "Enables the open_register_url command."
+commands.allow = ["open_register_url"]
+
+[[permission]]
+identifier = "deny-open-register-url"
+description = "Denies the open_register_url command."
+commands.deny = ["open_register_url"]
+
+[[permission]]
+identifier = "allow-mc-get-tier"
+description = "Enables the mc_get_tier command."
+commands.allow = ["mc_get_tier"]
+
+[[permission]]
+identifier = "deny-mc-get-tier"
+description = "Denies the mc_get_tier command."
+commands.deny = ["mc_get_tier"]
+
+[[permission]]
+identifier = "allow-mc-get-nudge"
+description = "Enables the mc_get_nudge command."
+commands.allow = ["mc_get_nudge"]
+
+[[permission]]
+identifier = "deny-mc-get-nudge"
+description = "Denies the mc_get_nudge command."
+commands.deny = ["mc_get_nudge"]
+
+[[permission]]
+identifier = "allow-mc-list-tools"
+description = "Enables the mc_list_tools command."
+commands.allow = ["mc_list_tools"]
+
+[[permission]]
+identifier = "deny-mc-list-tools"
+description = "Denies the mc_list_tools command."
+commands.deny = ["mc_list_tools"]
+
+[[permission]]
+identifier = "allow-mc-refresh-tier"
+description = "Enables the mc_refresh_tier command."
+commands.allow = ["mc_refresh_tier"]
+
+[[permission]]
+identifier = "deny-mc-refresh-tier"
+description = "Denies the mc_refresh_tier command."
+commands.deny = ["mc_refresh_tier"]
+
+[[permission]]
+identifier = "allow-mc-apply-tier-change"
+description = "Enables the mc_apply_tier_change command."
+commands.allow = ["mc_apply_tier_change"]
+
+[[permission]]
+identifier = "deny-mc-apply-tier-change"
+description = "Denies the mc_apply_tier_change command."
+commands.deny = ["mc_apply_tier_change"]

@@ -14,6 +14,12 @@
 // return them via `tool_calls` (see MAIC `milagro_handoff.assistant_message`
 // wire format — Lesson 293).
 //
+// v1.0.7 / Lesson 513: also forwards `params.tools` (an OpenAI-style
+// function-calling tool array that MC writes for the 7 local tools:
+// read_file, write_file, edit_file, list_dir, bash_run, apply_patch,
+// remember_fact). Without this, the model never sees these tools as
+// callable and MAIC never returns tool_calls for them.
+//
 // Hook surface used (one of six available; see Lesson 295):
 //   extraParamsForTransport(ctx) → { patch?: Record<string, unknown> }
 //

@@ -1961,13 +1961,14 @@ dependencies = [
 
 [[package]]
 name = "miracle-claw"
-version = "1.0.9-rc18"
+version = "1.0.9-rc19"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
  "keyring",
  "once_cell",
  "rand",
+ "regex",
  "serde",
  "serde_json",
  "sha2",
@@ -1976,6 +1977,8 @@ dependencies = [
  "tauri-plugin-shell",
  "tempfile",
  "ureq",
+ "url",
+ "urlpattern 0.6.0",
  "zeroize",
 ]
 
@@ -3670,7 +3673,7 @@ dependencies = [
  "thiserror 2.0.20",
  "toml 1.1.4+spec-1.1.0",
  "url",
- "urlpattern",
+ "urlpattern 0.3.0",
  "uuid",
  "walkdir",
 ]
@@ -4162,6 +4165,18 @@ dependencies = [
  "regex",
  "serde",
  "unic-ucd-ident",
+ "url",
+]
+
+[[package]]
+name = "urlpattern"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df16f50ef4cc145211879a3867ba757076b25dfee812040dcb0658bd9ae7904b"
+dependencies = [
+ "icu_properties",
+ "regex",
+ "serde",
  "url",
 ]
 

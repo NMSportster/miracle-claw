@@ -741,10 +741,40 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
     }
     let models = models_arr.as_array_mut().unwrap();
     if models.is_empty() {
-        models.push(serde_json::json!({
-            "id": DEFAULT_MODEL_ID,
-            "name": "MAIC default (miracle-claw)",
-        }));
+        // Lesson 491 / v1.0.9-rc19: seed the model dropdown with the full
+        // production model surface exposed by MAIC's /v1/models endpoint,
+        // not just the single default. David uses these to switch between
+        // local (dev/14B, m1-t-series 7B) and cloud cascades (MiniMax,
+        // GLM, DeepSeek, Kimi, Qwen). The default (`milagro-dev`) is the
+        // largest local model and stays at the top.
+        //
+        // See MEMORY.md "MAIC Deployed Model Inventory" for the
+        // verified list (2026-08-14 12:06 MDT).
+        let seeds: &[(&str, &str)] = &[
+            ("milagro-dev",            "MAIC default (miracle-claw) — 14B local generalist"),
+            ("milagro-dev-coder",      "MAIC coder — 14B local code-tuned"),
+            ("milagro-m1",             "MAIC m1 — base"),
+            ("milagro-m1-t1",          "MAIC m1-t1 — 7B LoRA-distilled (fast)"),
+            ("milagro-m1-t2",          "MAIC m1-t2 — 7B LoRA-distilled (mid)"),
+            ("milagro-m1-t3",          "MAIC m1-t3 — 7B LoRA-distilled (top of t-series)"),
+            ("milagro-chat",           "MAIC chat — small general baseline"),
+            ("milagro-coder",          "MAIC coder — small-mid code baseline"),
+            ("milagro-stock",          "MAIC stock — stock-specific small"),
+            ("milagro-oc-minimax",     "Cloud cascade — MiniMax M3 (MiniMax-M3)"),
+            ("milagro-oc-glm",         "Cloud cascade — OpenChat GLM"),
+            ("milagro-oc-qwen",        "Cloud cascade — OpenChat Qwen"),
+            ("milagro-oc-deepseek",    "Cloud cascade — OpenChat DeepSeek"),
+            ("milagro-oc-kimi",        "Cloud cascade — OpenChat Kimi"),
+            ("chat-glm",               "Cloud — GLM (direct)"),
+            ("chat-deepseek",          "Cloud — DeepSeek (direct)"),
+            ("chat-qwen",              "Cloud — Qwen (direct)"),
+        ];
+        for (id, name) in seeds {
+            models.push(serde_json::json!({
+                "id": id,
+                "name": name,
+            }));
+        }
     } else {
         // Ensure the default model id is present even if the user added
         // others (so the chat panel has a default model to pre-select).
@@ -755,6 +785,30 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
             models.push(serde_json::json!({
                 "id": DEFAULT_MODEL_ID,
                 "name": "MAIC default (miracle-claw)",
+            }));
+        }
+        // v1.0.9-rc19: if the user is upgrading from an older install
+        // whose openclaw.json only had the single default model, merge
+        // in any missing entries from the production surface so the
+        // dropdown is complete. We never overwrite existing entries
+        // (preserves user renames).
+        let known_ids: &[&str] = &[
+            "milagro-dev", "milagro-dev-coder", "milagro-m1",
+            "milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3",
+            "milagro-chat", "milagro-coder", "milagro-stock",
+            "milagro-oc-minimax", "milagro-oc-glm", "milagro-oc-qwen",
+            "milagro-oc-deepseek", "milagro-oc-kimi",
+            "chat-glm", "chat-deepseek", "chat-qwen",
+        ];
+        let present: std::collections::HashSet<String> = models
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
+            .collect();
+        for id in known_ids {
+            if present.contains(*id) { continue; }
+            models.push(serde_json::json!({
+                "id": *id,
+                "name": *id,
             }));
         }
     }
@@ -771,6 +825,32 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
     }
     let params = params_obj.as_object_mut().unwrap();
     params.entry("tool_execution".to_string()).or_insert(Value::String("client".to_string()));
+
+    // v1.0.7 / Lesson 513: write the 7 local tool schemas into
+    // `params.tools` so the MAIC plugin (`depot/maic-plugin/index.js`)
+    // injects them into the outbound chat-completions request body.
+    //
+    // Without this, the plugin only emits `tool_execution: "client"` and
+    // MAIC sees zero client-side tools — the model can't call
+    // read_file / bash_run / etc. because they're not advertised.
+    //
+    // Gating: we write the schemas for ALL tiers (including Free).
+    // - MAIC's server-side enforcement rejects tool_calls from Free
+    //   users, so the model can't actually execute them.
+    // - Tool descriptions already say "Available on Pro and above"
+    //   so the model self-limits.
+    // - The dashboard's `mc_list_tools` (tier-gated via
+    //   `tools_for_tier`) is the UI surface for "what you can use".
+    //
+    // If we later need tier-aware advertising, this becomes a function
+    // that takes the resolved tier and filters the list. For now,
+    // matching steeler's pattern (Lesson 169 family).
+    if !params.contains_key("tools") {
+        let tools_arr = crate::tools::schemas::local_tools_to_openai_array(
+            &crate::tools::schemas::all_local_tools_slice(),
+        );
+        params.insert("tools".to_string(), tools_arr);
+    }
 
     // Deep-merge into `cfg.models.providers[PROVIDER_ID]`. We don't touch
     // any other provider entries the user has configured.

@@ -1,6 +1,6 @@
 [package]
 name = "miracle-claw"
-version = "1.0.9-rc18"
+version = "1.0.9-rc19"
 description = "Miracle Claw — ADeal Auto Repair's desktop chat client for MAIC models"
 authors = ["ADeal Auto Repair"]
 edition = "2021"
@@ -77,11 +77,14 @@ base64 = "0.22"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 
 [dev-dependencies]
+regex = "1.13.1"
 # Test-only dependency for unit tests in src/lib.rs. tempfile is well-
 # maintained and only used by the ensure_maic_provider_config tests that
 # need an isolated HOME for openclaw_extensions_dir() to resolve to a temp
 # dir. Never linked into the production binary.
 tempfile = "3"
+url = "2.5.8"
+urlpattern = "0.6.0"
 
 [features]
 default = ["custom-protocol"]
