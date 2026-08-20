@@ -1587,29 +1587,85 @@ fn maic_login(email: String, password: String, remember: bool) -> Result<MaicLog
     // reload (~5s in rc11 testing) while still failing fast on a real
     // gateway crash. The progress bar already shows during login so
     // users don't notice the extra wait.
+    //
+    // Stable-window requirement: after wait_for_gateway_ready returns
+    // Ok, we ALSO require the gateway to be healthy for at least 1 full
+    // second with no reload activity in progress. The chokidar file
+    // watcher fires asynchronously AFTER our write returns; if we
+    // immediately re-probe and find HTTP 200, we might be probing
+    // BEFORE the reload has even started (gateway healthy from before
+    // write). The 1.5s settle gives the watcher time to fire AND the
+    // reload time to complete before we declare victory.
     eprintln!(
-        "[miracle-claw] maic_login: post-write gateway settle (Lesson 483, 15s ceiling)"
+        "[miracle-claw] maic_login: post-write gateway settle (Lesson 483, 15s ceiling + 1.5s stable)"
     );
     log_to_file(
-        "maic_login: post-write gateway settle (wait_for_gateway_ready 15s) — \
+        "maic_login: post-write gateway settle (wait_for_gateway_ready 15s + 1.5s stable) — \
          openclaw.json was just modified; gateway is hot-reloading MAIC provider",
     );
+    let settle_start = std::time::Instant::now();
+    let mut stable = false;
     if let Err(e) = wait_for_gateway_ready(OPENCLAW_PORT, Duration::from_secs(15)) {
-        // Non-fatal — log loudly but don't fail login. The gateway may
-        // already be healthy (file watch might not have fired on this
-        // platform); the user clicking OpenClaw will retry.
         log_to_file(&format!(
-            "maic_login: post-write gateway settle TIMEOUT ({}); \
-             login still succeeds but OpenClaw click may need a retry",
+            "maic_login: wait_for_gateway_ready TIMEOUT ({}); login still succeeds \
+             but OpenClaw click may need a retry",
             e
         ));
         eprintln!(
-            "[miracle-claw] maic_login: WARNING — post-write gateway \
-             settle timeout ({}); gateway may still be reloading",
+            "[miracle-claw] maic_login: WARNING — wait_for_gateway_ready timeout ({}); \
+             gateway may still be reloading",
             e
         );
     } else {
-        log_to_file("maic_login: post-write gateway settle Ok — gateway stable");
+        // wait_for_gateway_ready returned Ok. Now poll every 250ms; require
+        // 6 consecutive Ok polls (~1.5s of stable HTTP) before declaring
+        // settled. If the reload fires AFTER our first Ok check, we'll
+        // detect a probe failure mid-window and keep polling.
+        let mut consecutive_ok: u32 = 0;
+        let required_ok: u32 = 6;
+        let stable_deadline = settle_start + Duration::from_secs(13);
+        while std::time::Instant::now() < stable_deadline && consecutive_ok < required_ok {
+            match check_http_ready(
+                "http://127.0.0.1:28789/",
+                Duration::from_millis(750),
+            ) {
+                Ok(_) => {
+                    consecutive_ok += 1;
+                }
+                Err(e) => {
+                    log_to_file(&format!(
+                        "maic_login: stable-window probe failed at consecutive_ok={} ({e}); \
+                         reset and re-poll (rel likely fired mid-window)",
+                        consecutive_ok
+                    ));
+                    consecutive_ok = 0;
+                }
+            }
+            if consecutive_ok < required_ok {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+        if consecutive_ok >= required_ok {
+            log_to_file(&format!(
+                "maic_login: stable-window OK ({}/{} consecutive probes) after {:?} — gateway stable",
+                consecutive_ok, required_ok, settle_start.elapsed()
+            ));
+            stable = true;
+        } else {
+            log_to_file(&format!(
+                "maic_login: stable-window incomplete after {:?}; login continues but \
+                 OpenClaw click may retry",
+                settle_start.elapsed()
+            ));
+        }
+    }
+    if !stable {
+        // Either we never got ready in 15s, OR we lost the stable window.
+        // Login still succeeds; OpenClaw click will retry (now with 13s budget from rc12).
+        eprintln!(
+            "[miracle-claw] maic_login: post-write settle not fully stable; login continues, \
+             OpenClaw click may need retry"
+        );
     }
 
     eprintln!(
