@@ -144,17 +144,18 @@ elif $BUNDLE_ONLY; then
     CMD='cd /io && npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis'
 else
     echo ">>> Running full cross-compile (5-15m cold, ~1m with sccache warm)"
-    # v1.0.7: build both binaries. The MAIC plugin spawns
-    # `miracle-claw-tools.exe` from the resources directory to
-    # execute local tools (read_file, write_file, etc.) — so the
-    # kernel has to find it next to `miracle-claw.exe` in the
-    # installed Resources dir.
+    # Lesson 528: build the tools binary first (it has no JS embed and is
+    # fast), then let tauri-cli handle the miracle-claw.exe build + NSIS
+    # bundling in one pass. Dropping the previous "cargo xwin build" pre-step
+    # here — it duplicated the same compilation tauri-cli does inside its
+    # `build` phase, and that double-build race was how we shipped an rc23
+    # leftover miracle-claw.exe inside the rc24 installer (Lesson 528).
     #
     # The `touch` creates a placeholder so Tauri's build script
     # (which validates all resources/* paths in tauri.conf.json)
     # doesn't fail. The `cp` after the build overwrites the
     # placeholder with the real binary.
-    CMD='cd /io/src-tauri && touch resources/miracle-claw-tools.exe && cargo xwin build --release --target x86_64-pc-windows-msvc --bin miracle-claw --bin miracle-claw-tools && cp target/x86_64-pc-windows-msvc/release/miracle-claw-tools.exe resources/miracle-claw-tools.exe && cd /io && npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis'
+    CMD='cd /io/src-tauri && touch resources/miracle-claw-tools.exe && cargo xwin build --release --target x86_64-pc-windows-msvc --bin miracle-claw-tools && cp target/x86_64-pc-windows-msvc/release/miracle-claw-tools.exe resources/miracle-claw-tools.exe && cd /io && npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis'
 fi
 
 docker run --rm \

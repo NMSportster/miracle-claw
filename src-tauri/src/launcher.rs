@@ -380,6 +380,16 @@ fn run(args: Args) -> Result<(), LauncherError> {
 }
 
 fn main() -> std::process::ExitCode {
+    // Lesson 528: identify THIS sidecar EXE in the side-car log so we know
+    // exactly which build is running. The launcher's own banner prints first,
+    // before any args are parsed or node is exec'd, so a stale/wrong install
+    // is detectable from line 1 of the log.
+    eprintln!(
+        "[miracle-claw-launcher] miracle-claw-launcher v{} (build {} UTC)",
+        env!("CARGO_PKG_VERSION"),
+        env!("BUILD_TIMESTAMP"),
+    );
+
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {

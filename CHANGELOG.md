@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — v1.0.1 polish queue
 
 ### Things planned (no rebuild required)
+
+### Things built this session (WIP — pending rc25 with Lesson 528 banner)
+
+- **Lesson 528 (WIP, pending rc25 rebuild): Sidecar EXEs identify themselves in the log.**
+  - Symptom (Lesson 528 rc24 bug): build script's pre-step `cargo xwin build` produced
+    a stale `miracle-claw.exe` that NSIS bundled into the installer. We shipped an rc24
+    installer containing the rc23 leftover EXE (md5 `8d1045855b...`, timestamp 14:02)
+    inside a `MiracleClaw_1.0.9-rc24_x64-setup.exe` shell (md5 `1cd25d9...`). Build
+    script's "Finished release profile" log line was a lie — NSIS read the EXE BEFORE
+    tauri-cli's own cargo invocation overwrote it.
+  - Fix 1: drop the wasted pre-step from `scripts/build-windows-docker.sh`. tauri-cli
+    handles the miracle-claw.exe build + NSIS bundling in one pass; we no longer
+    double-invoke cargo and race the EXE write.
+  - Fix 2: add `BUILD_TIMESTAMP` to `src-tauri/build.rs` (pure-std, no chrono dep).
+    Format: `YYYY-MM-DD-HHMM UTC`.
+  - Fix 3: every EXE prints its own banner on startup:
+    - `miracle-claw.exe` → `[miracle-claw] MiracleClaw v1.0.9-rc24 (build 2026-08-21-1530 UTC, install=C:\Program Files\MiracleClaw\resources)`
+    - `miracle-claw-launcher.exe` → `[miracle-claw-launcher] miracle-claw-launcher v1.0.9-rc24 (build 2026-08-21-1530 UTC)`
+    - `miracle-claw-tools.exe` → `[miracle-claw-tools] miracle-claw-tools v1.0.9-rc24 (build 2026-08-21-1530 UTC)`
+  - With this banner in the side-car log, we can verify which build is actually
+    running from line 1 of the log file. No more "did the installer ship the right
+    binary?" guessing.
+  - Verification (rc24 mid-session rebuild, before banner was added):
+    - New installer md5 `a500bfa4910df3b5a3dff9fc6f816621` (vs old `1cd25d9...`)
+    - target/release miracle-claw.exe md5 `f0943f39...` (vs old `80ecc643...`)
+    - Installer bundle contains EXE md5 `521f418ad...` (different from both target/
+      and pre-build, because cargo embeds build path + timestamp on each invocation)
+    - Lesson: binary byte-content comparison across builds of the same source produces
+      3.5M byte differences from timestamps alone. Strings comparison shows nothing
+      because strip removes constants. **Only reliable verification is a runtime
+      log banner that identifies the build.**
+
+### Things planned (no rebuild required)
 - David: pick a workaround for the `missing-provider-auth` error (Lesson 431):
   - **Option A**: from `C:\Program Files\MiracleClaw\resources\`, run
     `openclaw agents add main` and answer the prompts (provider = `maic`,

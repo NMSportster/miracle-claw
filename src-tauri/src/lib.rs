@@ -2517,6 +2517,17 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
     let resources = resources_dir(&app_handle);
 
+    // Lesson 528: identify THIS EXE in the side-car log so we know exactly
+    // which build is running (no more "did the installer ship the right
+    // binary?" guessing). Format: "[miracle-claw] MiracleClaw vX.Y.Z-rcNN
+    // (build YYYY-MM-DD-HHMM UTC, install=...)".
+    eprintln!(
+        "[miracle-claw] MiracleClaw v{} (build {} UTC, install={})",
+        env!("CARGO_PKG_VERSION"),
+        env!("BUILD_TIMESTAMP"),
+        resources.display()
+    );
+
     // Lesson 472 (rc8): install custom panic hook. Tauri 2 GUI apps on Windows
     // discard stderr (Lesson 464), so default panic hook output is invisible.
     // This hook ALSO writes panic messages + backtraces to our log file, so

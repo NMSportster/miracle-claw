@@ -40,6 +40,16 @@ use tools::schemas::LocalToolName;
 use tools::schemas::ALL_LOCAL_TOOL_NAMES;
 
 fn main() {
+    // Lesson 528: identify THIS tools EXE in the side-car log. The tools
+    // binary is spawned by miracle-claw.exe to run local file/bash tools,
+    // so its banner makes it easy to confirm version alignment between
+    // the main EXE and the tools helper.
+    eprintln!(
+        "[miracle-claw-tools] miracle-claw-tools v{} (build {} UTC)",
+        env!("CARGO_PKG_VERSION"),
+        env!("BUILD_TIMESTAMP"),
+    );
+
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!("usage: miracle-claw-tools <tool_name> [params_json]");
