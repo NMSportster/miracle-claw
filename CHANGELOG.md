@@ -2528,3 +2528,74 @@ subsequent logins. Verified by `tools_array_not_overwritten_on_subsequent_calls`
    full 11-tool set (4 MAIC server + 7 MC local) and call local tools
    for file/bash tasks.
 5. `cargo test --lib` → 66 passed, 0 failed.
+
+---
+
+## v1.0.9-rc23 — 2026-08-20 (Lesson 524: existing-entry path was skipping tool injection)
+
+### Symptom (David, 2026-08-20 22:50 MDT)
+
+Installed rc22 over rc21, logged in as `pro@adealauto.com`, asked the bot
+to read a file. Got:
+```
+Error: tool 'read' is not available.
+Available tools: get_weather, web_search, get_current_time, calculate, describe_image.
+```
+Bot only saw 5 tools — the 4 MAIC server tools + 1 dashboard image tool.
+No `read_file` / `write_file` / `bash_run` / etc.
+
+### Root cause
+
+`ensure_maic_provider_config_for_tier()` (Lesson 523) wrote
+`params.tool_execution` and `params.tools` in the **new-entry write
+path** only. The **existing-entry early-return path** (line ~660) — hit
+by every login after first install, when the maic entry already has
+`apiKey + baseUrl` — returned BEFORE the Lesson 523 block. So
+`params.tools` was never written for users on rc18+ upgrades.
+
+Verified live: `%APPDATA%\MiracleClaw\openclaw.json` (mtime 22:41
+MDT, after the 22:41 MDT login) had `params.tool_execution: "client"`
+but **no `params.tools` key at all**. Only Lesson 513 (tool_execution)
+had landed there. Lesson 523 (tier-gated tools array) had been silently
+skipped on every login since rc18.
+
+### Fix (Lesson 524)
+
+Extracted `write_tier_gated_tool_execution_and_tools(&mut cfg, tier)`
+helper inside `ensure_maic_provider_config_for_tier()`. Helper logic:
+- If `models.providers.maic` entry exists, ensure `params.tool_execution = "client"` (idempotent) and `params.tools = [...]` (Lesson 523 tier-gated, idempotent).
+- Called from BOTH the existing-entry early-return path AND continues to work in the new-entry write path.
+
+The write path still has its inline `entry_obj`-based logic (because
+that's where the entry is being constructed before being merged into
+`cfg`), but the early-return path now invokes the helper to mutate
+`cfg` directly before the persistence write.
+
+### Tests added (66 → 67 passing)
+
+- `existing_entry_path_also_stamps_tools_array` — pre-populate disk
+  with a complete rc18-era maic entry (apiKey + baseUrl + 1 model),
+  call `ensure_maic_provider_config_for_tier(Pro)`, verify the
+  helper stamped `params.tools` with 7 entries AND preserved the
+  original `apiKey` (Lesson 449 idempotency on apiKey preserved).
+
+### Files changed
+
+- `src-tauri/src/lib.rs` — new `write_tier_gated_tool_execution_and_tools`
+  helper, called from the existing-entry early-return path
+- `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, `package.json` —
+  version bumps 1.0.9-rc22 → 1.0.9-rc23
+
+### Verification plan
+
+1. Install rc23 over rc22 → on next login, `params.tools` should be
+   written (7 entries for paid, `[]` for Free)
+2. Verify with:
+   ```bash
+   jq '.models.providers.maic.params | {tool_execution, tools_count: (.tools | length // 0)}' \
+     "$APPDATA/MiracleClaw/openclaw.json"
+   # Expected: tool_execution="client", tools_count=7 (paid) or 0 (free)
+   ```
+3. Open bundled OpenClaw window → bot should now see all 11 tools
+   (4 server + 7 local) and successfully call `read_file`/`bash_run`
+4. `cargo test --lib` → 67 passed, 0 failed ✅ (verified)

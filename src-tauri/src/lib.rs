@@ -560,6 +560,70 @@ fn ensure_maic_provider_config_for_tier(
     const PROVIDER_ID: &str = "maic";
     const SECRET_PROVIDER_ALIAS: &str = "default";
 
+    /// Write tier-gated `params.tool_execution` + `params.tools` into the
+    /// maic provider entry in-place. Idempotent — does nothing if
+    /// `params.tools` already exists. Called from BOTH the write path
+    /// (new entry creation) AND the existing-entry early-return path
+    /// (rc18+ upgrades where the entry is already complete).
+    ///
+    /// Lesson 524 (NEW 2026-08-20 22:50 MDT — David confirmed the bot
+    /// still had no local tools after rc22 install, even though Lesson
+    /// 523 added tier-gated tools injection). Root cause: the existing-
+    /// entry early-return path returned BEFORE the Lesson 523 tools
+    /// block, so users with a complete apiKey + baseUrl (every login
+    /// after first install) never had `params.tools` written.
+    fn write_tier_gated_tool_execution_and_tools(
+        cfg: &mut serde_json::Value,
+        tier: crate::auth::tier::Tier,
+    ) {
+        let params_obj = cfg
+            .get_mut("models")
+            .and_then(|m| m.get_mut("providers"))
+            .and_then(|p| p.get_mut(PROVIDER_ID))
+            .and_then(|e| {
+                if !e.is_object() {
+                    *e = Value::Object(Default::default());
+                }
+                e.as_object_mut()
+            })
+            .map(|e| {
+                let key = "params".to_string();
+                let entry = e.entry(key).or_insert_with(|| Value::Object(Default::default()));
+                if !entry.is_object() {
+                    *entry = Value::Object(Default::default());
+                }
+                entry.as_object_mut().unwrap().clone()
+            });
+        if let Some(mut params) = params_obj {
+            // Always stamp tool_execution=client (idempotent via entry().or_insert()).
+            params
+                .entry("tool_execution".to_string())
+                .or_insert(Value::String("client".to_string()));
+            // Lesson 523: tier-gated tools array. Free → empty; paid → all 7.
+            if !params.contains_key("tools") {
+                let tool_names = tools_for_tier(tier);
+                let all_tools = crate::tools::schemas::all_local_tools_slice();
+                let filtered: Vec<crate::tools::schemas::LocalTool> = all_tools
+                    .iter()
+                    .filter(|t| tool_names.contains(&t.name))
+                    .map(|t| (*t).clone())
+                    .collect();
+                let tools_arr =
+                    crate::tools::schemas::local_tools_to_openai_array(&filtered);
+                params.insert("tools".to_string(), tools_arr);
+            }
+            // Write the modified params back into the entry.
+            if let Some(e) = cfg
+                .get_mut("models")
+                .and_then(|m| m.get_mut("providers"))
+                .and_then(|p| p.get_mut(PROVIDER_ID))
+                .and_then(|e| e.as_object_mut())
+            {
+                e.insert("params".to_string(), Value::Object(params));
+            }
+        }
+    }
+
     let path = openclaw_json_path();
 
     // Load (or initialize) the user's config. If the file doesn't exist yet,
@@ -637,6 +701,16 @@ fn ensure_maic_provider_config_for_tier(
             // something actually changed (avoids spurious file mtime updates
             // on every launch).
             merge_known_model_ids_into_provider(&mut cfg, PROVIDER_ID);
+
+            // Lesson 524: existing-entry early-return path also needs to
+            // stamp `params.tool_execution` and `params.tools`. Without
+            // this, every login after first install would skip Lesson 513
+            // (tool_execution) and Lesson 523 (tier-gated tools array),
+            // and the bot would see only MAIC's 4 server tools in the
+            // model's tool list — no `read_file` / `bash_run` / etc.
+            //
+            // The helper persists `cfg` below; no double-write needed.
+            write_tier_gated_tool_execution_and_tools(&mut cfg, tier);
 
             // Lesson 451: migrate the baseUrl /v1 suffix in-place when it's
             // a stale bare MAIC origin. Persist if we changed anything so
@@ -927,7 +1001,9 @@ fn ensure_maic_provider_config_for_tier(
     params.entry("tool_execution".to_string()).or_insert(Value::String("client".to_string()));
 
     // v1.0.7 / Lesson 513 + Lesson 523 (NEW 2026-08-20): tier-gated tool
-    // injection.
+    // injection. The `entry_obj` is the in-memory entry being constructed
+    // for the write path; the helper handles the existing-entry early-
+    // return path separately (Lesson 524).
     //
     // We write the 7 local tool schemas into `params.tools` only for
     // PAID tiers. Free users get an empty `tools: []` array so MAIC
@@ -4264,6 +4340,72 @@ mod tests {
             read_tools_array_len(),
             Some(0),
             "downgrade to Free must not re-add tools that the user manually emptied"
+        );
+    }
+
+    #[test]
+    fn existing_entry_path_also_stamps_tools_array() {
+        // Lesson 524 (NEW 2026-08-20 22:50 MDT): the existing-entry
+        // early-return path ALSO has to stamp `params.tools`. Without
+        // this, every login after first install would skip Lesson 513
+        // (tool_execution) and Lesson 523 (tier-gated tools array),
+        // and the bot would see only MAIC's 4 server tools.
+        //
+        // Reproduce the production shape: write a complete maic entry
+        // (apiKey + baseUrl) to disk as if from a prior rc18-rc21
+        // install, then call ensure_maic_provider_config_for_tier(Pro).
+        // The early-return path should fire, but the helper should
+        // still write `params.tools` with 7 entries.
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "any-key");
+
+        let path = openclaw_json_path();
+        // Pre-populate with a complete entry from a prior install.
+        let existing = serde_json::json!({
+            "models": {
+                "providers": {
+                    "maic": {
+                        "api": "openai-completions",
+                        "apiKey": "prior-install-key",
+                        "baseUrl": "https://maicserver.com/v1",
+                        "models": [
+                            {"id": "milagro-dev", "name": "milagro-dev"}
+                        ]
+                    }
+                }
+            }
+        });
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&existing).unwrap(),
+        )
+        .expect("write");
+
+        // Now call the Pro tier. Should hit the early-return path
+        // (entry is complete) AND stamp tools via the helper.
+        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("ok");
+
+        let names = read_tools_names();
+        assert_eq!(
+            names.len(),
+            7,
+            "Lesson 524: existing-entry early-return path must still stamp tools (got {names:?})"
+        );
+        // Verify the original apiKey was preserved (not overwritten).
+        let cfg = read_maic_root();
+        let api_key = cfg
+            .get("models")
+            .and_then(|m| m.get("providers"))
+            .and_then(|p| p.get("maic"))
+            .and_then(|m| m.get("apiKey"))
+            .and_then(|v| v.as_str());
+        assert_eq!(
+            api_key,
+            Some("prior-install-key"),
+            "Lesson 524 must NOT overwrite existing apiKey"
         );
     }
 
