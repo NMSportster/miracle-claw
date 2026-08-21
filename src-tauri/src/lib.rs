@@ -521,7 +521,28 @@ fn merge_known_model_ids_into_provider(cfg: &mut Value, provider_id: &str) {
     }
 }
 
+/// Lesson 523 (NEW, 2026-08-20): tier-gated tool injection.
+///
+/// `tier` controls which local tool schemas get written into
+/// `models.providers.maic.params.tools`:
+/// - `Tier::Free` → empty array (no `read_file`/`write_file`/`bash_run`/
+///   `apply_patch`/`remember_fact`/etc. advertised to MAIC)
+/// - paid tiers → all 7 LocalTool schemas
+///
+/// Callers WITH tier context (login flow, silent relogin) must use
+/// `ensure_maic_provider_config_for_tier(tier)`. Callers WITHOUT tier
+/// context (early setup, login-required bootstrap) call the no-tier
+/// variant which defaults to `Tier::Free` — safe per Lesson 176
+/// ("anything outside the canonical tier set is treated as free").
 fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
+    ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free)
+}
+
+/// Tier-aware variant. Thread the user's resolved tier through the
+/// bootstrap so `params.tools` matches the user's entitlement.
+fn ensure_maic_provider_config_for_tier(
+    tier: crate::auth::tier::Tier,
+) -> io::Result<MaicProviderBootstrap> {
     // Lesson 431 v2: use openclaw's native SecretRef + SecretProvider mechanism
     // (schema: zod-schema.core SecretInputSchema + SecretsConfigSchema) so that
     // the apiKey can be resolved from the OS env at request time without us
@@ -905,29 +926,42 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
     let params = params_obj.as_object_mut().unwrap();
     params.entry("tool_execution".to_string()).or_insert(Value::String("client".to_string()));
 
-    // v1.0.7 / Lesson 513: write the 7 local tool schemas into
-    // `params.tools` so the MAIC plugin (`depot/maic-plugin/index.js`)
-    // injects them into the outbound chat-completions request body.
+    // v1.0.7 / Lesson 513 + Lesson 523 (NEW 2026-08-20): tier-gated tool
+    // injection.
     //
-    // Without this, the plugin only emits `tool_execution: "client"` and
-    // MAIC sees zero client-side tools — the model can't call
-    // read_file / bash_run / etc. because they're not advertised.
+    // We write the 7 local tool schemas into `params.tools` only for
+    // PAID tiers. Free users get an empty `tools: []` array so MAIC
+    // never advertises file/bash/memory tools to the model at all —
+    // the model can't call what it can't see.
     //
-    // Gating: we write the schemas for ALL tiers (including Free).
-    // - MAIC's server-side enforcement rejects tool_calls from Free
-    //   users, so the model can't actually execute them.
-    // - Tool descriptions already say "Available on Pro and above"
-    //   so the model self-limits.
-    // - The dashboard's `mc_list_tools` (tier-gated via
-    //   `tools_for_tier`) is the UI surface for "what you can use".
+    // Plugin (`depot/maic-plugin/index.js`) spreads `params.tools`
+    // into the outbound chat-completions request body via
+    // `...providerParams`. With client tools = empty array, MAIC
+    // sees zero caller tools and only its 4 server tools
+    // (weather, web_search, get_current_time, calculate) get
+    // advertised. With client tools = 7 schemas, MAIC merges
+    // caller + server tools (Lesson 169 merge semantics) and the
+    // model sees the union of 11 tools.
     //
-    // If we later need tier-aware advertising, this becomes a function
-    // that takes the resolved tier and filters the list. For now,
-    // matching steeler's pattern (Lesson 169 family).
+    // Gating: this function gets tier from its caller. Login flow
+    // and silent_relogin pass the user's resolved tier; setup()
+    // and login-required bootstraps default to Free.
+    //
+    // Idempotency: `if !params.contains_key("tools")` preserves any
+    // user-edited value (mirrors Lesson 449 idempotency pattern).
     if !params.contains_key("tools") {
-        let tools_arr = crate::tools::schemas::local_tools_to_openai_array(
-            &crate::tools::schemas::all_local_tools_slice(),
-        );
+        let tool_names = tools_for_tier(tier);
+        let all_tools = crate::tools::schemas::all_local_tools_slice();
+        // Filter the static tool slice down to the tier-allowed names.
+        // Stable order matches `all_local_tools()` definition order.
+        // `local_tools_to_openai_array` wants `&[LocalTool]`, so we
+        // collect owned copies of the filtered entries (cheap: 7 max).
+        let filtered: Vec<crate::tools::schemas::LocalTool> = all_tools
+            .iter()
+            .filter(|t| tool_names.contains(&t.name))
+            .map(|t| (*t).clone())
+            .collect();
+        let tools_arr = crate::tools::schemas::local_tools_to_openai_array(&filtered);
         params.insert("tools".to_string(), tools_arr);
     }
 
@@ -1848,7 +1882,11 @@ fn maic_login(email: String, password: String, remember: bool) -> Result<MaicLog
 
     // Re-bootstrap. This now hits the literal-key branch (resolved_key = Some)
     // and writes the full provider entry into openclaw.json.
-    let bootstrap = ensure_maic_provider_config().map_err(|e| {
+    //
+    // Lesson 523 (NEW): pass the user's resolved tier so `params.tools`
+    // matches their entitlement (paid = all 7 schemas, free = empty).
+    let parsed_tier_login = crate::auth::tier::Tier::from_str(&tier);
+    let bootstrap = ensure_maic_provider_config_for_tier(parsed_tier_login).map_err(|e| {
         format!(
             "Login succeeded but provider config could not be written: {}",
             e
@@ -2197,13 +2235,17 @@ fn silent_relogin() -> Result<Option<MaicLoginInfo>, String> {
 
     // Update env var + on-disk config so the rest of MC sees the new token.
     std::env::set_var(ENV_VAR_NAME, &token);
-    let _ = ensure_maic_provider_config();
+    // Lesson 523 (NEW): pass the resolved tier so silent relogin
+    // re-stamps `params.tools` correctly for the user's plan. Critical
+    // for Free→Pro upgrades mid-session where the original bootstrap
+    // wrote an empty tools array.
+    let parsed_tier = crate::auth::tier::Tier::from_str(&tier);
+    let _ = ensure_maic_provider_config_for_tier(parsed_tier);
     let _ = replace_secret_ref_with_literal();
 
     // Lesson 517 / rc20: route the default model on silent relogin too.
     // Critical for users whose first login happened on Free and whose
     // MAIC plan was upgraded later — silent_relogin is how MC catches up.
-    let parsed_tier = crate::auth::tier::Tier::from_str(&tier);
     crate::auth::tier::publish_tier_env(parsed_tier);
     if let Err(e) = ensure_agents_default_model_for_tier(parsed_tier) {
         eprintln!(
@@ -3444,6 +3486,13 @@ fn mc_refresh_tier() -> Result<crate::auth::tier::TierInfo, String> {
     if let Err(e) = ensure_agents_default_model_for_tier(info.tier) {
         eprintln!("[miracle-claw] mc_refresh_tier: WARNING — failed to write tier defaults: {}", e);
     }
+    // Lesson 523 (NEW): re-stamp `params.tools` so the model sees the
+    // new entitlement immediately on the next chat. Without this, the
+    // user would have to log out and back in to pick up the new tools
+    // (or hit "Refresh tier" — which now also fixes tools).
+    if let Err(e) = ensure_maic_provider_config_for_tier(info.tier) {
+        eprintln!("[miracle-claw] mc_refresh_tier: WARNING — failed to re-stamp tool schemas: {}", e);
+    }
     Ok(info)
 }
 
@@ -3460,6 +3509,10 @@ fn mc_apply_tier_change(new_tier_str: String) -> Result<(), String> {
     // Lesson 517 / rc20: re-route default model on tier change.
     if let Err(e) = ensure_agents_default_model_for_tier(tier) {
         eprintln!("[miracle-claw] mc_apply_tier_change: WARNING — failed to write tier defaults: {}", e);
+    }
+    // Lesson 523 (NEW): re-stamp `params.tools` for the new tier.
+    if let Err(e) = ensure_maic_provider_config_for_tier(tier) {
+        eprintln!("[miracle-claw] mc_apply_tier_change: WARNING — failed to re-stamp tool schemas: {}", e);
     }
     Ok(())
 }
@@ -4055,6 +4108,162 @@ mod tests {
             params.get("tool_execution").and_then(|v| v.as_str()),
             Some("client"),
             "MAIC plugin requires params.tool_execution='client' to return tool_calls"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Lesson 523 (NEW 2026-08-20): tier-gated tool injection.
+    //
+    // `ensure_maic_provider_config()` (no tier) defaults to Free and
+    // should write an empty `params.tools` array. The tier-aware
+    // variant should write 7 entries for every paid tier.
+    // ---------------------------------------------------------------------
+
+    /// Helper: read the maic provider's `params.tools` array length
+    /// from the on-disk openclaw.json. Returns None if missing.
+    fn read_tools_array_len() -> Option<usize> {
+        let cfg = read_maic_root();
+        cfg.get("models")
+            .and_then(|m| m.get("providers"))
+            .and_then(|p| p.get("maic"))
+            .and_then(|m| m.get("params"))
+            .and_then(|p| p.get("tools"))
+            .and_then(|t| t.as_array())
+            .map(|a| a.len())
+    }
+
+    /// Helper: read the names from the `params.tools` array.
+    fn read_tools_names() -> Vec<String> {
+        let cfg = read_maic_root();
+        cfg.get("models")
+            .and_then(|m| m.get("providers"))
+            .and_then(|p| p.get("maic"))
+            .and_then(|m| m.get("params"))
+            .and_then(|p| p.get("tools"))
+            .and_then(|t| t.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn no_tier_default_writes_empty_tools_array_for_free() {
+        // Lesson 523: setup() / login-required bootstrap (no tier
+        // context) defaults to Free → empty tools array. Per Lesson
+        // 176, anything outside the canonical tier set is treated as
+        // free for safety, so we never advertise local tools to a
+        // user whose tier we don't know.
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "any-key");
+
+        ensure_maic_provider_config().expect("ok");
+        let len = read_tools_array_len().expect("params.tools should be present");
+        assert_eq!(
+            len, 0,
+            "no-tier bootstrap must default to Free → 0 tools (got {len})"
+        );
+    }
+
+    #[test]
+    fn free_tier_explicit_writes_empty_tools_array() {
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "any-key");
+
+        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free).expect("ok");
+        let len = read_tools_array_len().expect("params.tools should be present");
+        assert_eq!(len, 0, "Free tier must get 0 tools");
+    }
+
+    #[test]
+    fn paid_tiers_write_all_seven_tools() {
+        for tier in [
+            crate::auth::tier::Tier::Pro,
+            crate::auth::tier::Tier::ProPlus,
+            crate::auth::tier::Tier::Team,
+            crate::auth::tier::Tier::Enterprise,
+        ] {
+            let _lock = lock_env();
+            let _g = fresh_env();
+            env::set_var("MAIC_API_KEY", "any-key");
+
+            ensure_maic_provider_config_for_tier(tier).expect("ok");
+            let names = read_tools_names();
+            assert_eq!(
+                names.len(),
+                7,
+                "tier {tier:?} should write 7 tools, got {} ({names:?})",
+                names.len()
+            );
+            // Verify the wire format (Lesson 513): each entry is
+            // `{type: "function", function: {name, description, parameters}}`
+            let cfg = read_maic_root();
+            let tools = cfg
+                .get("models")
+                .and_then(|m| m.get("providers"))
+                .and_then(|p| p.get("maic"))
+                .and_then(|m| m.get("params"))
+                .and_then(|p| p.get("tools"))
+                .and_then(|t| t.as_array())
+                .expect("tools array");
+            for (i, entry) in tools.iter().enumerate() {
+                assert_eq!(
+                    entry.get("type").and_then(|v| v.as_str()),
+                    Some("function"),
+                    "tool[{i}] missing type='function' wrapper"
+                );
+                assert!(
+                    entry.get("function").is_some(),
+                    "tool[{i}] missing function block"
+                );
+            }
+            // Spot-check that all 7 names are present.
+            for expected in [
+                "read_file", "write_file", "edit_file", "list_dir",
+                "bash_run", "apply_patch", "remember_fact",
+            ] {
+                assert!(
+                    names.iter().any(|n| n == expected),
+                    "tier {tier:?} missing tool {expected}; got {names:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tools_array_not_overwritten_on_subsequent_calls() {
+        // Lesson 449 idempotency pattern: if `params.tools` already
+        // exists, leave it alone. This protects user-edited configs
+        // (e.g. user removed a tool they didn't want) from being
+        // silently re-added on every login.
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "any-key");
+
+        // First call: Pro tier writes 7 tools.
+        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro).expect("ok");
+        assert_eq!(read_tools_array_len(), Some(7));
+
+        // Mutate the on-disk config to a smaller array.
+        let path = openclaw_json_path();
+        let raw = std::fs::read_to_string(&path).expect("read");
+        let mut cfg: serde_json::Value = serde_json::from_str(&raw).expect("parse");
+        cfg["models"]["providers"]["maic"]["params"]["tools"] = serde_json::json!([]);
+        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap())
+            .expect("write");
+
+        // Second call: downgrades to Free. Should NOT overwrite the
+        // empty array (would re-add 7 tools).
+        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free).expect("ok");
+        assert_eq!(
+            read_tools_array_len(),
+            Some(0),
+            "downgrade to Free must not re-add tools that the user manually emptied"
         );
     }
 

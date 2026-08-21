@@ -2434,3 +2434,97 @@ Two coupled bugs:
 3. Send a chat message → should roundtrip to MAIC + Kimi without
    `Unknown model` errors.
 4. `cargo test --lib` → 62 passed, 0 failed.
+
+---
+
+## v1.0.9-rc22 — 2026-08-20 (Lesson 523: tier-gated tool injection)
+
+### Symptom
+
+Bot (paid user) reported only 5 tools: the MAIC server-side set
+(`get_weather`, `web_search`, `get_current_time`, `calculate`,
+`describe_image`). No local tools (`read_file`, `write_file`, `edit_file`,
+`list_dir`, `bash_run`, `apply_patch`, `remember_fact`) advertised.
+Same symptom possible for Free users (we wrote all 7 schemas into
+`params.tools` for everyone, hoping MAIC's server-side enforcement would
+block Free tool_calls, but that's a fragile hand-off and the wrong fix).
+
+### Root cause
+
+`ensure_maic_provider_config()` wrote `params.tools` unconditionally —
+all 7 LocalTool schemas for every tier, including Free. Two problems:
+
+1. **Wrong shape for Free**: Free users got `tools: [7 entries]` on disk,
+   which leaked tool availability info even if MAIC rejected the calls.
+2. **No fresh re-stamp on tier change**: when a user upgraded
+   Free → Pro mid-session, `params.tools` stayed as it was (or empty,
+   depending on order of operations) until a fresh login re-stamped it.
+   `mc_refresh_tier` and `mc_apply_tier_change` didn't touch the
+   provider entry.
+
+### Fix (Lesson 523, batched per Lesson 513)
+
+1. **New `ensure_maic_provider_config_for_tier(tier)` function**:
+   filters the 7-tool static slice through `tools_for_tier(tier)` →
+   empty array for Free, all 7 for paid tiers. Existing
+   `ensure_maic_provider_config()` (no tier) becomes a thin wrapper that
+   defaults to `Tier::Free` (safe per Lesson 176 — "anything outside the
+   canonical tier set is treated as free").
+
+2. **`maic_login`** (where tier is known post-/v1/auth/me) now calls
+   `ensure_maic_provider_config_for_tier(parsed_tier)` instead of the
+   no-tier variant.
+
+3. **`silent_relogin`** (auto-relogin on 401) does the same — critical
+   for users whose first login was on Free and whose MAIC plan was
+   upgraded later.
+
+4. **`mc_refresh_tier`** and **`mc_apply_tier_change`** now also call
+   `ensure_maic_provider_config_for_tier(tier)` after they re-route the
+   default model. Clicking the tier badge or applying a tier change
+   re-stamps `params.tools` immediately.
+
+5. **`setup()` early-init and login-required bootstraps** keep the
+   no-tier variant → defaults to Free → empty tools array. The user
+   only gets tool access once they log in.
+
+### Idempotency
+
+The `if !params.contains_key("tools")` guard is preserved. Downgrades
+don't strip user-edited tools; user edits aren't re-stamped on
+subsequent logins. Verified by `tools_array_not_overwritten_on_subsequent_calls`.
+
+### Tests added (62 → 66 passing)
+
+- `no_tier_default_writes_empty_tools_array_for_free` — default
+  bootstrap writes 0 tools
+- `free_tier_explicit_writes_empty_tools_array` — Free tier writes 0
+  tools
+- `paid_tiers_write_all_seven_tools` — Pro/ProPlus/Team/Enterprise all
+  write 7 tools, wire format verified
+- `tools_array_not_overwritten_on_subsequent_calls` — Lesson 449
+  idempotency pattern applied to `params.tools`
+
+### Files changed
+
+- `src-tauri/src/lib.rs` — new `ensure_maic_provider_config_for_tier`
+  function, `params.tools` block reads tier via parameter, login
+  flow + tier-refresh/apply call sites pass tier
+- `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, `package.json` —
+  version bumps 1.0.9-rc21 → 1.0.9-rc22
+- (no plugin change — `depot/maic-plugin/index.js` already spreads
+  `params.tools` via `...providerParams`)
+
+### Verification plan
+
+1. Install rc22 over rc21 → no openclaw.json shape change on upgrade
+   (existing `params.tools` value preserved if present).
+2. Log in with `pro@adealauto.com` → `params.tools` should now contain
+   exactly 7 entries (function objects for read_file, write_file,
+   edit_file, list_dir, bash_run, apply_patch, remember_fact).
+3. Log in with a Free account → `params.tools` should be `[]` (empty
+   array).
+4. Open MC's bundled OpenClaw window → bot in chat should now see the
+   full 11-tool set (4 MAIC server + 7 MC local) and call local tools
+   for file/bash tasks.
+5. `cargo test --lib` → 66 passed, 0 failed.
