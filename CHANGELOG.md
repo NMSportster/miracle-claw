@@ -2599,3 +2599,250 @@ that's where the entry is being constructed before being merged into
 3. Open bundled OpenClaw window → bot should now see all 11 tools
    (4 server + 7 local) and successfully call `read_file`/`bash_run`
 4. `cargo test --lib` → 67 passed, 0 failed ✅ (verified)
+
+---
+
+## v1.0.9-rc24 — 2026-08-21 (Lesson 525: empty `params.tools: []` was treated as "already populated")
+
+### Symptom (David, 2026-08-21 13:44 MDT)
+
+After installing rc23 over rc22 and logging in as Enterprise tier, the
+bot STILL had no local tools. Checking the on-disk config:
+
+```json
+{
+  "apiKey": "eyJhbGc...",
+  "baseUrl": "https://maicserver.com/v1",
+  "models": [...17 models...],
+  "params": {
+    "tool_execution": "client",
+    "tools": []              ← BUG: empty array, not 7 entries
+  }
+}
+```
+
+The `tool_execution: "client"` was stamped correctly (Lesson 524), but
+the `tools` array was empty even though David is Enterprise (paid tier).
+
+### Root cause
+
+Lesson 524 added `write_tier_gated_tool_execution_and_tools()` to the
+existing-entry early-return path. The helper's idempotency guard was:
+
+```rust
+if !params.contains_key("tools") {  // stamp tools only if KEY missing
+    let tool_names = tools_for_tier(tier);
+    ...
+}
+```
+
+But users who went through the rc17 → rc22 window (when Lesson 523
+wasn't yet wired into the existing-entry path) had `params.tools: []`
+written by a different code path. The empty array **is** a valid
+JSON value, so `contains_key("tools")` returns `true` — and the
+helper skipped stamping, leaving the empty array in place.
+
+### Fix
+
+Treat empty array the same as missing key in BOTH the helper (existing-
+entry path) AND the inline write path. Non-empty user-customized
+schemas (someone manually edited `params.tools` to add/remove tools)
+are still preserved.
+
+```rust
+let needs_tools_stamp = match params.get("tools") {
+    None => true,
+    Some(Value::Array(a)) => a.is_empty(),  // ← NEW: re-stamp on empty
+    Some(_) => false,                        // preserve non-empty arrays
+};
+if needs_tools_stamp {
+    let tool_names = tools_for_tier(tier);
+    ...
+}
+```
+
+### Files changed
+
+- `src-tauri/src/lib.rs` — both `write_tier_gated_tool_execution_and_tools`
+  helper (existing-entry path) AND inline write path (around line 1029)
+  now use the `needs_tools_stamp` check instead of `!contains_key`.
+- `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, `package.json` —
+  version bumps 1.0.9-rc23 → 1.0.9-rc24
+- `src-tauri/resources/BUNDLE_VERSION` — bumped post-build
+
+### Verification plan
+
+1. Install rc24 over rc23 → on next login, `params.tools` should be
+   re-stamped to 7 entries (paid) or remain `[]` (Free).
+2. Verify with PowerShell:
+   ```powershell
+   $cfg = Get-Content "$env:APPDATA\MiracleClaw\openclaw.json" -Raw | ConvertFrom-Json
+   Write-Host "tools count: $($cfg.models.providers.maic.params.tools.Count)"
+   # Expected for paid tier: 7
+   ```
+3. Open bundled OpenClaw window → bot should now see all 11 tools
+   (4 server + 7 local) and successfully call `read_file`/`bash_run`
+4. Re-test the exact symptom case from this lesson: free-tier user
+   keeps `[]`, paid-tier user gets 7 tools — no customer can end up
+   stuck with `[]` after the fix lands.
+
+### Anti-pattern to remember
+
+Idempotency checks on user-editable JSON arrays should distinguish
+"missing key", "empty array", and "non-empty array". A simple
+`contains_key` guard treats empty array as "user wants this" — but
+for our `params.tools` field, an empty array is never the user's
+intent (Free-tier users get `[]` from the bootstrap itself, not by
+editing; everyone else wants their tier-appropriate tools).
+
+---
+
+## v1.0.9-rc24 — Lesson 526 supplement (2026-08-21 13:55 MDT)
+
+### Decision (David, 2026-08-21 13:54 MDT)
+
+> "Break that test and remove the do not add tools. We need to get
+> this fixed, even if the Free accounts have tools access, we can
+> simply drop how many tokens they can use. Bottom line we need all
+> of these tools to work."
+
+**All tiers get the 7 local tools.** Free users still pay for it
+via the per-tier TPM ceiling (50K), which is the real cost-control
+mechanism. Tool gating was a UX bug disguised as a cost-control
+mechanism — it blocked critical onboarding flows (file inspection,
+project bootstrapping) for users who couldn't see the pricing page
+yet.
+
+### Changes
+
+- `src-tauri/src/auth/tier.rs::has_local_tools()` — always returns
+  `true`. Removed the `!matches!(self, Tier::Free)` guard.
+- `src-tauri/src/lib.rs::tools_for_tier(_tier)` — returns
+  `ALL_LOCAL_TOOL_NAMES.to_vec()` unconditionally. Tier parameter
+  kept for signature stability (forward-compat if we later add
+  tier-specific tools).
+- `src-tauri/src/lib.rs::tools_for_tier_free_returns_empty` — **DELETED**.
+  Replaced by `tools_for_tier_returns_all_seven_for_every_tier`
+  which asserts 7 tools for Free, Pro, ProPlus, Team, Enterprise.
+- `src-tauri/src/lib.rs::tools_array_not_overwritten_on_subsequent_calls`
+  — repurposed as `tools_array_preserves_user_customizations`. The
+  old test asserted Free kept `[]`; that was the gating behavior we
+  just removed. New test asserts user-edited non-empty arrays are
+  preserved across logins.
+- `src-tauri/src/auth/tier.rs::has_local_tools_only_for_paid` —
+  renamed to `has_local_tools_for_all_tiers`, all tiers now return
+  true.
+
+### Why not keep the gating?
+
+Three reasons:
+1. **Onboarding dead-end**: Free users hit "I don't have file tools"
+   *before* they see the pricing page. They can't bootstrap a project
+   to even evaluate whether MC is worth paying for.
+2. **Wrong control plane**: TPM already throttles. A Free user with
+   all 7 tools but a 50K TPM ceiling can't actually do harm — they
+   run out of tokens before they touch anything dangerous.
+3. **Tier discovery is in-app**: We don't have an in-app upgrade flow
+   yet (Lesson 525 → /upgrade page still TODO). Until users can
+   self-upgrade, gating tools blocks the entire bottom-of-funnel
+   experiment.
+
+If/when we want to add a "premium-only" tool (e.g. `deploy_k8s`),
+that's a single name in `tools_for_tier()` — gating moves from
+"tier has tools" (yes/no) to "tool is in tier" (per-tool check).
+
+### Verification
+
+1. Install rc24 over rc23 → on next login (any tier), `params.tools`
+   should have 7 entries.
+2. Free user specifically: log in to a fresh Free account → tools
+   array should still have 7 entries (was 0 before Lesson 526).
+3. `cargo test --lib tools` → all green.
+4. `cargo test --lib has_local_tools` → all green.
+5. `cargo test --lib` → 68+ passed, 0 failed.
+
+### Anti-pattern to remember
+
+"Don't gate capabilities for cost control when the capability is
+the entire value prop." Users who can't read files, write files,
+or run shell commands aren't customers with limited tools — they're
+non-customers who bounce. TPM/RPM gates the usage; capability
+gating just hides the product behind a paywall that can't be seen.
+
+---
+
+## v1.0.9-rc24 — Lesson 527 supplement (2026-08-21 13:57 MDT)
+
+### Decision (David, 2026-08-21 13:56 MDT)
+
+> "And actually 1 step further. We only give the Free accounts access
+> to M1 T1 and M1 T2 that will pretty much just limit them to Chat
+> anyway."
+
+Lesson 526 was the tool gating. Lesson 527 is the **model gating**.
+Free tier sees only the two smallest distilled m1 models
+(`milagro-m1-t1`, `milagro-m1-t2`) — 7B ternary, chat-only fast tier.
+Paid tiers see the full 17-model catalog.
+
+### Why this is the right control plane
+
+TPM caps the **volume** of token spend. Model gating caps the
+**per-message** cost. A Free user with access to `milagro-dev` (14B)
+could burn through their entire 50K TPM ceiling in 3 messages by
+asking the 14B model for verbose answers. With `m1-t1` only, each
+message is cheap, so the user can have 50+ messages before TPM runs
+out — which is what "Free tier" should feel like.
+
+The user CAN still chat (which is what David wants Free users to do).
+They just can't accidentally pick `milagro-dev` and have a $0.05
+chat session.
+
+### Changes
+
+- `src-tauri/src/lib.rs::merge_known_model_ids_into_provider` — now
+  takes a `tier: Tier` parameter. Free → `FREE_MODEL_IDS` (m1-t1,
+  m1-t2). Paid → `ALL_MODEL_IDS` (17). Additionally **removes**
+  models from the on-disk list that the current tier doesn't allow
+  (handles upgrade and downgrade paths).
+- `src-tauri/src/lib.rs::ensure_maic_provider_config_for_tier` —
+  write path now tier-gates both the `seeds` array (first install)
+  AND the `known_ids` array (upgrade merge).
+- New tests added (4): `free_tier_sees_only_two_models`,
+  `paid_tiers_see_all_seventeen_models`,
+  `downgrade_from_pro_to_free_removes_paid_models`,
+  `upgrade_from_free_to_pro_adds_paid_models`.
+- `lesson_520_known_ids_merge_is_idempotent` updated — Free
+  default is now 2 models, not 17.
+- `env_var_key_writes_literal_string` updated — default model
+  for Free tier is now `milagro-m1-t1`, not `milagro-dev`.
+
+### Verification
+
+1. Install rc24 over rc23 → on next login:
+   - Free users: model picker shows ONLY m1-t1 + m1-t2
+   - Pro users: model picker shows all 17 models (unchanged)
+2. Fresh install (Free): openclaw.json has 2 entries in
+   `models.providers.maic.models`.
+3. Pro user downgrades to Free via `/v1/billing/portal-session`:
+   next MC login removes 15 paid models from their config.
+4. `cargo test --lib` → 71 passed, 0 failed.
+
+### Why not just rely on MAIC server-side filtering?
+
+We could ask MAIC to 403 a Free user requesting `milagro-dev`.
+But that:
+- Hides the upgrade trigger (user sees a 403, doesn't realize
+  there's an /upgrade page)
+- Costs us a round-trip on every chat for the model's name
+- Doesn't help UX — user picks from a dropdown, not from a
+  raw API call
+
+Client-side filtering is the right seam: user only sees models
+they can use, and the dropdown itself becomes the upgrade CTA
+("Want more models? Upgrade →").
+
+### Anti-pattern to remember
+
+"Cost control belongs in the model picker, not in the API." If
+a user can pick a model they can't afford, you have a UX bug.
+The picker is where pricing meets product. Filter there.

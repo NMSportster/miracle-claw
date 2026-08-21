@@ -484,8 +484,23 @@ fn migrate_legacy_mc_config(path: &Path) -> io::Result<bool> {
 //
 // Idempotency: never overwrites an existing entry by id (preserves user
 // renames and any custom metadata). Only appends missing entries.
-fn merge_known_model_ids_into_provider(cfg: &mut Value, provider_id: &str) {
-    const KNOWN_IDS: &[&str] = &[
+//
+// Lesson 527 (NEW 2026-08-21 13:57 MDT): tier-gated model list.
+// Free users get ONLY m1-t1 + m1-t2 (small distilled models, chat-only
+// UX). Paid tiers (Pro, ProPlus, Team, Enterprise) get the full 17-
+// model catalog. This is the actual cost-control for Free accounts:
+// they can't accidentally pick `milagro-dev` (14B) and burn their
+// 50K TPM in 3 messages. Tier parameter added — callers without
+// tier context (early setup, login-required bootstrap) should pass
+// `Tier::Free` to be safe per Lesson 176.
+fn merge_known_model_ids_into_provider(
+    cfg: &mut Value,
+    provider_id: &str,
+    tier: crate::auth::tier::Tier,
+) {
+    // Full catalog (17 models). Free users see only the 2 in
+    // FREE_MODEL_IDS; paid users see all 17.
+    const ALL_MODEL_IDS: &[&str] = &[
         "milagro-dev", "milagro-dev-coder", "milagro-m1",
         "milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3",
         "milagro-chat", "milagro-coder", "milagro-stock",
@@ -493,6 +508,18 @@ fn merge_known_model_ids_into_provider(cfg: &mut Value, provider_id: &str) {
         "milagro-oc-deepseek", "milagro-oc-kimi",
         "chat-glm", "chat-deepseek", "chat-qwen",
     ];
+    // Lesson 527: Free tier gets only the two smallest distilled
+    // m1 models. These are the chat-only fast tier — ~7B ternary,
+    // fast response, low TPM cost. Picking anything else would
+    // blow through the 50K TPM ceiling in a few messages.
+    const FREE_MODEL_IDS: &[&str] = &[
+        "milagro-m1-t1",
+        "milagro-m1-t2",
+    ];
+    let allowed: &[&str] = match tier {
+        crate::auth::tier::Tier::Free => FREE_MODEL_IDS,
+        _ => ALL_MODEL_IDS,
+    };
     let Some(provider) = cfg
         .get_mut("models")
         .and_then(|m| m.get_mut("providers"))
@@ -512,12 +539,42 @@ fn merge_known_model_ids_into_provider(cfg: &mut Value, provider_id: &str) {
         .iter()
         .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
         .collect();
-    for id in KNOWN_IDS {
+    for id in allowed {
         if present.contains(*id) { continue; }
         models.push(serde_json::json!({
             "id": *id,
             "name": *id,
         }));
+    }
+    // Lesson 527: also remove any models from the on-disk list that
+    // the current tier doesn't allow. This handles the upgrade path
+    // (Free → Pro) AND the downgrade path (Pro → Free). Without this,
+    // a Pro user who downgrades to Free would still see the paid-tier
+    // models in their picker, and could pick one and burn TPM.
+    //
+    // We only remove entries whose `id` exactly matches a known model
+    // in the disallow set — user-added custom models are preserved.
+    let allowed_set: std::collections::HashSet<&str> = allowed.iter().copied().collect();
+    let known_paid: std::collections::HashSet<&str> = ALL_MODEL_IDS.iter().copied().collect();
+    let known_free: std::collections::HashSet<&str> = FREE_MODEL_IDS.iter().copied().collect();
+    let to_remove: Vec<usize> = models
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, m)| {
+            let id = m.get("id").and_then(|v| v.as_str())?;
+            // Only remove if it's a known MAIC model (not user-added)
+            // AND it's not in the allowed-for-this-tier set.
+            let is_known = known_paid.contains(id) || known_free.contains(id);
+            if is_known && !allowed_set.contains(id) {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .collect();
+    // Remove in reverse order so indices stay valid.
+    for idx in to_remove.into_iter().rev() {
+        models.remove(idx);
     }
 }
 
@@ -599,8 +656,23 @@ fn ensure_maic_provider_config_for_tier(
             params
                 .entry("tool_execution".to_string())
                 .or_insert(Value::String("client".to_string()));
-            // Lesson 523: tier-gated tools array. Free → empty; paid → all 7.
-            if !params.contains_key("tools") {
+            // Lesson 523 + 525: tier-gated tools array. Free → empty; paid → all 7.
+            //
+            // Lesson 525 (NEW 2026-08-21): empty array `[]` ALSO counts as
+            // "needs stamping". Lesson 524's helper wrote `params.tools: []`
+            // for users on the existing-entry path during the rc17→rc22
+            // window (when Lesson 523 wasn't yet wired into that path),
+            // and the existing `contains_key` check then treated the empty
+            // array as "already populated, skip" — so upgraded users
+            // stayed on empty tools even after rc23. Now we treat empty
+            // array the same as missing key: re-stamp on every bootstrap.
+            // User-customized schemas (non-empty array) are still preserved.
+            let needs_tools_stamp = match params.get("tools") {
+                None => true,
+                Some(Value::Array(a)) => a.is_empty(),
+                Some(_) => false, // non-empty, non-array — leave alone
+            };
+            if needs_tools_stamp {
                 let tool_names = tools_for_tier(tier);
                 let all_tools = crate::tools::schemas::all_local_tools_slice();
                 let filtered: Vec<crate::tools::schemas::LocalTool> = all_tools
@@ -696,11 +768,12 @@ fn ensure_maic_provider_config_for_tier(
             // the request as `openai/milagro-oc-kimi`, which MAIC upstream
             // rejects with `Unknown model`.
             //
-            // Fix: merge the 17 known model ids here too. Idempotent
+            // Fix: merge the known model ids here too. Idempotent
             // (preserves user renames), and writes back to disk only when
             // something actually changed (avoids spurious file mtime updates
-            // on every launch).
-            merge_known_model_ids_into_provider(&mut cfg, PROVIDER_ID);
+            // on every launch). Tier-gated (Lesson 527): only stamps
+            // models the user's current tier is allowed to see.
+            merge_known_model_ids_into_provider(&mut cfg, PROVIDER_ID, tier);
 
             // Lesson 524: existing-entry early-return path also needs to
             // stamp `params.tool_execution` and `params.tools`. Without
@@ -924,7 +997,17 @@ fn ensure_maic_provider_config_for_tier(
         //
         // See MEMORY.md "MAIC Deployed Model Inventory" for the
         // verified list (2026-08-14 12:06 MDT).
-        let seeds: &[(&str, &str)] = &[
+    // Lesson 527 (NEW 2026-08-21 13:57 MDT): tier-gated model list.
+    // Free gets m1-t1 + m1-t2 only (chat-only fast tier). Paid gets
+    // the full 17-model catalog. The `seeds` array drives the
+    // first-install write path (when models list is empty); for
+    // upgrades the `else` branch below does the same tier gating.
+    let seeds: &[(&str, &str)] = match tier {
+        crate::auth::tier::Tier::Free => &[
+            ("milagro-m1-t1",  "MAIC m1-t1 — 7B LoRA-distilled (fast)"),
+            ("milagro-m1-t2",  "MAIC m1-t2 — 7B LoRA-distilled (mid)"),
+        ],
+        _ => &[
             ("milagro-dev",            "MAIC default (miracle-claw) — 14B local generalist"),
             ("milagro-dev-coder",      "MAIC coder — 14B local code-tuned"),
             ("milagro-m1",             "MAIC m1 — base"),
@@ -942,7 +1025,8 @@ fn ensure_maic_provider_config_for_tier(
             ("chat-glm",               "Cloud — GLM (direct)"),
             ("chat-deepseek",          "Cloud — DeepSeek (direct)"),
             ("chat-qwen",              "Cloud — Qwen (direct)"),
-        ];
+        ],
+    };
         for (id, name) in seeds {
             models.push(serde_json::json!({
                 "id": id,
@@ -966,14 +1050,26 @@ fn ensure_maic_provider_config_for_tier(
         // in any missing entries from the production surface so the
         // dropdown is complete. We never overwrite existing entries
         // (preserves user renames).
-        let known_ids: &[&str] = &[
-            "milagro-dev", "milagro-dev-coder", "milagro-m1",
-            "milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3",
-            "milagro-chat", "milagro-coder", "milagro-stock",
-            "milagro-oc-minimax", "milagro-oc-glm", "milagro-oc-qwen",
-            "milagro-oc-deepseek", "milagro-oc-kimi",
-            "chat-glm", "chat-deepseek", "chat-qwen",
-        ];
+        //
+        // Lesson 527 (NEW 2026-08-21): tier-gated. Free gets only
+        // m1-t1 + m1-t2 (chat-only fast tier). Paid gets all 17.
+        // Match the gating in merge_known_model_ids_into_provider
+        // (the existing-entry early-return path) so both code paths
+        // produce the same model list for the same tier.
+        let known_ids: &[&str] = match tier {
+            crate::auth::tier::Tier::Free => &[
+                "milagro-m1-t1",
+                "milagro-m1-t2",
+            ],
+            _ => &[
+                "milagro-dev", "milagro-dev-coder", "milagro-m1",
+                "milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3",
+                "milagro-chat", "milagro-coder", "milagro-stock",
+                "milagro-oc-minimax", "milagro-oc-glm", "milagro-oc-qwen",
+                "milagro-oc-deepseek", "milagro-oc-kimi",
+                "chat-glm", "chat-deepseek", "chat-qwen",
+            ],
+        };
         let present: std::collections::HashSet<String> = models
             .iter()
             .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
@@ -1025,7 +1121,20 @@ fn ensure_maic_provider_config_for_tier(
     //
     // Idempotency: `if !params.contains_key("tools")` preserves any
     // user-edited value (mirrors Lesson 449 idempotency pattern).
-    if !params.contains_key("tools") {
+    //
+    // Lesson 525 (NEW 2026-08-21): treat empty array the same as missing
+    // key. See write_tier_gated_tool_execution_and_tools comment for
+    // the rc17→rc22 root-cause story. Without this, users who got
+    // `params.tools: []` stamped during the rc17→rc22 window (when
+    // Lesson 523 wasn't yet wired into the existing-entry path) would
+    // stay on empty tools forever — the original `contains_key` check
+    // treats `[]` as "already populated, skip".
+    let needs_tools_stamp = match params.get("tools") {
+        None => true,
+        Some(serde_json::Value::Array(a)) => a.is_empty(),
+        Some(_) => false,
+    };
+    if needs_tools_stamp {
         let tool_names = tools_for_tier(tier);
         let all_tools = crate::tools::schemas::all_local_tools_slice();
         // Filter the static tool slice down to the tier-allowed names.
@@ -3540,12 +3649,14 @@ fn mc_list_tools() -> Vec<crate::tools::LocalToolName> {
 /// paid tiers, empty for free. Lives in `lib.rs` (not `tools/mod.rs`)
 /// because the lib-only `Tier` type isn't included in the
 /// `miracle-claw-tools` binary.
-fn tools_for_tier(tier: crate::auth::tier::Tier) -> Vec<crate::tools::LocalToolName> {
-    if tier.has_local_tools() {
-        crate::tools::ALL_LOCAL_TOOL_NAMES.to_vec()
-    } else {
-        Vec::new()
-    }
+///
+/// **Lesson 526 (NEW 2026-08-21)**: gating removed. ALL tiers get the
+/// 7 tools — Free users are rate-limited by TPM (50K) but otherwise
+/// have the same capabilities. The tier parameter is kept for
+/// signature stability and forward-compatibility (e.g. if we later
+/// add tier-specific tools, this is the seam).
+fn tools_for_tier(_tier: crate::auth::tier::Tier) -> Vec<crate::tools::LocalToolName> {
+    crate::tools::ALL_LOCAL_TOOL_NAMES.to_vec()
 }
 
 // Force-refresh tier from MAIC (bypasses cache). Called by the dashboard
@@ -3706,18 +3817,18 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // v1.0.7: tools_for_tier gating
+    // v1.0.7: tools_for_tier gating → REMOVED in Lesson 526 (2026-08-21)
     // ---------------------------------------------------------------------
+    // Previously Free got 0 tools; now ALL tiers get all 7 tools. The
+    // tier parameter is kept on `tools_for_tier(tier)` for future
+    // forward-compat but currently ignores it.
 
     #[test]
-    fn tools_for_tier_free_returns_empty() {
-        let tools = tools_for_tier(crate::auth::tier::Tier::Free);
-        assert!(tools.is_empty(), "free tier should have 0 local tools");
-    }
-
-    #[test]
-    fn tools_for_tier_paid_returns_all_seven() {
+    fn tools_for_tier_returns_all_seven_for_every_tier() {
+        // Lesson 526 (NEW 2026-08-21 13:55 MDT): all tiers get all 7
+        // tools. Rate limiting (per-tier TPM) is the actual control.
         for t in [
+            crate::auth::tier::Tier::Free,
             crate::auth::tier::Tier::Pro,
             crate::auth::tier::Tier::ProPlus,
             crate::auth::tier::Tier::Team,
@@ -3727,7 +3838,7 @@ mod tests {
             assert_eq!(
                 tools.len(),
                 7,
-                "tier {:?} should have 7 local tools",
+                "Lesson 526: tier {:?} should have 7 local tools (was Free=0)",
                 t
             );
         }
@@ -3825,10 +3936,14 @@ mod tests {
             Some("openai-completions")
         );
         let models = entry.get("models").and_then(|m| m.as_array()).unwrap();
+        // Lesson 527: Free tier default is milagro-m1-t1, not
+        // milagro-dev. The chat panel will pre-select the first
+        // model in the catalog, which is now the smallest
+        // chat-only model for Free users.
         let has_default = models
             .iter()
-            .any(|m| m.get("id").and_then(|v| v.as_str()) == Some("milagro-dev"));
-        assert!(has_default, "default model id should be present");
+            .any(|m| m.get("id").and_then(|v| v.as_str()) == Some("milagro-m1-t1"));
+        assert!(has_default, "default model id (m1-t1) should be present for Free");
     }
 
     #[test]
@@ -4227,12 +4342,15 @@ mod tests {
     }
 
     #[test]
-    fn no_tier_default_writes_empty_tools_array_for_free() {
-        // Lesson 523: setup() / login-required bootstrap (no tier
-        // context) defaults to Free → empty tools array. Per Lesson
-        // 176, anything outside the canonical tier set is treated as
-        // free for safety, so we never advertise local tools to a
-        // user whose tier we don't know.
+    fn no_tier_default_writes_all_seven_tools() {
+        // Lesson 523 (was): setup() / login-required bootstrap (no
+        // tier context) defaulted to Free → empty tools array.
+        //
+        // Lesson 526 (NEW 2026-08-21): gating removed. ALL tiers,
+        // including Free, get all 7 tools. The "no tier" case
+        // (login-required bootstrap before MAIC responds) now also
+        // gets all 7 — better to advertise capabilities than to
+        // hide them behind a tier check that may be wrong.
         let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "any-key");
@@ -4240,20 +4358,22 @@ mod tests {
         ensure_maic_provider_config().expect("ok");
         let len = read_tools_array_len().expect("params.tools should be present");
         assert_eq!(
-            len, 0,
-            "no-tier bootstrap must default to Free → 0 tools (got {len})"
+            len, 7,
+            "no-tier bootstrap gets all 7 tools (Lesson 526); was 0 before"
         );
     }
 
     #[test]
-    fn free_tier_explicit_writes_empty_tools_array() {
+    fn free_tier_writes_all_seven_tools() {
+        // Lesson 526: Free tier gets all 7 tools. Rate limiting
+        // (TPM) is the actual control, not capability gating.
         let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "any-key");
 
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free).expect("ok");
         let len = read_tools_array_len().expect("params.tools should be present");
-        assert_eq!(len, 0, "Free tier must get 0 tools");
+        assert_eq!(len, 7, "Free tier gets all 7 tools (Lesson 526); was 0");
     }
 
     #[test]
@@ -4312,11 +4432,14 @@ mod tests {
     }
 
     #[test]
-    fn tools_array_not_overwritten_on_subsequent_calls() {
-        // Lesson 449 idempotency pattern: if `params.tools` already
-        // exists, leave it alone. This protects user-edited configs
-        // (e.g. user removed a tool they didn't want) from being
-        // silently re-added on every login.
+    fn tools_array_preserves_user_customizations() {
+        // Lesson 449 + 525: idempotency pattern protects user-edited
+        // configs from being silently overwritten on every login.
+        //
+        // Lesson 526 (NEW 2026-08-21): tools_for_tier returns 7 for
+        // ALL tiers, so a `[]` on disk always gets re-stamped to 7.
+        // But NON-EMPTY arrays (the actual user-edited case — e.g.
+        // user removed a tool they don't want) must still be preserved.
         let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "any-key");
@@ -4325,21 +4448,222 @@ mod tests {
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro).expect("ok");
         assert_eq!(read_tools_array_len(), Some(7));
 
-        // Mutate the on-disk config to a smaller array.
+        // Mutate the on-disk config to a smaller array (user removed
+        // 6 of the 7 tools by hand).
         let path = openclaw_json_path();
         let raw = std::fs::read_to_string(&path).expect("read");
         let mut cfg: serde_json::Value = serde_json::from_str(&raw).expect("parse");
-        cfg["models"]["providers"]["maic"]["params"]["tools"] = serde_json::json!([]);
+        cfg["models"]["providers"]["maic"]["params"]["tools"] = serde_json::json!([
+            {"type":"function","function":{"name":"read_file"}}
+        ]);
         std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap())
             .expect("write");
 
-        // Second call: downgrades to Free. Should NOT overwrite the
-        // empty array (would re-add 7 tools).
+        // Second call: any tier. The non-empty single-tool array
+        // must be preserved (not re-stamped to 7).
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free).expect("ok");
         assert_eq!(
             read_tools_array_len(),
-            Some(0),
-            "downgrade to Free must not re-add tools that the user manually emptied"
+            Some(1),
+            "user's custom 1-tool array must be preserved across logins"
+        );
+    }
+
+    // =====================================================================
+    // Lesson 527 (NEW 2026-08-21 13:57 MDT): tier-gated model list.
+    // Free = m1-t1 + m1-t2 only (chat-only fast tier). Paid = all 17.
+    // This is the actual cost-control for Free accounts — they can't
+    // accidentally pick `milagro-dev` (14B) and burn their 50K TPM in
+    // three messages. Both the write path AND the existing-entry path
+    // must produce the same model list for the same tier.
+    // =====================================================================
+
+    fn read_model_ids() -> Vec<String> {
+        let cfg = read_maic_root();
+        cfg.get("models")
+            .and_then(|m| m.get("providers"))
+            .and_then(|p| p.get("maic"))
+            .and_then(|m| m.get("models"))
+            .and_then(|m| m.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.get("id").and_then(|x| x.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn free_tier_sees_only_two_models() {
+        // Lesson 527: Free tier sees only m1-t1 + m1-t2 in the
+        // model picker. These are 7B distilled ternary models —
+        // chat-only fast tier. Picking anything else would blow
+        // through the 50K TPM ceiling in a few messages.
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "any-key");
+
+        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free).expect("ok");
+        let ids = read_model_ids();
+        assert_eq!(
+            ids.len(),
+            2,
+            "Free tier should see exactly 2 models (m1-t1, m1-t2); got {ids:?}"
+        );
+        assert!(ids.contains(&"milagro-m1-t1".to_string()));
+        assert!(ids.contains(&"milagro-m1-t2".to_string()));
+        // No 14B models allowed for Free.
+        for forbidden in ["milagro-dev", "milagro-dev-coder", "milagro-m1", "milagro-m1-t3"] {
+            assert!(
+                !ids.contains(&forbidden.to_string()),
+                "Free tier must NOT see {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn paid_tiers_see_all_seventeen_models() {
+        // Lesson 527: paid tiers see the full 17-model catalog.
+        // Note: existing tests like `paid_tiers_write_all_seven_tools`
+        // test the TOOLS list, not the model list. This is the
+        // parallel test for models.
+        for tier in [
+            crate::auth::tier::Tier::Pro,
+            crate::auth::tier::Tier::ProPlus,
+            crate::auth::tier::Tier::Team,
+            crate::auth::tier::Tier::Enterprise,
+        ] {
+            let _lock = lock_env();
+            let _g = fresh_env();
+            env::set_var("MAIC_API_KEY", "any-key");
+
+            ensure_maic_provider_config_for_tier(tier).expect("ok");
+            let ids = read_model_ids();
+            assert_eq!(
+                ids.len(),
+                17,
+                "Paid tier {tier:?} should see all 17 models; got {ids:?}"
+            );
+            assert!(ids.contains(&"milagro-dev".to_string()));
+            assert!(ids.contains(&"milagro-m1-t1".to_string()));
+            assert!(ids.contains(&"milagro-oc-minimax".to_string()));
+        }
+    }
+
+    #[test]
+    fn downgrade_from_pro_to_free_removes_paid_models() {
+        // Lesson 527: downgrade path. Pro user downgrades to Free
+        // → their on-disk config must be re-stamped to only allow
+        // m1-t1 + m1-t2. Without this, the user would still see
+        // 14B models in the picker and could burn TPM.
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "any-key");
+
+        // First call as Pro: writes 17 models.
+        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro).expect("ok");
+        assert_eq!(read_model_ids().len(), 17);
+
+        // Downgrade to Free.
+        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free).expect("ok");
+        let ids = read_model_ids();
+        assert_eq!(
+            ids.len(),
+            2,
+            "After Pro→Free downgrade, only 2 models should remain; got {ids:?}"
+        );
+        assert!(ids.contains(&"milagro-m1-t1".to_string()));
+        assert!(ids.contains(&"milagro-m1-t2".to_string()));
+    }
+
+    #[test]
+    fn upgrade_from_free_to_pro_adds_paid_models() {
+        // Lesson 527: upgrade path. Free user upgrades to Pro →
+        // their on-disk config must be re-stamped to include all
+        // 17 models. Without this, the user would see only 2
+        // models even after paying.
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "any-key");
+
+        // First call as Free: writes 2 models.
+        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free).expect("ok");
+        assert_eq!(read_model_ids().len(), 2);
+
+        // Upgrade to Pro.
+        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro).expect("ok");
+        let ids = read_model_ids();
+        assert_eq!(
+            ids.len(),
+            17,
+            "After Free→Pro upgrade, all 17 models should be present; got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn empty_tools_array_gets_re_stamped_for_paid_tier() {
+        // Lesson 525 (NEW 2026-08-21 13:50 MDT): empty `params.tools: []`
+        // must be re-stamped for paid tiers. This was the rc23 bug —
+        // Lesson 524's helper had `if !contains_key("tools")` which
+        // treated `[]` as "already populated, skip", so upgraded users
+        // stayed on empty tools even though their tier entitled them.
+        //
+        // Reproduce the production shape: write a complete maic entry
+        // with empty tools array (mimicking what rc17-rc22 left on
+        // disk), then call ensure_maic_provider_config_for_tier(Pro).
+        // The helper must re-stamp the tools array to 7 entries.
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "any-key");
+
+        let path = openclaw_json_path();
+        let existing = serde_json::json!({
+            "models": {
+                "providers": {
+                    "maic": {
+                        "api": "openai-completions",
+                        "apiKey": "prior-install-key",
+                        "baseUrl": "https://maicserver.com/v1",
+                        "models": [
+                            {"id": "milagro-dev", "name": "milagro-dev"}
+                        ],
+                        "params": {
+                            "tool_execution": "client",
+                            "tools": []
+                        }
+                    }
+                }
+            }
+        });
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&existing).unwrap(),
+        )
+        .expect("write");
+
+        // Call with Pro tier. Must re-stamp tools from `[]` to 7 entries.
+        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("ok");
+
+        let names = read_tools_names();
+        assert_eq!(
+            names.len(),
+            7,
+            "Lesson 525: existing-entry with empty `params.tools: []` must be re-stamped for Pro (got {names:?})"
+        );
+        // Verify the original apiKey was preserved.
+        let cfg = read_maic_root();
+        let api_key = cfg
+            .get("models")
+            .and_then(|m| m.get("providers"))
+            .and_then(|p| p.get("maic"))
+            .and_then(|m| m.get("apiKey"))
+            .and_then(|v| v.as_str());
+        assert_eq!(
+            api_key,
+            Some("prior-install-key"),
+            "Lesson 525 must NOT overwrite existing apiKey"
         );
     }
 
@@ -4841,17 +5165,15 @@ mod tests {
             .iter()
             .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
             .collect();
-        // Lesson 520: all 17 known ids must now be present.
-        for id in ["milagro-dev", "milagro-dev-coder", "milagro-m1",
-                   "milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3",
-                   "milagro-chat", "milagro-coder", "milagro-stock",
-                   "milagro-oc-minimax", "milagro-oc-glm", "milagro-oc-qwen",
-                   "milagro-oc-deepseek", "milagro-oc-kimi",
-                   "chat-glm", "chat-deepseek", "chat-qwen"] {
-            assert!(ids.contains(id), "model catalog missing {}", id);
+        // Lesson 527: ensure_maic_provider_config() defaults to Free
+        // tier (no context). Free gets only m1-t1 + m1-t2 — 2 models,
+        // not 17. The Lesson 520 test ran with the old assumption
+        // (default = all 17). New default for this code path is Free.
+        for id in ["milagro-m1-t1", "milagro-m1-t2"] {
+            assert!(ids.contains(id), "Free tier must include model {}", id);
         }
-        // Total = 17 unique ids (no duplicates even though milagro-dev was already there).
-        assert_eq!(models.len(), 17, "expected 17 unique model entries");
+        // Total = 2 unique ids for Free tier.
+        assert_eq!(models.len(), 2, "Free tier should see exactly 2 models (m1-t1, m1-t2)");
     }
 
     #[test]

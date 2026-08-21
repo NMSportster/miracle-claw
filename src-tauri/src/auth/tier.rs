@@ -56,11 +56,19 @@ impl Tier {
     /// (read_file, write_file, edit_file, list_dir, bash_run,
     /// apply_patch, remember_fact)?
     ///
-    /// Per David's 2026-08-19 decision: pro, pro_plus, team, and enterprise
-    /// unlock the local tools. Free is read-only (4 MAIC server tools
-    /// only).
+    /// **Lesson 526 (NEW 2026-08-21 13:55 MDT)**: ALL tiers now have
+    /// local tools. Per David's decision: rate limiting handles
+    /// abuse — Free users get all 7 tools but their TPM ceiling
+    /// (50K) is the actual control. The previous gating (Free = 0
+    /// tools) blocked critical flows (file inspection, project
+    /// bootstrapping) for free users who had no way to upgrade
+    /// from the in-app UI yet, and forced every onboarding to start
+    /// with a 401-shaped dead-end before the user had even seen
+    /// pricing. Returning `true` unconditionally is simpler and
+    /// matches the "tooling is the product, rate limits are the
+    /// cost" model.
     pub fn has_local_tools(self) -> bool {
-        !matches!(self, Tier::Free)
+        true
     }
 }
 
@@ -309,8 +317,12 @@ mod tests {
     }
 
     #[test]
-    fn has_local_tools_only_for_paid() {
-        assert!(!Tier::Free.has_local_tools(), "free must NOT have local tools");
+    fn has_local_tools_for_all_tiers() {
+        // Lesson 526 (NEW 2026-08-21): all tiers get the 7 local tools.
+        // Rate limiting (per-tier TPM) is the actual control, not
+        // tool gating. Previously Free was excluded; that broke
+        // onboarding for users who couldn't see pricing yet.
+        assert!(Tier::Free.has_local_tools(), "Free gets tools (Lesson 526)");
         assert!(Tier::Pro.has_local_tools());
         assert!(Tier::ProPlus.has_local_tools());
         assert!(Tier::Team.has_local_tools());
