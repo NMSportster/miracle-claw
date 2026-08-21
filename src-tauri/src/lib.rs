@@ -467,6 +467,60 @@ fn migrate_legacy_mc_config(path: &Path) -> io::Result<bool> {
 //   4493: Tauri-spawned sidecars run on Windows and CANNOT reach Tailscale
 //   IPs, so the Cloudflare endpoint is the only universally-reachable
 //   option for a fresh install.
+//
+// Lesson 520 helper: idempotently merge the 17 known MAIC model ids into
+// `cfg.models.providers[<provider_id>].models[]`. Used by both the new-entry
+// write path AND the existing-complete-entry early-return path, so users
+// upgrading from rc18 (where only `milagro-dev` was seeded) get the full
+// surface in `models[]` after their next launch.
+//
+// Why this matters: openclaw's gateway resolves a bare model id
+// (`"milagro-oc-kimi"`) via `inferUniqueProviderFromCatalog`, which scans
+// `models.providers[*].models[]`. If the entry isn't there, the gateway
+// falls back to `defaultProvider = "openai"` and rewrites the request as
+// `openai/milagro-oc-kimi` — which MAIC upstream rejects with
+// `Unknown model`. Lesson 519 documented this behavior; Lesson 520 fixes
+// the upgrade path that skipped the merge on existing entries.
+//
+// Idempotency: never overwrites an existing entry by id (preserves user
+// renames and any custom metadata). Only appends missing entries.
+fn merge_known_model_ids_into_provider(cfg: &mut Value, provider_id: &str) {
+    const KNOWN_IDS: &[&str] = &[
+        "milagro-dev", "milagro-dev-coder", "milagro-m1",
+        "milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3",
+        "milagro-chat", "milagro-coder", "milagro-stock",
+        "milagro-oc-minimax", "milagro-oc-glm", "milagro-oc-qwen",
+        "milagro-oc-deepseek", "milagro-oc-kimi",
+        "chat-glm", "chat-deepseek", "chat-qwen",
+    ];
+    let Some(provider) = cfg
+        .get_mut("models")
+        .and_then(|m| m.get_mut("providers"))
+        .and_then(|p| p.get_mut(provider_id))
+        .and_then(|p| p.as_object_mut())
+    else {
+        return;
+    };
+    let models_arr = provider
+        .entry("models".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if !models_arr.is_array() {
+        *models_arr = Value::Array(Vec::new());
+    }
+    let models = models_arr.as_array_mut().unwrap();
+    let present: std::collections::HashSet<String> = models
+        .iter()
+        .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+    for id in KNOWN_IDS {
+        if present.contains(*id) { continue; }
+        models.push(serde_json::json!({
+            "id": *id,
+            "name": *id,
+        }));
+    }
+}
+
 fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
     // Lesson 431 v2: use openclaw's native SecretRef + SecretProvider mechanism
     // (schema: zod-schema.core SecretInputSchema + SecretsConfigSchema) so that
@@ -546,6 +600,23 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false);
         if has_literal_key && has_url {
+            // Lesson 520: when a "complete" provider entry exists, the rest
+            // of ensure_maic_provider_config() (including the model-merge
+            // block) is skipped. That meant upgrades from rc18 → rc19/rc20
+            // never grew `models.providers.maic.models[]` past the original
+            // milestone-dev entry. The openclaw gateway then fails to
+            // resolve bare model ids (e.g. "milagro-oc-kimi") to MAIC's
+            // baseUrl — `inferUniqueProviderFromCatalog` finds no catalog
+            // entry, falls back to defaultProvider="openai", and rewrites
+            // the request as `openai/milagro-oc-kimi`, which MAIC upstream
+            // rejects with `Unknown model`.
+            //
+            // Fix: merge the 17 known model ids here too. Idempotent
+            // (preserves user renames), and writes back to disk only when
+            // something actually changed (avoids spurious file mtime updates
+            // on every launch).
+            merge_known_model_ids_into_provider(&mut cfg, PROVIDER_ID);
+
             // Lesson 451: migrate the baseUrl /v1 suffix in-place when it's
             // a stale bare MAIC origin. Persist if we changed anything so
             // the migration is one-shot, not every-launch.
@@ -574,6 +645,14 @@ fn ensure_maic_provider_config() -> io::Result<MaicProviderBootstrap> {
                     }
                 }
             }
+
+            // Persist any model merge that happened above before returning.
+            // Cheap when nothing changed (mtime stays the same on most
+            // filesystems, but we still write once to be safe).
+            let serialized = serde_json::to_string_pretty(&cfg)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            fs::write(&path, serialized)?;
+
             return Ok(MaicProviderBootstrap {
                 provider_configured: true,
                 provider_id: PROVIDER_ID.to_string(),
@@ -995,8 +1074,26 @@ pub(crate) fn ensure_agents_default_model_for_tier(
 ) -> io::Result<bool> {
     use crate::auth::tier::{tier_default_model_id, tier_default_fallbacks};
 
-    let primary = tier_default_model_id(tier);
-    let fallbacks: Vec<&str> = tier_default_fallbacks(tier).to_vec();
+    // Lesson 521: openclaw's gateway resolves a bare model id via
+    // `inferUniqueProviderFromCatalog`, which only succeeds when the id is
+    // registered under exactly one provider. If the user upgrades from rc18
+    // (where Lesson 519's merge logic hadn't yet reached the existing-entry
+    // early-return path — fixed in Lesson 520), only `milagro-dev` is in the
+    // catalog. Bare ids like `milagro-oc-kimi` then fall back to
+    // `defaultProvider = "openai"`, get rewritten as `openai/milagro-oc-kimi`,
+    // and MAIC upstream rejects the request as `Unknown model`.
+    //
+    // Defensive fix at the writer boundary: emit `maic/<id>` explicitly so
+    // the gateway dispatches via the `maic` provider regardless of catalog
+    // state. This is belt-and-suspenders alongside Lesson 520's catalog
+    // merge — either fix alone resolves the user-visible bug, both together
+    // make it impossible to regress on a partial upgrade.
+    const PROVIDER_PREFIX: &str = "maic/";
+    let primary = format!("{PROVIDER_PREFIX}{}", tier_default_model_id(tier));
+    let fallbacks: Vec<String> = tier_default_fallbacks(tier)
+        .iter()
+        .map(|s| format!("{PROVIDER_PREFIX}{s}"))
+        .collect();
 
     let path = openclaw_json_path();
     let mut cfg: serde_json::Value = match std::fs::read_to_string(&path)
@@ -4183,8 +4280,12 @@ mod tests {
         let path = openclaw_json_path();
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // Lesson 521: primary carries the `maic/` provider prefix so the
+        // openclaw gateway dispatches via MAIC's baseUrl regardless of
+        // catalog state (defends against the rc18→rc19/20 upgrade gap
+        // fixed in Lesson 520).
         let primary = cfg.pointer("/agents/defaults/model/primary").unwrap();
-        assert_eq!(primary, "milagro-dev");
+        assert_eq!(primary, "maic/milagro-dev");
         // Free must NOT have fallbacks.
         assert!(cfg.pointer("/agents/defaults/model/fallbacks").is_none(),
                 "Free must not have a fallbacks array");
@@ -4201,9 +4302,10 @@ mod tests {
         let path = openclaw_json_path();
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // Lesson 521: paid primary + fallbacks all carry `maic/` prefix.
         assert_eq!(
             cfg.pointer("/agents/defaults/model/primary").unwrap(),
-            "milagro-oc-kimi"
+            "maic/milagro-oc-kimi"
         );
         let fallbacks: Vec<String> = cfg
             .pointer("/agents/defaults/model/fallbacks")
@@ -4213,7 +4315,10 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
-        assert_eq!(fallbacks, vec!["milagro-oc-minimax", "milagro-oc-glm", "milagro-dev"]);
+        assert_eq!(
+            fallbacks,
+            vec!["maic/milagro-oc-minimax", "maic/milagro-oc-glm", "maic/milagro-dev"]
+        );
     }
 
     #[test]
@@ -4249,9 +4354,10 @@ mod tests {
         let path = openclaw_json_path();
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // Lesson 521: provider-prefixed.
         assert_eq!(
             cfg.pointer("/agents/defaults/model/primary").unwrap(),
-            "milagro-oc-kimi"
+            "maic/milagro-oc-kimi"
         );
     }
 
@@ -4275,9 +4381,10 @@ mod tests {
             let path = openclaw_json_path();
             let cfg: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            // Lesson 521: provider-prefixed primary + fallbacks.
             assert_eq!(
                 cfg.pointer("/agents/defaults/model/primary").unwrap(),
-                "milagro-oc-kimi",
+                "maic/milagro-oc-kimi",
                 "{:?} primary must be Kimi",
                 tier,
             );
@@ -4290,9 +4397,9 @@ mod tests {
                 .map(|v| v.as_str().unwrap().to_string())
                 .collect();
             assert_eq!(fallbacks.len(), 3, "{:?} should have 3 fallbacks", tier);
-            assert_eq!(fallbacks[0], "milagro-oc-minimax");
-            assert_eq!(fallbacks[1], "milagro-oc-glm");
-            assert_eq!(fallbacks[2], "milagro-dev");
+            assert_eq!(fallbacks[0], "maic/milagro-oc-minimax");
+            assert_eq!(fallbacks[1], "maic/milagro-oc-glm");
+            assert_eq!(fallbacks[2], "maic/milagro-dev");
         }
     }
 
@@ -4303,7 +4410,7 @@ mod tests {
         // must clean up the stale fallbacks so the dropdown only shows
         // `milagro-dev`. We model this by starting with Free default
         // + a fallback array, then calling the writer with Free.
-        let _g = fresh_openclaw_with_model(Some(""), Some(vec!["milagro-oc-minimax", "milagro-dev"]));
+        let _g = fresh_openclaw_with_model(Some(""), Some(vec!["maic/milagro-oc-minimax", "maic/milagro-dev"]));
         let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
             .expect("writer should succeed");
         assert!(wrote, "empty primary + non-empty fallbacks must trigger write");
@@ -4311,14 +4418,119 @@ mod tests {
         let path = openclaw_json_path();
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // Lesson 521: provider-prefixed.
         assert_eq!(
             cfg.pointer("/agents/defaults/model/primary").unwrap(),
-            "milagro-dev"
+            "maic/milagro-dev"
         );
         assert!(
             cfg.pointer("/agents/defaults/model/fallbacks").is_none(),
             "Free downgrade must clear the fallbacks array (was: {:?})",
             cfg.pointer("/agents/defaults/model/fallbacks")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Lesson 520 tests (model-merge runs on existing-entry early-return path)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lesson_520_known_ids_merge_into_existing_entry() {
+        // The existing-entry path returns early BEFORE the in-function
+        // model merge (Lesson 451 was a one-shot, then return). Lesson 520
+        // adds a merge_known_model_ids_into_provider call there too, so an
+        // rc18 upgrade (which only had `milagro-dev` seeded) gets the full
+        // 17-id surface on the next ensure_maic_provider_config() run.
+        //
+        // We simulate the rc18 state by populating openclaw.json with a
+        // complete (literal-key + baseUrl) provider entry whose models[]
+        // has only the original `milagro-dev` entry — then re-run
+        // ensure_maic_provider_config() and check the merge landed.
+        use std::io::Write as _;
+        let _env = lock_env();
+        let g = fresh_env();
+        let path = if cfg!(windows) {
+            g._temp.path().join("MiracleClaw").join("openclaw.json")
+        } else {
+            g._temp.path().join(".miracle-claw").join("openclaw.json")
+        };
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let cfg = serde_json::json!({
+            "$schema": "https://openclaw.dev/schema/v1/openclaw.config.schema.json",
+            "models": {
+                "providers": {
+                    "maic": {
+                        "api": "openai-completions",
+                        "apiKey": "literal-test-key",
+                        "baseUrl": "https://maicserver.com/v1",
+                        "models": [
+                            {"id": "milagro-dev", "name": "MAIC default (miracle-claw)"}
+                        ],
+                        "params": {"tool_execution": "client"}
+                    }
+                }
+            }
+        });
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(serde_json::to_string_pretty(&cfg).unwrap().as_bytes()).unwrap();
+        }
+
+        let result = ensure_maic_provider_config().expect("rc18-style entry must rehydrate");
+        assert!(result.provider_configured, "literal key + url means configured");
+
+        let rehydrated: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let models = rehydrated
+            .pointer("/models/providers/maic/models")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        let ids: std::collections::HashSet<String> = models
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
+            .collect();
+        // Lesson 520: all 17 known ids must now be present.
+        for id in ["milagro-dev", "milagro-dev-coder", "milagro-m1",
+                   "milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3",
+                   "milagro-chat", "milagro-coder", "milagro-stock",
+                   "milagro-oc-minimax", "milagro-oc-glm", "milagro-oc-qwen",
+                   "milagro-oc-deepseek", "milagro-oc-kimi",
+                   "chat-glm", "chat-deepseek", "chat-qwen"] {
+            assert!(ids.contains(id), "model catalog missing {}", id);
+        }
+        // Total = 17 unique ids (no duplicates even though milagro-dev was already there).
+        assert_eq!(models.len(), 17, "expected 17 unique model entries");
+    }
+
+    #[test]
+    fn lesson_520_known_ids_merge_is_idempotent() {
+        // Re-running ensure_maic_provider_config() on a file that already
+        // has all 17 ids must NOT add duplicates and must NOT change the
+        // apiKey/baseUrl. This protects against file-mtime churn.
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(None, None);
+
+        // Run twice with a literal key + baseUrl in the env (so the
+        // early-return path is exercised).
+        std::env::set_var(ENV_VAR_NAME, "literal-test-key");
+        std::env::set_var("MAIC_API_URL", "https://maicserver.com/v1");
+        let r1 = ensure_maic_provider_config().expect("first run");
+        assert!(r1.provider_configured);
+        let size1 = std::fs::metadata(openclaw_json_path()).unwrap().len();
+
+        let r2 = ensure_maic_provider_config().expect("second run");
+        assert!(r2.provider_configured);
+        let size2 = std::fs::metadata(openclaw_json_path()).unwrap().len();
+
+        // Same content written both times — sizes should match exactly.
+        // We don't check byte-for-byte because serde_json's pretty-printer
+        // could vary on object key order, but the size delta is a good
+        // smoke test.
+        assert_eq!(size1, size2,
+                   "second run should not grow the file (got {size1} → {size2})");
+
+        std::env::remove_var(ENV_VAR_NAME);
+        std::env::remove_var("MAIC_API_URL");
     }
 }

@@ -2348,3 +2348,89 @@ fallback path).
 5. Verify the system prompt includes the sandbox-awareness block by
    tailing `miracle-claw.log` for `prependSystemContext` length = 1444.
 6. `cargo test --lib` → 60 passed, 0 failed (regression check).
+
+## v1.0.9-rc21 — 2026-08-20 (Lesson 520 + 521: fix gateway provider-prefix fallback on rc18→rc20 upgrades)
+
+### Symptom (David, 2026-08-20 18:23 MDT)
+
+Chat panel shows:
+```
+⚠️ Agent failed before reply: All models failed (4):
+  openai/milagro-oc-kimi: Unknown model: openai/milagro-oc-kimi (model_not_found)
+  openai/milagro-oc-minimax: Unknown model: openai/milagro-oc-minimax (model_not_found)
+  openai/milagro-oc-glm: Unknown model: openai/milagro-oc-glm (model_not_found)
+  openai/milagro-dev: Unknown model: openai/milagro-dev (model_not_found)
+```
+
+Gateway log shows the smoking gun:
+```
+[model-selection] Model "milagro-oc-kimi" specified without provider.
+  Falling back to "openai/milagro-oc-kimi".
+  Please use "openai/milagro-oc-kimi" in your config.
+```
+
+### Root cause (Lesson 520)
+
+Two coupled bugs:
+
+1. **`models.providers.maic.models[]` was incomplete on rc18 → rc19/20
+   upgrades.** `ensure_maic_provider_config()` has two write paths:
+   - "new entry" (no apiKey/baseUrl yet) — runs the full merge logic
+     including the known_ids append at line 745.
+   - "existing entry" (literal apiKey + baseUrl present) — early-returns
+     at line 577 BEFORE reaching the merge.
+
+   Users who installed rc18 (which only seeded `milagro-dev`) and then
+   upgraded to rc19/rc20 hit the existing-entry path on every launch —
+   so the catalog never grew beyond the original 1 entry.
+
+2. **`agents.defaults.model.primary` was emitted as a bare id** (e.g.
+   `"milagro-oc-kimi"`) instead of `provider/id` form. The openclaw
+   gateway's `resolveBareModelDefaultProvider` calls
+   `inferUniqueProviderFromCatalog`, which scans
+   `models.providers[*].models[]`. If the lookup fails (because of bug
+   #1 above), it falls through to `defaultProvider = "openai"` and
+   rewrites the request as `openai/<id>` — which MAIC upstream rejects.
+
+### Fix (Lesson 520 + 521, batched into rc21 per Lesson 513)
+
+- **Lesson 520**: extracted the known_ids merge into a helper
+  `merge_known_model_ids_into_provider(cfg, provider_id)`. Called from
+  BOTH write paths. On a complete existing entry, the merge runs, then
+  we persist the file with the new 16 entries appended (idempotent —
+  never duplicates, never overwrites user renames).
+- **Lesson 521**: defensive — `ensure_agents_default_model_for_tier()`
+  now emits `maic/<id>` instead of bare `<id>`. Belt-and-suspenders so
+  even if the catalog merge regresses, the explicit provider prefix
+  forces correct dispatch.
+
+### Tests added (60 → 62 passing)
+
+- `lesson_520_known_ids_merge_into_existing_entry` — proves an rc18-
+  style state (only `milagro-dev` in catalog) gets all 17 ids merged
+  in on the next `ensure_maic_provider_config()` run.
+- `lesson_520_known_ids_merge_is_idempotent` — re-running the
+  bootstrap doesn't grow the file or duplicate entries.
+- 5 existing Lesson 517 tests updated for the `maic/` prefix on
+  primary + fallbacks.
+
+### Files changed
+
+- `src-tauri/src/lib.rs`:
+  - New helper `merge_known_model_ids_into_provider()` (~30 lines)
+  - Existing-entry early-return path now calls the merge + persists
+  - `ensure_agents_default_model_for_tier()` emits `maic/<id>` (Lesson 521)
+  - 5 Lesson 517 tests updated, 2 Lesson 520 tests added
+- `src-tauri/Cargo.toml` — version bumped to `1.0.9-rc21`
+- `src-tauri/tauri.conf.json` — version bumped to `1.0.9-rc21`
+- `package.json` — version bumped to `1.0.9-rc21`
+
+### Verification plan
+
+1. Install rc21 → openclaw.json should automatically grow to 17 model
+   entries on first launch (existing-entry path).
+2. Log in with pro@adealauto.com → `agents.defaults.model.primary`
+   should be `"maic/milagro-oc-kimi"`, fallbacks prefixed with `maic/`.
+3. Send a chat message → should roundtrip to MAIC + Kimi without
+   `Unknown model` errors.
+4. `cargo test --lib` → 62 passed, 0 failed.
