@@ -93,6 +93,16 @@ struct AppState {
     ///
     /// `None` before create_main_window runs (early lifecycle races).
     dashboard_url: Mutex<Option<String>>,
+    /// v1.0.9-rc32 (Lesson 538): once we've captured the dashboard URL,
+    /// STOP accepting `on_page_load` updates. Reason: `on_page_load`
+    /// fires every time the page loads — including when the user
+    /// navigates FROM the dashboard INTO the chat. If we kept overwriting,
+    /// the chat-page URL (`http://127.0.0.1:28789/chat?...`) would clobber
+    /// the dashboard URL, and the next ← Dashboard click would navigate
+    /// BACK to the chat URL (causing the login flicker David reported
+    /// at 11:27 MDT 2026-08-22). The lock flag ensures we capture the
+    /// first `tauri.localhost` URL and never overwrite it with chat URLs.
+    dashboard_url_locked: Mutex<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -2823,26 +2833,84 @@ fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
     .decorations(true)
     .initialization_script(bridge_js)
     .on_page_load(move |_webview, payload| {
-        // Only capture on the first page-load; later loads (chat-page
-        // navigate-back-to-dashboard round-trips) shouldn't overwrite a
-        // good URL with `about:blank` again.
+        // Lesson 538 (rc32): `on_page_load` fires for EVERY page-load,
+        // not just the first one. That includes when the user navigates
+        // from the dashboard INTO the chat (URL becomes
+        // `http://127.0.0.1:28789/chat?...`). If we kept overwriting,
+        // the chat-page URL would clobber the dashboard URL, and the
+        // next ← Dashboard click would navigate BACK to the chat URL
+        // (causing the login flicker David reported 2026-08-22 11:27 MDT).
+        //
+        // Fix: only capture URLs whose host is `tauri.localhost` (the
+        // bundled dashboard). Anything else (chat gateway at
+        // `127.0.0.1:28789`, `about:blank`, future pages) is ignored.
+        // Once captured, lock the value so chat navigations don't
+        // overwrite it.
         let url = payload.url().to_string();
-        log_to_file(&format!(
-            "create_main_window: on_page_load captured URL = {url}"
-        ));
+
+        // Defensive: skip about:blank so the immediate-post-build race
+        // doesn't poison the captured value (Lesson 537 anti-pattern).
         if url == "about:blank" {
-            // Skip — the immediate-post-build `window.url()` call below
-            // would also have returned `about:blank` in this race. Don't
-            // poison the captured value.
             return;
         }
+
+        // Only capture URLs from the bundled dashboard asset server.
+        // Both Windows (http://tauri.localhost/...) and Linux/macOS
+        // (tauri://localhost/...) variants accepted. Chat URLs
+        // (http://127.0.0.1:28789/...) and anything else are ignored.
+        let is_dashboard_url = url.starts_with("http://tauri.localhost")
+            || url.starts_with("https://tauri.localhost")
+            || url.starts_with("tauri://localhost")
+            || url.starts_with("http://localhost")
+            || url.starts_with("https://localhost");
+        if !is_dashboard_url {
+            log_to_file(&format!(
+                "create_main_window: on_page_load: ignoring non-dashboard URL = {url}"
+            ));
+            return;
+        }
+
         if let Some(state) = app_handle_for_load.try_state::<AppState>() {
-            if let Ok(mut guard) = state.dashboard_url.lock() {
-                *guard = Some(url);
-            } else {
-                log_to_file(
-                    "create_main_window: on_page_load: dashboard_url mutex poisoned; skipping",
-                );
+            // Two-step: check the lock first (cheap), then take the
+            // dashboard_url lock to update. Use the lock flag to avoid
+            // a race where two `on_page_load` events arrive concurrently.
+            let already_locked = match state.dashboard_url_locked.lock() {
+                Ok(g) => *g,
+                Err(_) => {
+                    log_to_file(
+                        "create_main_window: on_page_load: dashboard_url_locked mutex poisoned; \
+                         skipping (treating as locked)",
+                    );
+                    true
+                }
+            };
+            if already_locked {
+                return;
+            }
+            match state.dashboard_url.lock() {
+                Ok(mut guard) => {
+                    *guard = Some(url.clone());
+                    log_to_file(&format!(
+                        "create_main_window: on_page_load: saved dashboard URL = {url} \
+                         (locked, future page-loads will not overwrite)"
+                    ));
+                }
+                Err(_) => {
+                    log_to_file(
+                        "create_main_window: on_page_load: dashboard_url mutex poisoned; skipping",
+                    );
+                    return;
+                }
+            }
+            // Set the lock AFTER successfully writing the URL.
+            match state.dashboard_url_locked.lock() {
+                Ok(mut g) => *g = true,
+                Err(_) => {
+                    log_to_file(
+                        "create_main_window: on_page_load: dashboard_url_locked mutex \
+                         poisoned on lock-set; URL saved but lock flag may not be set",
+                    );
+                }
             }
         } else {
             log_to_file(
@@ -2857,25 +2925,58 @@ fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
     // synchronously (some Tauri versions do this on Linux/macOS), this
     // gives us the URL too. Otherwise it'll be `about:blank` and the
     // on_page_load callback above will fix it within milliseconds.
+    //
+    // Lesson 538 (rc32): same filtering as the on_page_load callback —
+    // only accept dashboard URLs, respect the lock, set the lock after
+    // capture. Without this, an `on_page_load` race could save the
+    // dashboard URL but then the immediate capture (running on the
+    // setup thread) could clobber it with about:blank or the chat URL.
     match window.url() {
         Ok(url) => {
             let url_str = url.to_string();
-            if url_str != "about:blank" {
-                log_to_file(&format!(
-                    "create_main_window: captured dashboard URL (immediate) = {url_str}"
-                ));
-                if let Some(state) = app_handle.try_state::<AppState>() {
-                    if let Ok(mut guard) = state.dashboard_url.lock() {
-                        if guard.is_none() {
-                            *guard = Some(url_str);
-                        }
-                    }
-                }
-            } else {
+            if url_str == "about:blank" {
                 log_to_file(
                     "create_main_window: window.url() returned about:blank \
                      (on_page_load will capture real URL on first page-load)",
                 );
+            } else {
+                // Only accept dashboard URLs (Lesson 538)
+                let is_dashboard_url = url_str.starts_with("http://tauri.localhost")
+                    || url_str.starts_with("https://tauri.localhost")
+                    || url_str.starts_with("tauri://localhost")
+                    || url_str.starts_with("http://localhost")
+                    || url_str.starts_with("https://localhost");
+                if !is_dashboard_url {
+                    log_to_file(&format!(
+                        "create_main_window: window.url() returned non-dashboard URL = \
+                         {url_str} (skipping; on_page_load will capture real URL)"
+                    ));
+                } else if let Some(state) = app_handle.try_state::<AppState>() {
+                    let already_locked = match state.dashboard_url_locked.lock() {
+                        Ok(g) => *g,
+                        Err(_) => {
+                            log_to_file(
+                                "create_main_window: dashboard_url_locked mutex poisoned \
+                                 (immediate capture); treating as locked",
+                            );
+                            true
+                        }
+                    };
+                    if !already_locked {
+                        if let Ok(mut guard) = state.dashboard_url.lock() {
+                            if guard.is_none() {
+                                *guard = Some(url_str.clone());
+                                log_to_file(&format!(
+                                    "create_main_window: captured dashboard URL \
+                                     (immediate) = {url_str}"
+                                ));
+                            }
+                        }
+                        if let Ok(mut g) = state.dashboard_url_locked.lock() {
+                            *g = true;
+                        }
+                    }
+                }
             }
         }
         Err(e) => {
