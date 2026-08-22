@@ -33,3 +33,6 @@ yarn-debug.log*
 # Local secrets (in case any get added later)
 *.env
 !.env.example
+
+# Backup files from edits
+depot/maic-plugin/index.js.bak

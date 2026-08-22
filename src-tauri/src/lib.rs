@@ -785,6 +785,17 @@ fn ensure_maic_provider_config_for_tier(
             // The helper persists `cfg` below; no double-write needed.
             write_tier_gated_tool_execution_and_tools(&mut cfg, tier);
 
+            // Lesson 535 (NEW 2026-08-22): also stamp
+            // `plugins.entries.maic.enabled = true` so openclaw 2026.7.1's
+            // activation decision treats the MAIC plugin as explicitly
+            // enabled. Without this, the plugin's `register()` never
+            // fires, the `extraParamsForTransport` hook never runs, and
+            // the model only sees MAIC's 4 server tools. Same reason
+            // write_tier_gated_tool_execution_and_tools is called here
+            // (Lesson 524): users upgrading from rc28 or earlier need
+            // the plugin entry stamped on first post-upgrade bootstrap.
+            stamp_maic_plugin_entry(&mut cfg);
+
             // Lesson 451: migrate the baseUrl /v1 suffix in-place when it's
             // a stale bare MAIC origin. Persist if we changed anything so
             // the migration is one-shot, not every-launch.
@@ -1185,6 +1196,12 @@ fn ensure_maic_provider_config_for_tier(
     );
     providers.insert(PROVIDER_ID.to_string(), provider_entry);
 
+    // Stamp plugins.entries.maic.enabled = true (and plugins.allow)
+    // before the write path serializes `cfg`. The early-return path
+    // (existing complete entry) calls this same helper below so both
+    // paths produce identical plugin entry state on disk.
+    stamp_maic_plugin_entry(&mut cfg);
+
     // Serialize back. We preserve the user's other fields exactly (no
     // schema-strip pass) — openclaw's gateway does its own validation
     // and we only added keys we know are valid.
@@ -1199,6 +1216,10 @@ fn ensure_maic_provider_config_for_tier(
         "[miracle-claw] MAIC provider config: wrote models.providers.{} (apiKey from {:?}, endpoint={})",
         PROVIDER_ID, key_source, resolved_url
     );
+    eprintln!(
+        "[miracle-claw] MAIC plugin: wrote plugins.entries.{}.enabled = true (Lesson 535)",
+        PROVIDER_ID
+    );
 
     Ok(MaicProviderBootstrap {
         provider_configured: true,
@@ -1206,6 +1227,61 @@ fn ensure_maic_provider_config_for_tier(
         api_key_source: key_source,
         endpoint: final_endpoint,
     })
+}
+
+/// Lesson 535 (NEW 2026-08-22): stamp `plugins.entries.maic.enabled =
+/// true` and add "maic" to `plugins.allow` so openclaw 2026.7.1's
+/// activation decision treats the MAIC plugin as explicitly enabled
+/// (non-bundled plugins require explicit enablement).
+///
+/// Called from both the write path (new provider entry) AND the
+/// existing-entry early-return path (Lesson 449 family) so users
+/// upgrading from rc28 or earlier still get the plugin activated.
+///
+/// Idempotent: preserves any user-customized `config: {...}` under the
+/// plugin entry and does not duplicate "maic" in `plugins.allow`.
+fn stamp_maic_plugin_entry(cfg: &mut serde_json::Value) {
+    // Mirrors `ensure_maic_provider_config_for_tier`'s `PROVIDER_ID` const.
+    // The plugin id and provider id are both "maic" by design.
+    const PROVIDER_ID: &str = "maic";
+    if !cfg.is_object() {
+        *cfg = serde_json::json!({});
+    }
+    let cfg_obj = cfg.as_object_mut().unwrap();
+    let plugins_obj = cfg_obj
+        .entry("plugins".to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !plugins_obj.is_object() {
+        *plugins_obj = Value::Object(Default::default());
+    }
+    let plugins = plugins_obj.as_object_mut().unwrap();
+    let entries = plugins
+        .entry("entries".to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !entries.is_object() {
+        *entries = Value::Object(Default::default());
+    }
+    let entries_map = entries.as_object_mut().unwrap();
+    let maic_entry = entries_map
+        .entry(PROVIDER_ID.to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !maic_entry.is_object() {
+        *maic_entry = Value::Object(Default::default());
+    }
+    if let Some(maic_obj) = maic_entry.as_object_mut() {
+        maic_obj
+            .entry("enabled".to_string())
+            .or_insert(Value::Bool(true));
+    }
+    let allow = plugins
+        .entry("allow".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Some(allow_arr) = allow.as_array_mut() {
+        let has_maic = allow_arr.iter().any(|v| v.as_str() == Some(PROVIDER_ID));
+        if !has_maic {
+            allow_arr.push(Value::String(PROVIDER_ID.to_string()));
+        }
+    }
 }
 
 /// Replace the MAIC provider entry's apiKey field with the literal JWT from
@@ -5216,5 +5292,166 @@ mod tests {
 
         std::env::remove_var(ENV_VAR_NAME);
         std::env::remove_var("MAIC_API_URL");
+    }
+
+    // ---------------------------------------------------------------------
+    // Lesson 535 (NEW 2026-08-22): openclaw 2026.7.1 plugin activation
+    // ---------------------------------------------------------------------
+    //
+    // `resolveEffectivePluginActivationState` in openclaw 2026.7.1 requires
+    // non-bundled plugins to be EXPLICITLY enabled via
+    // `plugins.entries.<id>.enabled = true` (or allowlisted in
+    // `plugins.allow`). Without it, the MAIC plugin's `register()` is
+    // never invoked, the `extraParamsForTransport` hook never fires, and
+    // the bundled steeler-compat patch can't propagate
+    // `tool_execution: "client"` into the outbound chat request — so the
+    // model only sees MAIC's 4 server tools (weather, web_search,
+    // get_current_time, calculate) instead of the full tool registry.
+    //
+    // MC's `ensure_maic_provider_config_for_tier` is responsible for
+    // stamping the enable into openclaw.json alongside the provider
+    // entry. These tests pin that contract.
+    #[test]
+    fn lesson_535_plugin_entry_enabled_after_bootstrap() {
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "test-key-bootstrap");
+        env::set_var("MAIC_API_URL", "https://maicserver.com/v1");
+
+        let _ = ensure_maic_provider_config().expect("bootstrap");
+
+        let raw = std::fs::read_to_string(openclaw_json_path()).expect("read cfg");
+        let cfg: serde_json::Value = serde_json::from_str(&raw).expect("parse cfg");
+
+        // Must contain plugins.entries.maic.enabled = true
+        let enabled = cfg
+            .pointer("/plugins/entries/maic/enabled")
+            .and_then(|v| v.as_bool())
+            .expect("plugins.entries.maic.enabled must be written by MC bootstrap");
+        assert!(
+            enabled,
+            "Lesson 535: plugins.entries.maic.enabled must be true"
+        );
+
+        // Must also have plugins.allow = ["maic"] to silence the
+        // "discovered non-bundled plugins may auto-load" warning and
+        // pin trust provenance.
+        let allow = cfg
+            .pointer("/plugins/allow")
+            .and_then(|v| v.as_array())
+            .expect("plugins.allow must be an array");
+        let allow_strs: Vec<&str> = allow
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            allow_strs.contains(&"maic"),
+            "Lesson 535: plugins.allow must include 'maic' (got {allow_strs:?})"
+        );
+    }
+
+    #[test]
+    fn lesson_535_plugin_entry_idempotent_across_runs() {
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "test-key-idempotent");
+        env::set_var("MAIC_API_URL", "https://maicserver.com/v1");
+
+        // First run creates the entry.
+        let _ = ensure_maic_provider_config().expect("first bootstrap");
+        let size1 = std::fs::metadata(openclaw_json_path()).unwrap().len();
+
+        // Second run with a DIFFERENT api key + url must still:
+        // - preserve plugins.entries.maic.enabled = true
+        // - not duplicate "maic" in plugins.allow
+        env::set_var("MAIC_API_KEY", "different-key");
+        env::set_var("MAIC_API_URL", "https://other.example.com/v1");
+        let _ = ensure_maic_provider_config().expect("second bootstrap");
+
+        let raw = std::fs::read_to_string(openclaw_json_path()).expect("read cfg");
+        let cfg: serde_json::Value = serde_json::from_str(&raw).expect("parse cfg");
+
+        let enabled = cfg
+            .pointer("/plugins/entries/maic/enabled")
+            .and_then(|v| v.as_bool())
+            .expect("plugins.entries.maic.enabled must persist");
+        assert!(enabled, "Lesson 535: enabled flag must survive re-runs");
+
+        let allow = cfg
+            .pointer("/plugins/allow")
+            .and_then(|v| v.as_array())
+            .expect("plugins.allow must be an array");
+        let maic_count = allow
+            .iter()
+            .filter(|v| v.as_str() == Some("maic"))
+            .count();
+        assert_eq!(
+            maic_count, 1,
+            "Lesson 535: 'maic' must appear exactly once in plugins.allow (got {maic_count})"
+        );
+
+        // The plugins.entries.maic object must NOT have grown — re-runs
+        // should be no-ops on the enable/allow stamping (size1 may have
+        // grown slightly because the provider entry's apiKey changed,
+        // but plugins.entries.maic itself is bounded).
+        let maic_entry_size = cfg
+            .pointer("/plugins/entries/maic")
+            .map(|v| v.to_string().len())
+            .unwrap_or(0);
+        assert!(
+            maic_entry_size < 200,
+            "Lesson 535: plugins.entries.maic should be a small object, got {maic_entry_size} bytes"
+        );
+
+        let _ = size1; // suppress unused warning
+    }
+
+    #[test]
+    fn lesson_535_plugin_entry_written_even_with_existing_config() {
+        // If the user already has a complete MAIC provider entry from a
+        // prior install (rc18-rc21, pre-Lesson-535), the bootstrap should
+        // STILL stamp plugins.entries.maic.enabled = true. Otherwise the
+        // plugin stays un-loaded after upgrade.
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "test-key-existing");
+
+        let path = openclaw_json_path();
+        let existing = serde_json::json!({
+            "models": {
+                "providers": {
+                    "maic": {
+                        "api": "openai-completions",
+                        "apiKey": "prior-install-key",
+                        "baseUrl": "https://maicserver.com/v1",
+                        "models": [
+                            {"id": "milagro-dev", "name": "milagro-dev"}
+                        ]
+                    }
+                }
+            }
+        });
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&existing).unwrap(),
+        )
+        .expect("write existing");
+
+        // Run the bootstrap. It should hit the existing-entry early-return
+        // path but STILL stamp plugins.entries.maic.enabled = true.
+        let _ = ensure_maic_provider_config().expect("bootstrap");
+
+        let raw = std::fs::read_to_string(&path).expect("read cfg");
+        let cfg: serde_json::Value = serde_json::from_str(&raw).expect("parse");
+
+        let enabled = cfg
+            .pointer("/plugins/entries/maic/enabled")
+            .and_then(|v| v.as_bool())
+            .expect("plugins.entries.maic.enabled must be added even to pre-existing configs");
+        assert!(
+            enabled,
+            "Lesson 535: existing-config upgrade path must stamp plugin entry"
+        );
     }
 }
