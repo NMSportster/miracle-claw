@@ -199,15 +199,39 @@ if [[ -d "$BUNDLE_SRC" && -n "$(ls -A "$BUNDLE_SRC" 2>/dev/null)" ]]; then
             NEW_MD5=$(md5sum "$LATEST_INSTALLER" 2>/dev/null | awk '{print $1}')
             if [[ "$EXISTING_MD5" != "$NEW_MD5" ]]; then
                 ARCHIVE_NAME="MiracleClaw_${TAURI_VERSION}_${EXISTING_MD5:0:8}_x64-setup.exe"
-                ARCHIVE_PATH="/mnt/c/Users/Adeal/Desktop/${ARCHIVE_NAME}"
+                ARCHIVE_DIR="/mnt/c/Users/Adeal/Desktop/_archive"
+                ARCHIVE_PATH="${ARCHIVE_DIR}/${ARCHIVE_NAME}"
+                mkdir -p "$ARCHIVE_DIR" 2>/dev/null || true
                 if mv -v "$DESKTOP_PATH" "$ARCHIVE_PATH" 2>/dev/null; then
-                    echo "  Archived previous installer → $ARCHIVE_NAME"
+                    echo "  Archived previous installer → _archive/$ARCHIVE_NAME"
                 fi
             fi
         fi
         if cp -v "$LATEST_INSTALLER" "$DESKTOP_PATH" 2>/dev/null; then
             echo "  Desktop installer: $DESKTOP_PATH"
             md5sum "$DESKTOP_PATH" 2>/dev/null
+
+            # Lesson 530 smoke check: extract the bundled miracle-claw.exe
+            # from the installer and grep for the version string the binary
+            # actually carries. Catches the 'Cargo.toml not bumped' bug where
+            # the binary says rc25 even though the filename says rc26. The
+            # installer was rebuilt but the Rust source version was stale.
+            # We use 7z + strings on the EXE; if either tool is missing we
+            # skip silently (best-effort, non-fatal).
+            SMOKE_DIR=$(mktemp -d)
+            if command -v 7z >/dev/null 2>&1 && command -v strings >/dev/null 2>&1; then
+                if 7z x -y -o"$SMOKE_DIR" "$LATEST_INSTALLER" "*.exe" >/dev/null 2>&1; then
+                    BINNED_VERSION=$(strings "$SMOKE_DIR"/*/miracle-claw.exe 2>/dev/null | grep -m1 -oE 'MiracleClaw v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?' || echo "")
+                    if [[ -n "$BINNED_VERSION" && "$BINNED_VERSION" != *"v${TAURI_VERSION}"* ]]; then
+                        echo ""
+                        echo "  ⚠️  VERSION MISMATCH (Lesson 530): filename says v${TAURI_VERSION} but binary says ${BINNED_VERSION}" >&2
+                        echo "      Cargo.toml is stale. Bump it and rebuild." >&2
+                    else
+                        echo "  ✓ Binary version matches: ${BINNED_VERSION}"
+                    fi
+                fi
+            fi
+            rm -rf "$SMOKE_DIR"
         else
             echo "  (could not write to /mnt/c/Users/Adeal/Desktop — run from WSL2 with Desktop mounted)"
         fi

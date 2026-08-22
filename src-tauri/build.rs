@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 fn main() {
     tauri_build::build();
 
@@ -15,8 +17,7 @@ fn main() {
 }
 
 /// Format a SystemTime as "YYYY-MM-DD-HHMM" UTC. Compact enough for a log line.
-fn unix_timestamp_to_compact(t: std::time::SystemTime) -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
+fn unix_timestamp_to_compact(t: SystemTime) -> String {
     let secs = t
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

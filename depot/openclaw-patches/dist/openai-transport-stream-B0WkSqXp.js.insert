@@ -1,0 +1,27 @@
+// MC-PATCH: maic-tool-execution-compat
+// INSERT-BEFORE: 	else if (resolvedCompletionsReasoningEffort && model.reasoning && compat.supportsReasoningEffort && !handledQwenThinkingFormat && !omitChatCompletionsToolReasoningEffort) params.reasoning_effort = resolvedCompletionsReasoningEffort;
+// MAIC compat (Lesson 534, 2026-08-21): re-add the steeler-era MAIC compat
+// patch that openclaw 2026.7.1 dropped from the upstream rewrite.
+// Without this, maic plugin's `extraParamsForTransport` patch is computed
+// correctly (effectiveExtraParams.tool_execution = "client") but never
+// reaches the wire because createStreamFnWithExtraParams only whitelists
+// temperature/topP/maxTokens/etc. through to the underlying stream options.
+// Net effect without this patch: model on mc only sees the 4-5 MAIC
+// server-side tools (weather, web_search, time, calculate, describe_image).
+// Net effect with this patch: model sees 11 tools (4 server + 7 client tools
+// from the maic plugin's openclaw.json patch).
+//
+// Reinstates the upstream steeler patch verbatim:
+//   if (model.params && typeof model.params.tool_execution === "string" &&
+//       (model.params.tool_execution === "client" ||
+//        model.params.tool_execution === "server" ||
+//        model.params.tool_execution === "client_only")) {
+//       params.tool_execution = model.params.tool_execution;
+//   }
+//
+// When this becomes unnecessary (upstream restores the compat), delete the
+// patch file. If openclaw bumps the file hash (e.g. B0WkSqXp → ABcdEFgh),
+// this patch needs to be renamed to match the new target filename.
+	if (model.params && typeof model.params.tool_execution === "string" && (model.params.tool_execution === "client" || model.params.tool_execution === "server" || model.params.tool_execution === "client_only")) {
+		params.tool_execution = model.params.tool_execution;
+	}

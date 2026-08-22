@@ -15,15 +15,28 @@
 #   <name>.html.insert  INSERT before </body> in src-tauri/resources/<relpath>
 #                       (correct HTML placement; Lesson 511)
 #   <name>.js           WRITE  to src-tauri/resources/<relpath>
+#   <name>.js.insert    INSERT before a sentinel line in src-tauri/resources/<relpath>
+#                       (Lesson 534 — MAIC compat: insert before the `return params;`
+#                        that ends buildOpenAICompletionsParams in
+#                        openai-transport-stream-*.js)
 #   <name>.json         WRITE  to src-tauri/resources/<relpath> (merge? skip)
 #   <name>.delete       RECORD only (mark for future deletion)
 #
 # Idempotency for APPEND patches:
 #   Each patch file must start with a marker line:
 #     <!-- MC-PATCH: <id> -->
+#     or  // MC-PATCH: <id>
 #   The patcher searches the target file for that exact marker. If present,
 #   skip (already applied). If absent, append the marker + patch contents
 #   to the end of the target file.
+#
+# Idempotency for INSERT patches (*.html.insert / *.js.insert):
+#   First line must be the marker. If marker found anywhere in target, skip.
+#   For *.js.insert the sentinel line is identified by a magic comment on
+#   line 2 of the patch file:
+#     // INSERT-BEFORE: <exact text of target line>
+#   This lets us target a unique line in the openclaw bundle without
+#   rewriting the entire 3,500-line file.
 #
 # Idempotency for WRITE patches:
 #   For JS/CSS files we write, the patcher compares target mtime against a
@@ -99,12 +112,14 @@ skipped=0
 
 while IFS= read -r patch_file; do
     rel="${patch_file#$PATCHES_DIR/}"
-    # *.html.insert patches target the same-named .html file (Lesson 511).
-    # The .insert suffix is a patcher-internal mode marker, not part of
-    # the destination filename.
-    if [[ "$rel" == *.html.insert ]]; then
-        rel="${rel%.insert}"
-    fi
+    # *.html.insert / *.js.insert patches target the same-named .html/.js file
+    # (Lesson 511 / Lesson 534). The .insert suffix is a patcher-internal mode
+    # marker, not part of the destination filename.
+    case "$rel" in
+        *.html.insert|*.js.insert|*.mjs.insert|*.cjs.insert)
+            rel="${rel%.insert}"
+            ;;
+    esac
     target="$RESOURCES_DIR/$rel"
     target_dir="$(dirname "$target")"
 
@@ -210,6 +225,82 @@ while IFS= read -r patch_file; do
             applied=$((applied + 1))
             ;;
 
+        *.js.insert|*.mjs.insert|*.cjs.insert)
+            # INSERT patch (Lesson 534 — MAIC compat). Inserts patch contents
+            # immediately before a sentinel line that lives inside the openclaw
+            # dist file. This lets us splice in small targeted fixes (a few
+            # lines) without rewriting a whole multi-thousand-line bundle file.
+            #
+            # Patch file format:
+            #   Line 1: // MC-PATCH: <id>           (idempotency marker)
+            #   Line 2: // INSERT-BEFORE: <text>    (sentinel to find)
+            #   Line 3+: ...patch contents (no trailing newline required)
+            #
+            # We `grep -F` the sentinel in the target; if missing, the openclaw
+            # bundle changed structure and we skip with a warning.
+            first_line=$(head -n 1 "$patch_file")
+            sentinel_line=$(sed -n '2p' "$patch_file")
+            marker=""
+            if [[ "$first_line" =~ ^//[[:space:]]*MC-PATCH:[[:space:]]*([^[:space:]]+)$ ]]; then
+                marker="// MC-PATCH: ${BASH_REMATCH[1]}"
+            fi
+
+            if [[ -z "$marker" ]]; then
+                echo "  SKIP $rel — *.js.insert patches require first line \`// MC-PATCH: <id>\`"
+                skipped=$((skipped + 1))
+                continue
+            fi
+
+            # Strip ONLY the `// INSERT-BEFORE: ` prefix (with exactly one
+            # separating space — preserves any tabs or other leading whitespace
+            # in the sentinel itself, which we DO need to match verbatim).
+            if [[ ! "$sentinel_line" =~ ^//[[:space:]]*INSERT-BEFORE:[[:space:]](.+)$ ]]; then
+                echo "  SKIP $rel — *.js.insert patches require line 2 \`// INSERT-BEFORE: <text>\`"
+                skipped=$((skipped + 1))
+                continue
+            fi
+            sentinel="${BASH_REMATCH[1]}"
+
+            if grep -qF "$marker" "$target" 2>/dev/null; then
+                echo "  SKIP $rel (marker $marker already present)"
+                skipped=$((skipped + 1))
+                continue
+            fi
+
+            sentinel_count=$(grep -cF "$sentinel" "$target" 2>/dev/null || true)
+            if [[ "$sentinel_count" -eq 0 ]]; then
+                echo "  SKIP $rel — sentinel '$sentinel' not found in target (openclaw bundle structure changed?)"
+                skipped=$((skipped + 1))
+                continue
+            fi
+            if [[ "$sentinel_count" -gt 1 ]]; then
+                echo "  SKIP $rel — sentinel '$sentinel' appears $sentinel_count times in target (ambiguous). Refine the sentinel."
+                skipped=$((skipped + 1))
+                continue
+            fi
+
+            if ! $DRY_RUN; then
+                # Build the insert payload: marker + injected comment + patch
+                # body (everything from line 3 onward). The injected comment
+                # records why this patch exists — same convention as *.html.insert.
+                payload="$(mktemp)"
+                {
+                    echo "$marker"
+                    printf '%s\n' "$sentinel_line"
+                    tail -n +3 "$patch_file"
+                } > "$payload"
+                # Insert before the sentinel line: awk reads sentinel line,
+                # prints payload first, then prints the line as-is.
+                awk -v ins="$payload" -v sentinel="$sentinel" '
+                    { line = $0; if ((line == sentinel) && !inserted) { while ((getline pline < ins) > 0) print pline; close(ins); inserted = 1 } print line }
+                ' "$target" > "$target.new" && mv "$target.new" "$target"
+                rm -f "$payload"
+                echo "$rel $marker" >> "$APPLIED_LOG"
+            fi
+            echo "  INSERT $rel (marker $marker, before sentinel \"$sentinel\")"
+            applied=$((applied + 1))
+            ;;
+
         *.js|*.css|*.mjs|*.cjs)
             # WRITE patch — copy the patch file over the target. Idempotent
             # via content comparison. Match tarball perms (0600) so files
@@ -246,7 +337,7 @@ while IFS= read -r patch_file; do
             ;;
 
         *)
-            echo "  SKIP $rel — unknown file type (only .html, .html.insert, .js, .css, .mjs, .cjs, .json supported)"
+            echo "  SKIP $rel — unknown file type (only .html, .html.insert, .js, .js.insert, .css, .mjs, .cjs, .json supported)"
             skipped=$((skipped + 1))
             ;;
     esac

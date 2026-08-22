@@ -35,6 +35,8 @@
 // Manifest: `openclaw.plugin.json` (`PLUGIN_MANIFEST_FILENAME` constant).
 // No dependencies on OpenClaw internals beyond the `register()` API.
 
+console.log("[maic-plugin DEBUG] module top reached — file was loaded by Node, registering provider");
+
 import os from "node:os";
 
 const PROVIDER_ID = "maic";
@@ -54,12 +56,25 @@ function readRecord(value) {
  * Returns undefined if no params are configured (so OpenClaw skips the patch).
  */
 function resolveMaicExtraParamsForTransport(ctx) {
+  console.log("[maic-plugin DEBUG] extraParamsForTransport called", JSON.stringify({
+    hasProviderParams: !!(ctx.config?.models?.providers?.[PROVIDER_ID]?.params),
+    providerParamsKeys: Object.keys(ctx.config?.models?.providers?.[PROVIDER_ID]?.params ?? {}),
+    hasModelParams: !!(ctx.model?.params),
+    modelParamsKeys: Object.keys(ctx.model?.params ?? {}),
+    modelId: ctx.modelId,
+    configHasModels: !!ctx.config?.models,
+    configHasProviders: !!ctx.config?.models?.providers,
+    configHasMaic: !!ctx.config?.models?.providers?.[PROVIDER_ID]
+  }));
   const providerParams = readRecord(
     ctx.config?.models?.providers?.[PROVIDER_ID]?.params
   );
   const modelParams = readRecord(ctx.model?.params);
 
-  if (!providerParams && !modelParams) return undefined;
+  if (!providerParams && !modelParams) {
+    console.log("[maic-plugin DEBUG] no params, returning undefined");
+    return undefined;
+  }
 
   // Special-case tool_execution: if neither layer explicitly sets it,
   // default to "client" so MAIC's partition_tool_calls returns unresolved
@@ -70,14 +85,16 @@ function resolveMaicExtraParamsForTransport(ctx) {
     (modelParams && modelParams.tool_execution) ??
     (providerParams && providerParams.tool_execution);
 
+  const patch = {
+    ...providerParams,
+    ...modelParams,
+    ...(explicitToolExecution !== undefined
+      ? { tool_execution: explicitToolExecution }
+      : { tool_execution: "client" }),
+  };
+  console.log("[maic-plugin DEBUG] returning patch keys:", Object.keys(patch), "tool_execution=", patch.tool_execution, "tools count=", Array.isArray(patch.tools) ? patch.tools.length : "(not array)");
   return {
-    patch: {
-      ...providerParams,
-      ...modelParams,
-      ...(explicitToolExecution !== undefined
-        ? { tool_execution: explicitToolExecution }
-        : { tool_execution: "client" }),
-    },
+    patch,
   };
 }
 
@@ -193,6 +210,7 @@ export default {
     "Minimal MAIC provider plugin: injects tool_execution='client', per-model extraParams, and a filesystem-sandbox system context (Lesson 516) into outbound OpenAI-compatible chat completion requests.",
   version: "0.2.0",
   register(api) {
+    console.log("[maic-plugin DEBUG] register() called — MAIC provider plugin v0.2.0 loading");
     api.registerProvider({
       id: PROVIDER_ID,
       label: "MAIC",
@@ -206,6 +224,7 @@ export default {
     // Lesson 516: inject sandbox-aware system context on every prompt.
     // Cheap, cached, no per-turn token cost.
     api.on("before_prompt_build", onBeforePromptBuild);
+    console.log("[maic-plugin DEBUG] register() complete — provider + hook registered");
   },
 };
 

@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Things planned (no rebuild required)
 
+- **Lesson 534 (pending rc28 rebuild): MAIC plugin's `tool_execution: "client"` patch
+  was being dropped on the floor by openclaw 2026.7.1's `buildOpenAICompletionsParams`.
+  Steeler-era (openclaw 2026.6.8) had a 5-line compat block at the end of
+  `buildOpenAICompletionsParams` that promoted `model.params.tool_execution` onto the
+  request body. openclaw 2026.7.1 dropped that block during the function rewrite.
+  Net effect on MC: maic plugin's `extraParamsForTransport` returns
+  `{tool_execution: "client"}` correctly, `createStreamFnWithExtraParams` merges it
+  into `effectiveExtraParams` correctly — but then whitelists only
+  temperature/topP/maxTokens/responseFormat/etc. through to the underlying stream
+  options. `tool_execution` never reached the wire. MAIC defaulted to server-side
+  tool execution, model only saw 4-5 server tools (weather, web_search, time,
+  calculate, describe_image), 7 client tools invisible.
+  Fix: re-add the steeler compat block via the patch system. New
+  `depot/openclaw-patches/dist/openai-transport-stream-B0WkSqXp.js.insert` carries
+  the 5-line patch. `scripts/patch-openclaw-dist.sh` learned a new `*.js.insert`
+  patch mode that splices content before a sentinel line (preserves tabs).
+  `node --check` confirms the patched file parses. With rc28, MAIC requests will
+  carry `tool_execution: "client"`, model will see 11 tools (4 server + 7 client).
+  When openclaw upstream restores the compat, this patch can be deleted.**
+  Files: `scripts/patch-openclaw-dist.sh` (new `*.js.insert` mode), `depot/openclaw-patches/dist/openai-transport-stream-B0WkSqXp.js.insert` (new patch file), `depot/openclaw-patches/MANIFEST.md` (inventory update).
+
 ### Things built this session (WIP — pending rc25 with Lesson 528 banner)
 
 - **Lesson 528 (WIP, pending rc25 rebuild): Sidecar EXEs identify themselves in the log.**
