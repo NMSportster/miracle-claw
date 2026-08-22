@@ -3,7 +3,7 @@
 // Minimal MAIC provider plugin.
 //
 // Purpose: OpenClaw's request-body builder (`buildOpenAICompletionsParams` in
-// `openai-transport-stream-*.js`) only knows how to inject fields its
+// `openai-transport-stream-D1R-kt0Q.js`) only knows how to inject fields its
 // provider plugin explicitly registers. Without a plugin, config fields
 // under `models.providers.maic.params` (or per-model `params`) sit in
 // `openclaw.json` and never reach the wire.
@@ -14,33 +14,24 @@
 // return them via `tool_calls` (see MAIC `milagro_handoff.assistant_message`
 // wire format — Lesson 293).
 //
-// Hook surface used (Lesson 295 family + Lesson 516):
+// Hook surface used (Lesson 295 family + Lesson 516 NEW):
 //   extraParamsForTransport(ctx) → { patch?: Record<string, unknown> }
 //   before_prompt_build(event, ctx) → { prependSystemContext?: string }
 //
-// Lesson 516: The agent had no clue what filesystem paths it could touch.
-// Tool schema descriptions say "Documents/, Desktop/, Downloads/, or the
-// workspace root" but never give the actual Windows paths. The model
-// hallucinates ("only .openclaw/workspace") and refuses file tasks. Fix:
-// prepend a sandbox-aware system context on every prompt build so the
-// model knows exactly what it can/can't reach. Cached-friendly via
-// prependSystemContext (vs prependContext).
+// Lesson 516 (NEW, 2026-08-20): The agent had no clue what filesystem
+// paths it could touch. Tool schema descriptions say "Documents/,
+// Desktop/, Downloads/, or the workspace root" but never give the actual
+// Windows paths. The model hallucinates ("only .openclaw/workspace")
+// and refuses file tasks. Fix: prepend a sandbox-aware system context
+// on every prompt build so the model knows exactly what it can/can't
+// reach. Cached-friendly via prependSystemContext (vs prependContext).
 //
 // Plugin is loaded as ESM by OpenClaw's plugin loader — so use ESM
 // `import` not CommonJS `require` (require() throws in pure ESM context,
-// which silently breaks buildSandboxSystemContext).
-//
-// Lesson 535 (NEW, 2026-08-22): Manifest at `openclaw.plugin.json` declares
-// `enabledByDefault: true` + `activation: { onStartup: true }` +
-// `providers: ["maic"]`. Even with those, openclaw 2026.7.1's
-// `resolveEffectivePluginActivationState` still requires non-bundled
-// plugins to be EXPLICITLY enabled in `plugins.entries.<id>.enabled =
-// true` (or allowlisted in `plugins.allow`). MC's Rust bootstrap
-// (`ensure_maic_provider_config_for_tier`) writes that on disk whenever
-// it bootstraps the provider entry.
+// which silently breaks buildSandboxSystemContext). Lesson 516 sub-fix.
 //
 // Lifecycle: scanned at startup from `~/.openclaw/extensions/maic/` per
-// `roots-*.js::resolvePluginSourceRoots` (workspace + global dirs).
+// `roots-BmJakFIf.js::resolvePluginSourceRoots` (workspace + global dirs).
 // Manifest: `openclaw.plugin.json` (`PLUGIN_MANIFEST_FILENAME` constant).
 // No dependencies on OpenClaw internals beyond the `register()` API.
 
@@ -68,7 +59,9 @@ function resolveMaicExtraParamsForTransport(ctx) {
   );
   const modelParams = readRecord(ctx.model?.params);
 
-  if (!providerParams && !modelParams) return undefined;
+  if (!providerParams && !modelParams) {
+    return undefined;
+  }
 
   // Special-case tool_execution: if neither layer explicitly sets it,
   // default to "client" so MAIC's partition_tool_calls returns unresolved
@@ -115,6 +108,10 @@ function resolveMaicExtraParamsForTransport(ctx) {
  * plugin still emits the rest of its behavior.
  */
 function buildSandboxSystemContext() {
+  // Plugin is loaded as ESM (Lesson 516 sub-fix). Use top-level
+  // `import os from "node:os"` (above) instead of `require("node:os")` —
+  // the latter throws in pure ESM context and the try/catch below would
+  // silently swallow it, returning empty paths and breaking the model.
   let home = "";
   let platform = "";
   let localAppData = "";
@@ -143,7 +140,7 @@ function buildSandboxSystemContext() {
   const desktop  = home ? (platform === "win32" ? `${home}\\Desktop`       : `${home}/Desktop`)       : "";
   const downloads= home ? (platform === "win32" ? `${home}\\Downloads`     : `${home}/Downloads`)     : "";
 
-  return `## MC Filesystem Sandbox (MiracleClaw 1.0.9-rc29+)
+  return `## MC Filesystem Sandbox (MiracleClaw 1.0.9-rc19+)
 
 You are running inside the MiracleClaw desktop app. Filesystem access is
 sandboxed by Rust at the tool layer (not by prompt convention). When a tool
@@ -197,7 +194,7 @@ export default {
   name: "MAIC Provider",
   description:
     "Minimal MAIC provider plugin: injects tool_execution='client', per-model extraParams, and a filesystem-sandbox system context (Lesson 516) into outbound OpenAI-compatible chat completion requests.",
-  version: "0.3.0",
+  version: "0.2.0",
   register(api) {
     api.registerProvider({
       id: PROVIDER_ID,
