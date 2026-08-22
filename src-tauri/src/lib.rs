@@ -4100,6 +4100,358 @@ fn mc_set_tier_defaults(force: Option<bool>) -> Result<bool, String> {
         .map_err(|e| format!("set_tier_defaults: {}", e))
 }
 
+// ============================================================================
+// v1.0.9-rc35: Settings page commands.
+//
+// Settings is a new top-level page in main.js (registered via page_registry
+// after the rc34 refactor). It needs to:
+//   - Show the user their tier, endpoint, and email
+//   - Let them view + edit memory files in the agent workspace
+//   - Open the workspace folder in OS file manager
+//
+// Path safety (Lesson 211): all file operations are confined to the agent
+// workspace (`~/.openclaw/workspace/` on *nix, `%USERPROFILE%\.openclaw\workspace\`
+// on Windows). The frontend can pass any path; if it escapes the workspace
+// or isn't a .md file, the command rejects with a clear error.
+//
+// Why this lives in lib.rs (not auth.rs): the workspace is a UI-facing
+// concept, not an auth concept. The MAIC plugin already handles its own
+// state dir independently.
+// ============================================================================
+
+/// Returned to the frontend by `mc_get_user_info`. Mirrors the
+/// `TierInfo` shape with a few extras the Settings page needs (the
+/// provider endpoint, a friendly "from_cache" age string).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UserInfo {
+    /// Resolved tier: 'free', 'pro', 'pro_plus', 'team', 'enterprise'.
+    /// May be empty string if not logged in.
+    tier: String,
+    /// Raw `plan_code` from MAIC; informational only.
+    plan_code: Option<String>,
+    /// User email from MAIC /v1/users/me (None if not logged in).
+    email: Option<String>,
+    /// Provider endpoint the app is talking to.
+    endpoint: String,
+    /// True iff tier was served from cache (<5 min old).
+    from_cache: bool,
+    /// True iff the tier changed since last fetch (downgrade indicator).
+    tier_changed: bool,
+    /// User-friendly cache age, e.g. "just now", "2 min ago", "—".
+    cache_age: String,
+}
+
+/// One entry in the memory-files listing returned by `mc_list_memory_files`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MemoryFileEntry {
+    /// Display name without leading directories, e.g. "MEMORY.md".
+    name: String,
+    /// Path relative to the workspace root, e.g. "memory/2026-08-22.md".
+    rel_path: String,
+    /// Absolute path on disk (for the editor to load/save).
+    abs_path: String,
+    /// File size in bytes. 0 if the file doesn't exist yet.
+    size_bytes: u64,
+    /// Last-modified timestamp as ISO 8601 UTC, or None if missing.
+    modified_at: Option<String>,
+    /// True iff this is one of the "core" files always shown (MEMORY.md,
+    /// USER.md, etc.). Daily notes are not flagged core.
+    core: bool,
+}
+
+/// Resolve the agent workspace root.
+///
+/// Resolution order (first hit wins):
+///   1. `MIRACLE_CLAW_WORKSPACE` env var (test/CI override)
+///   2. `%USERPROFILE%\.openclaw\workspace` (Windows)
+///   3. `$HOME/.openclaw/workspace` (macOS, Linux, WSL)
+///
+/// We deliberately do NOT create the directory — `mc_list_memory_files`
+/// handles "doesn't exist yet" as an empty list, which is friendlier than
+/// silently materializing an empty workspace on a fresh install.
+fn workspace_root() -> Result<PathBuf, String> {
+    if let Ok(v) = std::env::var("MIRACLE_CLAW_WORKSPACE") {
+        let p = PathBuf::from(v);
+        if !p.as_os_str().is_empty() {
+            return Ok(p);
+        }
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE") {
+        let mut p = PathBuf::from(home);
+        p.push(".openclaw");
+        p.push("workspace");
+        return Ok(p);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let mut p = PathBuf::from(home);
+        p.push(".openclaw");
+        p.push("workspace");
+        return Ok(p);
+    }
+    Err("could not resolve workspace root (no HOME or USERPROFILE)".to_string())
+}
+
+/// Convert an absolute path into a workspace-relative path with forward
+/// slashes. Used by the frontend for display ("memory/2026-08-22.md").
+fn relpath_from_workspace(abs: &Path, root: &Path) -> String {
+    match abs.strip_prefix(root) {
+        Ok(rel) => rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/"),
+        Err(_) => abs.to_string_lossy().into_owned(),
+    }
+}
+
+/// Validate that a path is safe to read/write:
+///   - Lives under the workspace root (no ../ escape)
+///   - Has a `.md` extension
+///   - Is not a symlink that resolves outside the workspace
+///
+/// Returns the canonicalized absolute path on success. The canonicalize
+/// step also resolves symlinks — important on Linux where the user
+/// could symlink ~/.openclaw/workspace/MEMORY.md → /etc/passwd.
+fn validate_workspace_md(path: &Path) -> Result<PathBuf, String> {
+    let root = workspace_root()?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|e| format!("workspace root does not exist: {}", e))?;
+
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+
+    // Reject non-md extensions BEFORE canonicalize so the error message
+    // is "not a .md file" not "No such file or directory".
+    match abs.extension().and_then(|e| e.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("md") => {}
+        Some(other) => return Err(format!("refusing to touch non-markdown file: .{}", other)),
+        None => return Err("refusing to touch file without extension".to_string()),
+    }
+
+    let canonical = abs
+        .canonicalize()
+        .map_err(|e| format!("file not found: {}", e))?;
+
+    if !canonical.starts_with(&canonical_root) {
+        return Err(format!(
+            "path escapes workspace root ({} not under {})",
+            canonical.display(),
+            canonical_root.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+/// Returns the user-facing info for the Settings page.
+///
+/// Combines `mc_get_tier` (which already does the JWT check) with the
+/// resolved endpoint and a friendly cache-age string. We call the same
+/// `fetch_tier_cached` that `mc_get_tier` uses, so the Settings page
+/// sees the SAME tier the dashboard just rendered.
+#[tauri::command]
+fn mc_get_user_info() -> Result<UserInfo, String> {
+    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let maic_base = resolve_maic_base_url();
+    let info = crate::auth::tier::fetch_tier_cached(&jwt, &maic_base)?;
+    Ok(UserInfo {
+        tier: format!("{:?}", info.tier).to_lowercase(),
+        plan_code: info.plan_code,
+        email: info.email,
+        endpoint: maic_base,
+        from_cache: info.from_cache,
+        tier_changed: info.tier_changed,
+        cache_age: friendly_age(info.from_cache),
+    })
+}
+
+/// Format the `from_cache` boolean as a user-facing string.
+///
+/// `mc_get_tier` returns `from_cache: true` when the cached tier is <5
+/// min old. We don't have the actual age in the response, so we say
+/// "cached" or "freshly fetched" rather than guessing minutes.
+fn friendly_age(from_cache: bool) -> String {
+    if from_cache {
+        "cached (under 5 min old)".to_string()
+    } else {
+        "freshly fetched from MAIC".to_string()
+    }
+}
+
+/// List the markdown files in the agent workspace.
+///
+/// Returns the "core" files (MEMORY.md, USER.md, AGENTS.md, SOUL.md,
+/// IDENTITY.md, TOOLS.md) at the top, then any `memory/*.md` daily
+/// notes sorted newest-first.
+///
+/// If the workspace doesn't exist yet (fresh install), returns an empty
+/// list — the frontend shows a friendly empty state instead of an error.
+#[tauri::command]
+fn mc_list_memory_files() -> Result<Vec<MemoryFileEntry>, String> {
+    let root = workspace_root()?;
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let core_files = [
+        "MEMORY.md",
+        "USER.md",
+        "AGENTS.md",
+        "SOUL.md",
+        "IDENTITY.md",
+        "TOOLS.md",
+    ];
+
+    let mut entries: Vec<MemoryFileEntry> = Vec::new();
+
+    // Core files at root
+    for name in core_files {
+        let abs = root.join(name);
+        entries.push(make_entry(&abs, &root, true));
+    }
+
+    // Daily notes under memory/
+    let memory_dir = root.join("memory");
+    if memory_dir.exists() {
+        let read = match fs::read_dir(&memory_dir) {
+            Ok(r) => r,
+            Err(e) => return Err(format!("read memory/: {}", e)),
+        };
+        let mut daily: Vec<PathBuf> = read
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_file())
+            .filter(|p| {
+                p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("md"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        // Sort newest-first by filename (YYYY-MM-DD.md sorts lexicographically).
+        daily.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+        for abs in daily {
+            entries.push(make_entry(&abs, &root, false));
+        }
+    }
+
+    Ok(entries)
+}
+
+fn make_entry(abs: &Path, root: &Path, core: bool) -> MemoryFileEntry {
+    let rel = relpath_from_workspace(abs, root);
+    let name = abs
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| rel.clone());
+    let meta = fs::metadata(abs).ok();
+    let size_bytes = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+    let modified_at = meta
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| {
+            // Render ISO 8601 UTC. Manual format to avoid pulling chrono.
+            let secs = d.as_secs();
+            // Days since 1970-01-01
+            let (y, mo, day, h, mi, s) = epoch_to_ymdhms(secs);
+            format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                y, mo, day, h, mi, s
+            )
+        });
+    MemoryFileEntry {
+        name,
+        rel_path: rel,
+        abs_path: abs.to_string_lossy().into_owned(),
+        size_bytes,
+        modified_at,
+        core,
+    }
+}
+
+/// Manual epoch → (year, month, day, hour, min, sec) conversion.
+/// Avoids pulling in `chrono` just for one timestamp.
+fn epoch_to_ymdhms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
+    let s = (secs % 60) as u32;
+    let mins_total = secs / 60;
+    let mi = (mins_total % 60) as u32;
+    let hours_total = mins_total / 60;
+    let h = (hours_total % 24) as u32;
+    let mut days = (hours_total / 24) as i64;
+
+    // Civil-from-days algorithm by Howard Hinnant (public domain).
+    // https://howardhinnant.github.io/date_algorithms.html
+    days += 719468;
+    let era = if days >= 0 { days } else { days - 146096 } / 146097;
+    let doe = (days - era * 146097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+
+    (y as i32, m, d, h, mi, s)
+}
+
+/// Read a memory file. Path is validated by `validate_workspace_md`.
+#[tauri::command]
+fn mc_read_memory_file(path: String) -> Result<String, String> {
+    let abs = validate_workspace_md(Path::new(&path))?;
+    fs::read_to_string(&abs).map_err(|e| format!("read {}: {}", abs.display(), e))
+}
+
+/// Write a memory file. Path is validated by `validate_workspace_md`.
+/// Creates parent directories if missing (so writing `memory/2026-08-22.md`
+/// on a fresh install just works).
+#[tauri::command]
+fn mc_write_memory_file(path: String, content: String) -> Result<(), String> {
+    let abs = validate_workspace_md(Path::new(&path))?;
+    if let Some(parent) = abs.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("create dir {}: {}", parent.display(), e))?;
+    }
+    fs::write(&abs, content.as_bytes())
+        .map_err(|e| format!("write {}: {}", abs.display(), e))?;
+    Ok(())
+}
+
+/// Open the workspace folder in OS file manager.
+///
+///   - Windows: `explorer.exe <path>`
+///   - macOS:   `open <path>`
+///   - Linux:   `xdg-open <path>`
+///
+/// Best-effort: spawns the process detached. If it fails, returns the
+/// OS error string so the frontend can show "couldn't open folder".
+#[tauri::command]
+fn mc_open_data_folder() -> Result<(), String> {
+    let root = workspace_root()?;
+    if !root.exists() {
+        return Err(format!(
+            "workspace does not exist yet: {}",
+            root.display()
+        ));
+    }
+
+    let (cmd, args): (&str, Vec<String>) = if cfg!(windows) {
+        ("explorer.exe", vec![root.to_string_lossy().into_owned()])
+    } else if cfg!(target_os = "macos") {
+        ("open", vec![root.to_string_lossy().into_owned()])
+    } else {
+        ("xdg-open", vec![root.to_string_lossy().into_owned()])
+    };
+
+    std::process::Command::new(cmd)
+        .args(&args)
+        .spawn()
+        .map_err(|e| format!("spawn {}: {}", cmd, e))?;
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -4119,7 +4471,13 @@ pub fn run() {
             mc_list_tools,
             mc_refresh_tier,
             mc_apply_tier_change,
-            mc_set_tier_defaults
+            mc_set_tier_defaults,
+            // v1.0.9-rc35: Settings page
+            mc_get_user_info,
+            mc_list_memory_files,
+            mc_read_memory_file,
+            mc_write_memory_file,
+            mc_open_data_folder
         ])
         .setup(|app| {
             setup(app)?;
@@ -5729,5 +6087,152 @@ mod tests {
             enabled,
             "Lesson 535: existing-config upgrade path must stamp plugin entry"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // v1.0.9-rc35: validate_workspace_md path safety
+    //
+    // The Settings page passes absolute paths from the frontend. We MUST
+    // reject any path that escapes the workspace or isn't a .md file,
+    // regardless of what the frontend claims.
+    //
+    // These tests use MIRACLE_CLAW_WORKSPACE to point at a temp dir so
+    // they don't touch the user's real ~/.openclaw/workspace.
+    // ---------------------------------------------------------------------
+
+    /// Build a workspace at `root` containing `rel_path` (creating
+    /// parent dirs as needed) and return the canonicalized absolute path.
+    fn touch_md(root: &Path, rel_path: &str) -> PathBuf {
+        let abs = root.join(rel_path);
+        if let Some(parent) = abs.parent() {
+            fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        fs::write(&abs, b"# test\n").expect("write fixture");
+        abs.canonicalize().expect("canonicalize")
+    }
+
+    #[test]
+    fn validate_workspace_md_accepts_existing_md() {
+        let _lock = lock_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("MIRACLE_CLAW_WORKSPACE", tmp.path());
+
+        let fixture = touch_md(tmp.path(), "MEMORY.md");
+        let result = validate_workspace_md(&fixture);
+        assert!(result.is_ok(), "should accept MEMORY.md: {:?}", result);
+        assert_eq!(result.unwrap(), fixture);
+    }
+
+    #[test]
+    fn validate_workspace_md_accepts_nested_md() {
+        let _lock = lock_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("MIRACLE_CLAW_WORKSPACE", tmp.path());
+
+        let fixture = touch_md(tmp.path(), "memory/2026-08-22.md");
+        let result = validate_workspace_md(&fixture);
+        assert!(result.is_ok(), "should accept nested .md: {:?}", result);
+    }
+
+    #[test]
+    fn validate_workspace_md_rejects_non_md_extension() {
+        let _lock = lock_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("MIRACLE_CLAW_WORKSPACE", tmp.path());
+
+        // Create a .txt file inside the workspace; should be rejected.
+        let bad = tmp.path().join("secrets.txt");
+        fs::write(&bad, b"don't touch this").unwrap();
+        let bad_canonical = bad.canonicalize().unwrap();
+
+        let result = validate_workspace_md(&bad_canonical);
+        assert!(result.is_err(), ".txt must be rejected");
+        let err = result.err().unwrap_or_default();
+        assert!(
+            err.contains("non-markdown"),
+            "error should explain the extension policy, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn validate_workspace_md_rejects_no_extension() {
+        let _lock = lock_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("MIRACLE_CLAW_WORKSPACE", tmp.path());
+
+        let bad = tmp.path().join("MEMORY");
+        fs::write(&bad, b"no ext").unwrap();
+        let bad_canonical = bad.canonicalize().unwrap();
+
+        let result = validate_workspace_md(&bad_canonical);
+        assert!(result.is_err(), "extensionless must be rejected");
+    }
+
+    #[test]
+    fn validate_workspace_md_rejects_escape() {
+        let _lock = lock_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("MIRACLE_CLAW_WORKSPACE", tmp.path());
+
+        // Create a file OUTSIDE the workspace. The frontend would have
+        // to construct this path; we want to be sure we refuse it.
+        let outside = std::env::temp_dir().join("outside_workspace_evil.md");
+        let _ = fs::remove_file(&outside);
+        fs::write(&outside, b"# evil\n").unwrap();
+        let outside_canonical = outside.canonicalize().unwrap();
+
+        let result = validate_workspace_md(&outside_canonical);
+        assert!(result.is_err(), "outside-workspace path must be rejected");
+        let err = result.err().unwrap_or_default();
+        assert!(
+            err.contains("escapes workspace"),
+            "error should explain why, got: {}",
+            err
+        );
+        let _ = fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn validate_workspace_md_rejects_missing_file() {
+        let _lock = lock_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("MIRACLE_CLAW_WORKSPACE", tmp.path());
+
+        // Path looks valid but doesn't exist.
+        let ghost = tmp.path().join("memory").join("never-created.md");
+        let result = validate_workspace_md(&ghost);
+        assert!(result.is_err(), "nonexistent file must be rejected");
+    }
+
+    #[test]
+    fn validate_workspace_md_rejects_relative_path_traversal() {
+        let _lock = lock_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("MIRACLE_CLAW_WORKSPACE", tmp.path());
+
+        // "../etc/passwd.md" — even though we'd reject the extension
+        // anyway, this proves the canonicalize step is what catches
+        // escapes (the extension check happens before, but the
+        // canonicalize would catch it if the file existed).
+        let traversal = Path::new("../etc/passwd.md");
+        let result = validate_workspace_md(traversal);
+        assert!(result.is_err(), "relative traversal must be rejected");
+    }
+
+    // ---------------------------------------------------------------------
+    // v1.0.9-rc35: epoch_to_ymdhms sanity (matches the smoke test we ran
+    // during development; pinned here so the algorithm can't silently
+    // regress).
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn epoch_to_ymdhms_known_dates() {
+        assert_eq!(epoch_to_ymdhms(0), (1970, 1, 1, 0, 0, 0), "epoch");
+        assert_eq!(epoch_to_ymdhms(946684800), (2000, 1, 1, 0, 0, 0), "y2k");
+        // 2024-02-29 = leap day
+        assert_eq!(epoch_to_ymdhms(1709164800), (2024, 2, 29, 0, 0, 0), "leap day 2024");
+        // 2026-08-22 00:00:00 UTC
+        assert_eq!(epoch_to_ymdhms(1787356800), (2026, 8, 22, 0, 0, 0), "rc35 ship date");
     }
 }

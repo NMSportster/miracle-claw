@@ -131,3 +131,53 @@ commands.allow = ["mc_apply_tier_change"]
 identifier = "deny-mc-apply-tier-change"
 description = "Denies the mc_apply_tier_change command."
 commands.deny = ["mc_apply_tier_change"]
+
+[[permission]]
+identifier = "allow-mc-get-user-info"
+description = "Enables the mc_get_user_info command."
+commands.allow = ["mc_get_user_info"]
+
+[[permission]]
+identifier = "deny-mc-get-user-info"
+description = "Denies the mc_get_user_info command."
+commands.deny = ["mc_get_user_info"]
+
+[[permission]]
+identifier = "allow-mc-list-memory-files"
+description = "Enables the mc_list_memory_files command."
+commands.allow = ["mc_list_memory_files"]
+
+[[permission]]
+identifier = "deny-mc-list-memory-files"
+description = "Denies the mc_list_memory_files command."
+commands.deny = ["mc_list_memory_files"]
+
+[[permission]]
+identifier = "allow-mc-read-memory-file"
+description = "Enables the mc_read_memory_file command."
+commands.allow = ["mc_read_memory_file"]
+
+[[permission]]
+identifier = "deny-mc-read-memory-file"
+description = "Denies the mc_read_memory_file command."
+commands.deny = ["mc_read_memory_file"]
+
+[[permission]]
+identifier = "allow-mc-write-memory-file"
+description = "Enables the mc_write_memory_file command."
+commands.allow = ["mc_write_memory_file"]
+
+[[permission]]
+identifier = "deny-mc-write-memory-file"
+description = "Denies the mc_write_memory_file command."
+commands.deny = ["mc_write_memory_file"]
+
+[[permission]]
+identifier = "allow-mc-open-data-folder"
+description = "Enables the mc_open_data_folder command."
+commands.allow = ["mc_open_data_folder"]
+
+[[permission]]
+identifier = "deny-mc-open-data-folder"
+description = "Denies the mc_open_data_folder command."
+commands.deny = ["mc_open_data_folder"]

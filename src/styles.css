@@ -546,3 +546,466 @@ code {
   from { opacity: 0; transform: translateY(20px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* ============================================================================
+ * v1.0.9-rc35: Settings page styles
+ *
+ * Five blocks:
+ *   1. Dashboard header tweaks  — settings-link button in header
+ *   2. Settings page skeleton   — section layout, back link, headings
+ *   3. Account section          — grid of labeled rows + actions
+ *   4. Memory section           — file picker list + empty state
+ *   5. Editor modal             — view/edit tabs + textarea
+ *
+ * Reuses existing tokens (--bg, --bg-card, --fg, --fg-muted, --accent,
+ * --error-bg, --border, --link, --tile-hover, etc.) so the look stays
+ * consistent with login + dashboard.
+ * ============================================================================ */
+
+/* --- 1. Dashboard header actions ----------------------------- */
+.dashboard-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.icon-link {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 16px;
+  color: var(--fg);
+  padding: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.icon-link:hover {
+  background: var(--tile-hover);
+  border-color: var(--accent);
+}
+
+.icon-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* --- 2. Settings page skeleton -------------------------------- */
+.back-link {
+  background: transparent;
+  border: none;
+  color: var(--link);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 0;
+  text-align: left;
+}
+
+.back-link:hover {
+  text-decoration: underline;
+}
+
+.settings-section {
+  margin: 24px 0;
+  padding: 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.settings-section h2 {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.loading-slot {
+  padding: 20px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.signout-section {
+  display: flex;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 32px 20px 16px;
+}
+
+.danger-button {
+  background: var(--error-bg);
+  color: var(--error-fg);
+  border: 1px solid var(--error-bg);
+  border-radius: 6px;
+  padding: 12px 24px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.danger-button:hover {
+  background: #991b1b;
+  border-color: #991b1b;
+}
+
+.danger-button:focus-visible {
+  outline: 2px solid var(--error-fg);
+  outline-offset: 2px;
+}
+
+/* --- 3. Account section --------------------------------------- */
+.account-grid,
+.about-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.account-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 16px;
+  align-items: center;
+}
+
+.account-label {
+  font-size: 13px;
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+
+.account-value {
+  font-size: 14px;
+  color: var(--fg);
+  word-break: break-word;
+}
+
+.account-value.mono {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+}
+
+.account-value .tier-badge {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  display: inline-block;
+}
+
+.account-value .tier-badge.tier-free { background: #475569; }
+.account-value .tier-badge.tier-pro { background: var(--accent); }
+.account-value .tier-badge.tier-pro_plus { background: #0891b2; }
+.account-value .tier-badge.tier-team { background: #7c3aed; }
+.account-value .tier-badge.tier-enterprise { background: #b91c1c; }
+
+.account-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.link-button {
+  background: transparent;
+  border: none;
+  color: var(--link);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.link-button:hover {
+  background: var(--tile-hover);
+  text-decoration: underline;
+}
+
+.link-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* --- 4. Memory section ---------------------------------------- */
+.memory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.memory-group-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: -8px;
+}
+
+.memory-file {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  color: var(--fg);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.memory-file:hover {
+  background: var(--tile-hover);
+  border-color: var(--accent);
+}
+
+.memory-file:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.memory-file-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.memory-file-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.memory-file-name {
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-file-meta {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-file-arrow {
+  font-size: 16px;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+
+.memory-empty {
+  text-align: center;
+  padding: 24px 16px;
+  color: var(--fg-muted);
+}
+
+.memory-empty p {
+  margin: 4px 0;
+  font-size: 13px;
+}
+
+/* --- 5. Editor modal ------------------------------------------ */
+.modal.modal-wide {
+  max-width: 800px;
+  width: 90%;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-close {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 18px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.modal-close:hover {
+  background: var(--tile-hover);
+  color: var(--fg);
+}
+
+.modal-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.editor-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  padding: 0 20px;
+}
+
+.tab-button {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 12px 16px;
+  margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.tab-button:hover {
+  color: var(--fg);
+}
+
+.tab-button.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.tab-panel {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 20px;
+}
+
+.tab-panel.hidden {
+  display: none;
+}
+
+.markdown-view {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
+  margin: 0;
+}
+
+.markdown-edit {
+  width: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 300px;
+  box-sizing: border-box;
+}
+
+.markdown-edit:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.markdown-edit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  gap: 12px;
+}
+
+.primary-button {
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.primary-button:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.primary-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.primary-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* --- utility (used by settings.js) --------------------------- */
+.hidden {
+  display: none !important;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.muted {
+  color: var(--fg-muted);
+}
+
+.small {
+  font-size: 12px;
+}
+
+.error {
+  background: var(--error-bg);
+  color: var(--error-fg);
+  border: 1px solid var(--error-bg);
+  border-radius: 6px;
+  padding: 12px 16px;
+  font-size: 13px;
+  margin: 8px 0;
+}

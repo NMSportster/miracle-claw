@@ -15,5 +15,11 @@ permissions = [
   "allow-mc-get-nudge",
   "allow-mc-list-tools",
   "allow-mc-refresh-tier",
-  "allow-mc-apply-tier-change"
+  "allow-mc-apply-tier-change",
+  # v1.0.9-rc35: Settings page commands
+  "allow-mc-get-user-info",
+  "allow-mc-list-memory-files",
+  "allow-mc-read-memory-file",
+  "allow-mc-write-memory-file",
+  "allow-mc-open-data-folder"
 ]

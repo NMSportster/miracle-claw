@@ -18,6 +18,7 @@ import "./styles.css";
 import { register, mount as mountPage } from "./page_registry.js";
 import { loginPage } from "./pages/login.js";
 import { dashboardPage } from "./pages/dashboard.js";
+import { settingsPage } from "./pages/settings.js";
 
 const { invoke } = window.__TAURI__.core;
 const root = document.getElementById("root");
@@ -28,6 +29,7 @@ const root = document.getElementById("root");
 
 register("login", loginPage);
 register("dashboard", dashboardPage);
+register("settings", settingsPage);
 
 // --- Boot -----------------------------------------------------------------
 
@@ -52,6 +54,18 @@ async function boot() {
 
 function pageCtx() {
   return {
+    onNeedsLogin: () =>
+      mountPage("login", root, {
+        endpoint: "https://maicserver.com",
+        onSuccess: () => mountPage("dashboard", root, pageCtx()),
+      }),
+    onOpenSettings: () => mountPage("settings", root, settingsCtx()),
+  };
+}
+
+function settingsCtx() {
+  return {
+    onBackToDashboard: () => mountPage("dashboard", root, pageCtx()),
     onNeedsLogin: () =>
       mountPage("login", root, {
         endpoint: "https://maicserver.com",

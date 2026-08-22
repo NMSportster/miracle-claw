@@ -50,7 +50,7 @@ export const dashboardPage = {
   requiresAuth: true,
 
   mount(root, ctx = {}) {
-    const { onNeedsLogin } = ctx;
+    const { onNeedsLogin, onOpenSettings } = ctx;
 
     (async () => {
       const [tierResult, nudgeResult] = await Promise.allSettled([
@@ -77,10 +77,19 @@ export const dashboardPage = {
         <div class="dashboard">
           <header class="dashboard-header">
             <h1 class="logo">MiracleClaw</h1>
-            <div class="tier-badge" id="tier-badge" data-tier="${escapeHtml(
-              tier?.tier || "free"
-            )}" title="Click to refresh tier from MAIC">
-              <span class="tier-label">${escapeHtml(tierLabel)}</span>
+            <div class="dashboard-header-actions">
+              <button
+                type="button"
+                class="icon-link"
+                id="settings-link"
+                title="Open Settings"
+                aria-label="Open Settings"
+              >⚙</button>
+              <div class="tier-badge" id="tier-badge" data-tier="${escapeHtml(
+                tier?.tier || "free"
+              )}" title="Click to refresh tier from MAIC">
+                <span class="tier-label">${escapeHtml(tierLabel)}</span>
+              </div>
             </div>
           </header>
 
@@ -115,6 +124,9 @@ export const dashboardPage = {
       document.getElementById("tier-badge").addEventListener("click", () => this.refreshTier(root, ctx));
       document.getElementById("refresh-tier").addEventListener("click", () => this.refreshTier(root, ctx));
       document.getElementById("signout").addEventListener("click", () => this.signOut(root, ctx));
+      if (onOpenSettings) {
+        document.getElementById("settings-link").addEventListener("click", () => onOpenSettings());
+      }
 
       if (tier?.tier_changed) showTierChangedModal(tier);
       if (nudge && nudge.text && nudge.text.length > 0) showNudgeModal(nudge);
