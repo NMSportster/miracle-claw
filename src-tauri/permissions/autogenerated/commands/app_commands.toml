@@ -181,3 +181,53 @@ commands.allow = ["mc_open_data_folder"]
 identifier = "deny-mc-open-data-folder"
 description = "Denies the mc_open_data_folder command."
 commands.deny = ["mc_open_data_folder"]
+
+[[permission]]
+identifier = "allow-mc-terminal-start"
+description = "Enables the mc_terminal_start command."
+commands.allow = ["mc_terminal_start"]
+
+[[permission]]
+identifier = "deny-mc-terminal-start"
+description = "Denies the mc_terminal_start command."
+commands.deny = ["mc_terminal_start"]
+
+[[permission]]
+identifier = "allow-mc-terminal-poll"
+description = "Enables the mc_terminal_poll command."
+commands.allow = ["mc_terminal_poll"]
+
+[[permission]]
+identifier = "deny-mc-terminal-poll"
+description = "Denies the mc_terminal_poll command."
+commands.deny = ["mc_terminal_poll"]
+
+[[permission]]
+identifier = "allow-mc-terminal-write"
+description = "Enables the mc_terminal_write command."
+commands.allow = ["mc_terminal_write"]
+
+[[permission]]
+identifier = "deny-mc-terminal-write"
+description = "Denies the mc_terminal_write command."
+commands.deny = ["mc_terminal_write"]
+
+[[permission]]
+identifier = "allow-mc-terminal-kill"
+description = "Enables the mc_terminal_kill command."
+commands.allow = ["mc_terminal_kill"]
+
+[[permission]]
+identifier = "deny-mc-terminal-kill"
+description = "Denies the mc_terminal_kill command."
+commands.deny = ["mc_terminal_kill"]
+
+[[permission]]
+identifier = "allow-mc-terminal-list"
+description = "Enables the mc_terminal_list command."
+commands.allow = ["mc_terminal_list"]
+
+[[permission]]
+identifier = "deny-mc-terminal-list"
+description = "Denies the mc_terminal_list command."
+commands.deny = ["mc_terminal_list"]

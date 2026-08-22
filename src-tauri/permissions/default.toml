@@ -21,5 +21,11 @@ permissions = [
   "allow-mc-list-memory-files",
   "allow-mc-read-memory-file",
   "allow-mc-write-memory-file",
-  "allow-mc-open-data-folder"
+  "allow-mc-open-data-folder",
+  # v1.0.9-rc36: Terminal tab commands
+  "allow-mc-terminal-start",
+  "allow-mc-terminal-poll",
+  "allow-mc-terminal-write",
+  "allow-mc-terminal-kill",
+  "allow-mc-terminal-list"
 ]

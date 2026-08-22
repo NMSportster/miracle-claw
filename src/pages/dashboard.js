@@ -50,7 +50,7 @@ export const dashboardPage = {
   requiresAuth: true,
 
   mount(root, ctx = {}) {
-    const { onNeedsLogin, onOpenSettings } = ctx;
+    const { onNeedsLogin, onOpenSettings, onOpenTerminal } = ctx;
 
     (async () => {
       const [tierResult, nudgeResult] = await Promise.allSettled([
@@ -110,6 +110,18 @@ export const dashboardPage = {
                 <div class="tile-cta">Open in new window →</div>
               </div>
             </button>
+            <button class="tile" id="terminal-tile" type="button">
+              <div class="tile-icon">💻</div>
+              <div class="tile-body">
+                <div class="tile-title">Terminal</div>
+                <div class="tile-description">
+                  Local shell (cmd.exe / PowerShell / WSL on Windows, bash / sh /
+                  zsh on macOS and Linux). Unsandboxed — anything you type here
+                  runs as you. Useful as a launcher for tools you already use.
+                </div>
+                <div class="tile-cta">Open terminal →</div>
+              </div>
+            </button>
           </div>
 
           <div class="dashboard-footer">
@@ -121,6 +133,9 @@ export const dashboardPage = {
 
       // Wire interactions
       document.getElementById("openclaw-tile").addEventListener("click", openOpenClaw);
+      if (onOpenTerminal) {
+        document.getElementById("terminal-tile").addEventListener("click", () => onOpenTerminal());
+      }
       document.getElementById("tier-badge").addEventListener("click", () => this.refreshTier(root, ctx));
       document.getElementById("refresh-tier").addEventListener("click", () => this.refreshTier(root, ctx));
       document.getElementById("signout").addEventListener("click", () => this.signOut(root, ctx));

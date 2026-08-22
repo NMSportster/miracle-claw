@@ -81,6 +81,15 @@ struct AppState {
     /// Mutex because RunEvent handlers + setup() cross thread boundaries.
     launcher_child:
         Mutex<Option<tauri_plugin_shell::process::CommandChild>>,
+    /// v1.0.9-rc36: registry of active PTY terminal sessions.
+    /// Map from session id to an Arc-wrapped TerminalHandle. The Arc
+    /// is shared between reader threads (which we spawn at start
+    /// time) and the state map (which poll/write/kill reach via id).
+    /// Sessions are cheap to keep alive (one thread per session);
+    /// we don't auto-evict dead sessions — the user kills them
+    /// explicitly or the app exit cleans them up via the
+    /// RunEvent::Exit handler.
+    terminals: Mutex<std::collections::HashMap<String, std::sync::Arc<TerminalHandle>>>,
     /// v1.0.9-rc30 (Lesson 536): the actual resolved URL of the main
     /// dashboard window, captured at `create_main_window` time.
     ///
@@ -4449,7 +4458,408 @@ fn mc_open_data_folder() -> Result<(), String> {
         .args(&args)
         .spawn()
         .map_err(|e| format!("spawn {}: {}", cmd, e))?;
+
     Ok(())
+}
+
+// ============================================================================
+// v1.0.9-rc36: Terminal tab commands.
+//
+// A first-cut Power-User shell: spawn cmd.exe / pwsh.exe / wsl.exe with
+// stdin/stdout/stderr piped. Two reader threads (stdout, stderr) drain into
+// a shared Vec<OutputChunk> guarded by a Mutex. Frontend polls
+// `mc_terminal_poll(id, since_seq)` every ~100ms and gets back only the
+// new chunks — the `seq` is a monotonic counter that makes polling
+// idempotent (re-poll with the same `since_seq` returns the same bytes).
+//
+// Why not portable-pty? PTY semantics (TERM, signal delivery, resize) add
+// ~150kB and a cross-platform headache for ~5% of the value: most users
+// don't resize their terminal mid-session, and cmd.exe / pwsh don't care
+// about TERM. We can swap in portable-pty later without changing the
+// frontend surface — the polling API stays the same.
+//
+// Why not tauri::Emitter events? Same answer as above: events require
+// test mocking, and 100ms polling latency is invisible to humans. Polling
+// is bulletproof and easy to write Rust tests for.
+//
+// Security note: there's NO path validation here — the user is in their
+// own shell, they can do whatever they want. We do NOT call this from
+// the model side; it's purely a UI affordance. The MAIC `bash_run` tool
+// (in tools/exec.rs) is the SANDBOXED shell — that one enforces an
+// allowlist of CWDs and a 60s timeout. The Terminal panel is the
+// UNSANDBOXED shell, by design.
+// ============================================================================
+
+/// One chunk of output from a terminal session. Serialized to JSON for
+/// the frontend to append to its DOM. `seq` is the monotonic counter
+/// assigned at append time; the frontend uses it to skip already-seen
+/// chunks on the next poll.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OutputChunk {
+    seq: u64,
+    stream: String,
+    data: String,
+}
+
+/// Internal state for one terminal session. The `buffer_arc` and
+/// `seq_arc` are `Arc<Mutex<...>>` so reader threads (which we spawn
+/// at start time and never rejoin) can keep references without going
+/// through `tauri::State`. The frontend's `mc_terminal_poll` reaches
+/// them by id via `state.terminals`.
+struct TerminalHandle {
+    shell: String,
+    started_at: u64,
+    child: Mutex<Option<std::process::Child>>,
+    /// Output buffer reader threads append to; poll drains. Shared
+    /// with reader threads via `Arc` clone at spawn time.
+    buffer_arc: std::sync::Arc<Mutex<Vec<OutputChunk>>>,
+    /// Monotonic counter, bumped by reader threads. Shared via `Arc`.
+    seq_arc: std::sync::Arc<Mutex<u64>>,
+}
+
+impl TerminalHandle {
+    /// Append one chunk to the buffer and return its `seq`. Used by
+    /// reader threads. Poll-time callers should iterate `buffer` and
+    /// filter by seq instead — keeps the locking tight.
+    fn push_chunk(&self, stream: &str, data: String) -> u64 {
+        let new_seq = {
+            let mut s = self.seq_arc.lock().unwrap();
+            *s += 1;
+            *s
+        };
+        let mut buf = self.buffer_arc.lock().unwrap();
+        buf.push(OutputChunk {
+            seq: new_seq,
+            stream: stream.to_string(),
+            data,
+        });
+        if buf.len() > MAX_BUFFER_LINES {
+            let drop = buf.len() - MAX_BUFFER_LINES;
+            buf.drain(0..drop);
+        }
+        new_seq
+    }
+}
+
+/// Hard limit on buffered output. Once a session hits this, the buffer
+/// keeps the most-recent N chunks and drops older ones. Protects against
+/// OOM from runaway processes (`yes`, `for ((;;)); do echo x; done`).
+const MAX_BUFFER_LINES: usize = 5_000;
+
+/// Resolve the (cmd, args[]) tuple for a given shell label on this OS.
+fn resolve_shell_cmd(shell: &str) -> Result<(&'static str, Vec<&'static str>), String> {
+    if cfg!(windows) {
+        match shell {
+            "cmd" => Ok(("cmd.exe", vec![])),
+            "pwsh" => Ok(("pwsh.exe", vec!["-NoLogo"])),
+            "wsl" => Ok(("wsl.exe", vec!["--distribution", "Ubuntu", "bash"])),
+            _ => Err(format!(
+                "unknown shell on Windows: '{}' (supported: cmd, pwsh, wsl)",
+                shell
+            )),
+        }
+    } else {
+        match shell {
+            "bash" => Ok(("bash", vec!["-i"])),
+            "sh" => Ok(("sh", vec!["-i"])),
+            "zsh" => Ok(("zsh", vec!["-i"])),
+            _ => Err(format!(
+                "unknown shell on *nix: '{}' (supported: bash, sh, zsh)",
+                shell
+            )),
+        }
+    }
+}
+
+/// Look up an executable the way `which` would.
+fn which_first(cmd: &str) -> String {
+    if cmd.contains('/') || cmd.contains('\\') {
+        return cmd.to_string();
+    }
+    if let Ok(paths) = std::env::var("PATH") {
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        for dir in paths.split(sep) {
+            if dir.is_empty() {
+                continue;
+            }
+            let candidate = std::path::PathBuf::from(dir).join(cmd);
+            if cfg!(windows) {
+                if candidate.exists() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+                let with_exe = candidate.with_extension("exe");
+                if with_exe.exists() {
+                    return with_exe.to_string_lossy().into_owned();
+                }
+            } else if candidate.exists() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+    }
+    cmd.to_string()
+}
+
+/// Spawn a shell with piped stdio. On Windows we pass CREATE_NO_WINDOW
+/// so the user doesn't see a second console flash.
+fn spawn_shell(cmd: &str, args: &[&str]) -> Result<std::process::Child, String> {
+    let mut command = std::process::Command::new(cmd);
+    for a in args {
+        command.arg(a);
+    }
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    command.spawn().map_err(|e| format!("spawn {}: {}", cmd, e))
+}
+
+/// Reader thread body. Reads lines from `reader` and appends them
+/// to the handle's shared buffer via `push_chunk`. Companion of
+/// `mc_terminal_start`.
+fn read_lines<R: std::io::Read + Send + 'static>(
+    mut reader: R,
+    handle: std::sync::Arc<TerminalHandle>,
+    stream: &'static str,
+) {
+    use std::io::{BufRead, BufReader};
+    let mut br = BufReader::new(&mut reader);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match br.read_line(&mut line) {
+            Ok(0) => {
+                handle.push_chunk("system", format!("[{} closed]\n", stream));
+                break;
+            }
+            Ok(_) => {
+                handle.push_chunk(stream, std::mem::take(&mut line));
+            }
+            Err(e) => {
+                handle.push_chunk("system", format!("[{} read error: {}]\n", stream, e));
+                break;
+            }
+        }
+    }
+}
+
+/// Generate a short, url-safe session id. 24 hex chars = 96 bits.
+fn new_terminal_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // Mask each half to 12 hex digits (48 bits) so format width is fixed.
+    let a = ((nanos as u64) ^ std::process::id() as u64) & 0xFF_FFFF_FFFF_FF;
+    let b = ((nanos as u64).wrapping_mul(0x9E3779B97F4A7C15)) & 0xFF_FFFF_FFFF_FF;
+    format!("{:012x}{:012x}", a, b)
+}
+
+/// Start a new terminal session. Spawns the chosen shell with piped
+/// stdio, kicks off two reader threads (stdout, stderr), and stores
+/// the handle in `AppState::terminals`. Returns the session id so the
+/// frontend can address it on subsequent polls/writes/kills.
+#[tauri::command]
+fn mc_terminal_start(
+    shell: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let (cmd, args) = resolve_shell_cmd(&shell)?;
+    let cmd_path = which_first(cmd);
+
+    let mut child = spawn_shell(&cmd_path, &args)?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to capture child stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "failed to capture child stderr".to_string())?;
+
+    let id = new_terminal_id();
+
+    let buffer_arc = std::sync::Arc::new(Mutex::new(Vec::<OutputChunk>::new()));
+    let seq_arc = std::sync::Arc::new(Mutex::new(0u64));
+
+    let started_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let handle = TerminalHandle {
+        shell: shell.clone(),
+        started_at,
+        child: Mutex::new(Some(child)),
+        buffer_arc: buffer_arc.clone(),
+        seq_arc: seq_arc.clone(),
+    };
+
+    // Wrap the handle in Arc so reader threads and the state map can
+    // share the same `Arc<TerminalHandle>`. Reader threads push chunks
+    // into `handle.buffer_arc`; the state's poll/write/kill reaches
+    // the same child via `handle.child` for `try_wait` / `kill`.
+    let handle_arc: std::sync::Arc<TerminalHandle> = std::sync::Arc::new(handle);
+    let stdout_handle = handle_arc.clone();
+    std::thread::spawn(move || read_lines(stdout, stdout_handle, "stdout"));
+    let stderr_handle = handle_arc.clone();
+    std::thread::spawn(move || read_lines(stderr, stderr_handle, "stderr"));
+
+    {
+        let mut map = state.terminals.lock().unwrap();
+        map.insert(id.clone(), handle_arc);
+    }
+
+    Ok(id)
+}
+
+/// Drain new output chunks for a session. Frontend calls this every
+/// ~100ms with the `since_seq` it saw last time; we return only chunks
+/// with `seq > since_seq`. Also returns the session's current
+/// "alive" status so the UI can swap a spawn→kill button without an
+/// extra round-trip.
+#[derive(Debug, Serialize, Deserialize)]
+struct TerminalPollResult {
+    alive: bool,
+    /// Process exit code or signal summary, populated only when alive=false.
+    exit_info: Option<String>,
+    chunks: Vec<OutputChunk>,
+}
+
+#[tauri::command]
+fn mc_terminal_poll(
+    id: String,
+    since_seq: u64,
+    state: tauri::State<'_, AppState>,
+) -> Result<TerminalPollResult, String> {
+    let map = state.terminals.lock().unwrap();
+    let handle = map
+        .get(&id)
+        .ok_or_else(|| format!("terminal session '{}' not found", id))?;
+
+    let (alive, exit_info) = {
+        let mut child_lock = handle.child.lock().unwrap();
+        match child_lock.as_mut() {
+            Some(c) => match c.try_wait() {
+                Ok(Some(status)) => {
+                    let info = format!("exit code {}", status.code().unwrap_or(-1));
+                    *child_lock = None;
+                    (false, Some(info))
+                }
+                Ok(None) => (true, None),
+                Err(e) => {
+                    *child_lock = None;
+                    (false, Some(format!("wait failed: {}", e)))
+                }
+            },
+            None => (false, Some("process already reaped or killed".to_string())),
+        }
+    };
+
+    let chunks: Vec<OutputChunk> = {
+        let buf = handle.buffer_arc.lock().unwrap();
+        buf.iter()
+            .filter(|c| c.seq > since_seq)
+            .cloned()
+            .collect()
+    };
+
+    Ok(TerminalPollResult {
+        alive,
+        exit_info,
+        chunks,
+    })
+}
+
+/// Write to a session's stdin. The frontend's input box feeds this on
+/// enter. For interactive shells we append `\n` so the shell sees the
+/// line; the frontend doesn't have to know about line endings.
+#[tauri::command]
+fn mc_terminal_write(
+    id: String,
+    input: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let map = state.terminals.lock().unwrap();
+    let handle = map
+        .get(&id)
+        .ok_or_else(|| format!("terminal session '{}' not found", id))?;
+
+    let mut child_lock = handle.child.lock().unwrap();
+    let child = child_lock
+        .as_mut()
+        .ok_or_else(|| "session already ended".to_string())?;
+
+    use std::io::Write;
+    let stdin = child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "stdin not piped".to_string())?;
+
+    let mut to_send = input;
+    if !to_send.ends_with('\n') {
+        to_send.push('\n');
+    }
+    stdin
+        .write_all(to_send.as_bytes())
+        .map_err(|e| format!("write: {}", e))?;
+    stdin.flush().map_err(|e| format!("flush: {}", e))?;
+    Ok(())
+}
+
+/// Forcefully kill a session. Idempotent — killing an already-dead
+/// session is a no-op. Removes the session from the map so the next
+/// poll returns "session not found"; the frontend interprets that
+/// as "go back to dashboard" or "kill and re-start".
+#[tauri::command]
+fn mc_terminal_kill(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let mut map = state.terminals.lock().unwrap();
+    if let Some(handle) = map.remove(&id) {
+        if let Some(mut child) = handle.child.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    Ok(())
+}
+
+/// List active sessions. Useful for diagnostics (and so the Settings
+/// page can show a "Terminal sessions: 3" count if we want).
+#[derive(Debug, Serialize, Deserialize)]
+struct TerminalSession {
+    id: String,
+    shell: String,
+    started_at: u64,
+    alive: bool,
+}
+
+#[tauri::command]
+fn mc_terminal_list(state: tauri::State<'_, AppState>) -> Vec<TerminalSession> {
+    let map = state.terminals.lock().unwrap();
+    map.iter()
+        .map(|(id, h)| {
+            let alive = match h.child.lock().unwrap().as_mut() {
+                Some(c) => c.try_wait().ok().flatten().is_none(),
+                None => false,
+            };
+            TerminalSession {
+                id: id.clone(),
+                shell: h.shell.clone(),
+                started_at: h.started_at,
+                alive,
+            }
+        })
+        .collect()
 }
 
 pub fn run() {
@@ -4477,7 +4887,13 @@ pub fn run() {
             mc_list_memory_files,
             mc_read_memory_file,
             mc_write_memory_file,
-            mc_open_data_folder
+            mc_open_data_folder,
+            // v1.0.9-rc36: Terminal tab
+            mc_terminal_start,
+            mc_terminal_poll,
+            mc_terminal_write,
+            mc_terminal_kill,
+            mc_terminal_list
         ])
         .setup(|app| {
             setup(app)?;
@@ -6234,5 +6650,134 @@ mod tests {
         assert_eq!(epoch_to_ymdhms(1709164800), (2024, 2, 29, 0, 0, 0), "leap day 2024");
         // 2026-08-22 00:00:00 UTC
         assert_eq!(epoch_to_ymdhms(1787356800), (2026, 8, 22, 0, 0, 0), "rc35 ship date");
+    }
+
+    // ---------------------------------------------------------------------
+    // v1.0.9-rc36: Terminal command unit tests.
+    //
+    // We avoid running the full Tauri command surface (no easy way to
+    // construct a tauri::State in tests). Instead we exercise the
+    // pure-function helpers and a real spawn-then-read end-to-end:
+    //
+    //   - resolve_shell_cmd: pure function for shell label -> (cmd, args)
+    //   - which_first: PATH lookup with absolute-path short-circuit
+    //   - new_terminal_id: shape (24 hex chars) + uniqueness
+    //   - read_lines: spawns `echo` and asserts the buffer fills with
+    //     the expected line. Closest we get to E2E without tauri::State.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn resolve_shell_cmd_recognizes_known_shells() {
+        if cfg!(windows) {
+            assert!(resolve_shell_cmd("cmd").is_ok());
+            assert!(resolve_shell_cmd("pwsh").is_ok());
+            assert!(resolve_shell_cmd("wsl").is_ok());
+            assert!(resolve_shell_cmd("bash").is_err());
+        } else {
+            assert!(resolve_shell_cmd("bash").is_ok());
+            assert!(resolve_shell_cmd("sh").is_ok());
+            assert!(resolve_shell_cmd("zsh").is_ok());
+            assert!(resolve_shell_cmd("pwsh").is_err());
+        }
+    }
+
+    #[test]
+    fn resolve_shell_cmd_rejects_unknown() {
+        let res = resolve_shell_cmd("totally-not-a-shell");
+        assert!(res.is_err(), "unknown shell must error");
+        assert!(res.unwrap_err().contains("unknown shell"));
+    }
+
+    #[test]
+    fn which_first_skips_path_lookup_for_absolute() {
+        if cfg!(windows) {
+            assert_eq!(
+                which_first("C:\\Windows\\System32\\cmd.exe"),
+                "C:\\Windows\\System32\\cmd.exe"
+            );
+        } else {
+            assert_eq!(which_first("/bin/sh"), "/bin/sh");
+        }
+    }
+
+    #[test]
+    fn new_terminal_id_is_24_hex_chars() {
+        let id = new_terminal_id();
+        assert_eq!(id.len(), 24, "session id must be 24 hex chars: got {:?}", id);
+        assert!(
+            id.chars().all(|c| c.is_ascii_hexdigit()),
+            "must be hex: {:?}",
+            id
+        );
+    }
+
+    #[test]
+    fn new_terminal_id_is_unique_across_calls() {
+        let mut ids: Vec<String> = (0..1000).map(|_| new_terminal_id()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 1000, "duplicate terminal ids found");
+    }
+
+    #[test]
+    fn read_lines_drains_lines_into_buffer() {
+        use std::process::{Command, Stdio};
+
+        let (cmd, args): (&str, Vec<&str>) = if cfg!(windows) {
+            ("cmd.exe", vec!["/C", "echo hello-rc36"])
+        } else {
+            ("/bin/sh", vec!["-c", "echo hello-rc36"])
+        };
+
+        let mut child = Command::new(cmd)
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn echo");
+
+        let stdout = child.stdout.take().expect("take stdout");
+        let buffer_arc = std::sync::Arc::new(Mutex::new(Vec::<OutputChunk>::new()));
+        let seq_arc = std::sync::Arc::new(Mutex::new(0u64));
+
+        let handle = TerminalHandle {
+            shell: "test".into(),
+            started_at: 0,
+            child: Mutex::new(Some(child)),
+            buffer_arc: buffer_arc.clone(),
+            seq_arc: seq_arc.clone(),
+        };
+        let handle_arc = std::sync::Arc::new(handle);
+
+        let reader_handle = handle_arc.clone();
+        std::thread::spawn(move || {
+            read_lines(stdout, reader_handle, "stdout");
+        });
+
+        let start = std::time::Instant::now();
+        loop {
+            {
+                let buf = buffer_arc.lock().unwrap();
+                if !buf.is_empty() {
+                    break;
+                }
+            }
+            if start.elapsed() > std::time::Duration::from_secs(2) {
+                panic!("read_lines never produced a chunk");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let buf = buffer_arc.lock().unwrap();
+        let combined: String = buf
+            .iter()
+            .filter(|c| c.stream == "stdout")
+            .map(|c| c.data.as_str())
+            .collect();
+        assert!(
+            combined.contains("hello-rc36"),
+            "expected 'hello-rc36' in output, got: {:?}",
+            combined
+        );
     }
 }
