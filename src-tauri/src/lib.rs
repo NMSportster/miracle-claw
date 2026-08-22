@@ -81,6 +81,18 @@ struct AppState {
     /// Mutex because RunEvent handlers + setup() cross thread boundaries.
     launcher_child:
         Mutex<Option<tauri_plugin_shell::process::CommandChild>>,
+    /// v1.0.9-rc30 (Lesson 536): the actual resolved URL of the main
+    /// dashboard window, captured at `create_main_window` time.
+    ///
+    /// On Windows production builds, Tauri 2 serves bundled assets at
+    /// `http://tauri.localhost/index.html` (not `tauri://localhost/`).
+    /// On Linux/macOS it's `tauri://localhost/index.html`. We can't
+    /// hardcode either — Tauri owns the scheme. So we ask the freshly
+    /// built window what URL it ended up at, store that, and reuse it
+    /// when the chat pill asks us to "go back to dashboard".
+    ///
+    /// `None` before create_main_window runs (early lifecycle races).
+    dashboard_url: Mutex<Option<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -2752,6 +2764,16 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 /// instead of via tauri.conf.json's `app.windows[]`. Reason: we need to
 /// attach `initialization_script()` so the bridge JS runs on EVERY page
 /// the main window navigates to (dashboard + chat).
+///
+/// Lesson 536 (rc30): after build, capture the resolved dashboard URL via
+/// `WebviewWindow::url()` and stash it in `AppState` so the
+/// `openclaw_back_to_dashboard` command knows the right scheme/host to
+/// navigate back to. On Windows production Tauri 2 uses
+/// `http://tauri.localhost/` (or `https://` if `use_https_scheme(true)` was
+/// set); on Linux/macOS it's `tauri://localhost/`. The previous hardcoded
+/// `"tauri://localhost/index.html"` was wrong on Windows prod, causing the
+/// chat pill to "OK via tauri.core.invoke" successfully but never bring up
+/// the dashboard (WebView2 silently failed the unknown-scheme navigation).
 fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
@@ -2760,7 +2782,7 @@ fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
     // referenced via `include_str!` so cargo recompiles when it changes.
     let bridge_js = include_str!("openclaw-host-bridge.js");
 
-    WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         app_handle,
         "main",
         WebviewUrl::App("index.html".into()),
@@ -2775,6 +2797,40 @@ fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
     .initialization_script(bridge_js)
     .build()
     .map_err(|e| format!("WebviewWindowBuilder::build() failed for main window: {e}"))?;
+
+    // Lesson 536: capture the resolved dashboard URL. We read it from the
+    // freshly built window so we get whatever scheme Tauri actually chose
+    // (http://tauri.localhost on Windows prod, tauri://localhost elsewhere,
+    // etc.). This is the source of truth — no more hardcoding.
+    match window.url() {
+        Ok(url) => {
+            let url_str = url.to_string();
+            log_to_file(&format!(
+                "create_main_window: captured dashboard URL = {url_str}"
+            ));
+            if let Some(state) = app_handle.try_state::<AppState>() {
+                if let Ok(mut guard) = state.dashboard_url.lock() {
+                    *guard = Some(url_str.clone());
+                } else {
+                    log_to_file(
+                        "create_main_window: dashboard_url mutex poisoned; skipping capture",
+                    );
+                }
+            } else {
+                log_to_file(
+                    "create_main_window: AppState not yet managed; dashboard_url left None",
+                );
+            }
+        }
+        Err(e) => {
+            // Non-fatal — `openclaw_back_to_dashboard` will fall back to
+            // scheme-aware defaults if this ever fires.
+            log_to_file(&format!(
+                "create_main_window: window.url() returned Err: {e} \
+                 (dashboard_url left None, command will use fallback)"
+            ));
+        }
+    }
 
     Ok(())
 }
@@ -3498,12 +3554,13 @@ fn openclaw_open_window(
     Ok("navigated")
 }
 
-/// Tauri command: openclaw_back_to_dashboard (Lesson 491, rc13).
+/// Tauri command: openclaw_back_to_dashboard (Lesson 491, rc13; Lesson 536 rc30).
 ///
 /// Called by the chat page's "← Dashboard" overlay (injected by
 /// `src/openclaw-host-bridge.js` when the main window is at the chat
 /// gateway). Navigates the main webview back to the bundled dashboard
-/// (`index.html` served via the `tauri://localhost` scheme).
+/// (the URL Tauri chose when it built the main window — captured at
+/// `create_main_window` time and stashed in `AppState`).
 ///
 /// Why this lives in Rust rather than JS:
 ///
@@ -3513,8 +3570,29 @@ fn openclaw_open_window(
 /// side via a Tauri command. Hardcoding `tauri://localhost/index.html`
 /// in the bridge would couple it to Tauri's scheme — better to have Rust
 /// own the navigation logic.
+///
+/// Lesson 536: rc13–rc29 hardcoded `"tauri://localhost/index.html"`. That
+/// works on Linux/macOS dev but FAILS on Windows production builds
+/// where Tauri 2 serves bundled assets at `http://tauri.localhost/`.
+/// WebView2 silently refuses the unknown-scheme navigate; the page just
+/// stays blank and the user sees the chat page forever. The toast in
+/// `openclaw-host-bridge.js` correctly reports `[mc-bridge] OK via
+/// tauri.core.invoke` because the IPC succeeded — only the WebView2
+/// navigation fails. So the symptom looks like "Rust says OK but
+/// dashboard never appears".
+///
+/// rc30 fix: read the dashboard URL from `AppState` (captured by
+/// `create_main_window`). If that's `None` (e.g. first-ever boot where
+/// capture raced with the first chat-page click), fall back to
+/// scheme-aware defaults: `http://tauri.localhost/index.html` on
+/// Windows, `tauri://localhost/index.html` elsewhere. Both are valid
+/// per `is_local_url()` in tauri 2.11.5 (the asset server strips the
+/// prefix and serves the same files).
 #[tauri::command]
-fn openclaw_back_to_dashboard(app_handle: tauri::AppHandle) -> Result<(), String> {
+fn openclaw_back_to_dashboard(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
     let main_label = "main";
     let main_window = match app_handle.get_webview_window(main_label) {
         Some(w) => w,
@@ -3529,14 +3607,44 @@ fn openclaw_back_to_dashboard(app_handle: tauri::AppHandle) -> Result<(), String
         }
     };
 
-    // The bundled dashboard is served at `index.html` under the tauri://
-    // localhost scheme. tauri.conf.json `app.windows[0].url: "index.html"`
-    // is the source of truth — we replicate that here so a future change
-    // to the URL is a single-edit thing.
-    const DASHBOARD_URL: &str = "tauri://localhost/index.html";
-    if let Err(e) = main_window.navigate(DASHBOARD_URL.parse().map_err(|err| {
-        format!("invalid dashboard URL {DASHBOARD_URL:?}: {err}")
-    })?) {
+    // Lesson 536: prefer the captured URL (set by create_main_window).
+    // Fall back to scheme-aware default if capture didn't happen.
+    let dashboard_url = {
+        match state.dashboard_url.lock() {
+            Ok(guard) => guard.clone(),
+            Err(_) => {
+                log_to_file(
+                    "openclaw_back_to_dashboard: dashboard_url mutex poisoned; \
+                     using scheme-aware fallback",
+                );
+                None
+            }
+        }
+    };
+    let dashboard_url = dashboard_url.unwrap_or_else(|| {
+        #[cfg(any(windows, target_os = "android"))]
+        let default = "http://tauri.localhost/index.html".to_string();
+        #[cfg(not(any(windows, target_os = "android")))]
+        let default = "tauri://localhost/index.html".to_string();
+        log_to_file(&format!(
+            "openclaw_back_to_dashboard: AppState URL was None, using fallback {default:?}"
+        ));
+        default
+    });
+
+    let parsed_url = match tauri::Url::parse(&dashboard_url) {
+        Ok(u) => u,
+        Err(err) => {
+            log_to_file(&format!(
+                "openclaw_back_to_dashboard: invalid dashboard URL {dashboard_url:?}: {err}"
+            ));
+            return Err(format!(
+                "invalid dashboard URL {dashboard_url:?}: {err}"
+            ));
+        }
+    };
+
+    if let Err(e) = main_window.navigate(parsed_url) {
         log_to_file(&format!(
             "openclaw_back_to_dashboard: main_window.navigate() failed: {e}"
         ));
@@ -3545,7 +3653,9 @@ fn openclaw_back_to_dashboard(app_handle: tauri::AppHandle) -> Result<(), String
     let _ = main_window.set_focus();
     let _ = main_window.unminimize();
 
-    log_to_file("openclaw_back_to_dashboard: navigated main window back to dashboard");
+    log_to_file(&format!(
+        "openclaw_back_to_dashboard: navigated main window back to {dashboard_url}"
+    ));
     Ok(())
 }
 

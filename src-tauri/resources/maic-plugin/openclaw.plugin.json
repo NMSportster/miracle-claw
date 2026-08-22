@@ -2,7 +2,14 @@
   "id": "maic",
   "name": "MAIC Provider",
   "description": "Minimal MAIC provider plugin: injects tool_execution='client' and per-model extraParams into outbound OpenAI-compatible chat completion requests, plus a filesystem-sandbox system context (Lesson 516) so the model knows exactly which paths it can reach.",
-  "version": "0.2.0",
+  "version": "0.3.0",
+  "enabledByDefault": true,
+  "activation": {
+    "onStartup": true
+  },
+  "providers": [
+    "maic"
+  ],
   "configSchema": {
     "type": "object",
     "additionalProperties": true,
