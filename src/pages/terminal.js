@@ -1,39 +1,56 @@
-// pages/terminal.js — MC Terminal tab (v1.0.9-rc36).
+// pages/terminal.js — MC Terminal tab (v1.0.9-rc43).
 //
 // Public API: { mount(root, ctx), unmount() }
 //
 // Surface:
 //   - Shell picker (cmd / pwsh / wsl on Windows; bash / sh / zsh on Unix).
 //     Last selection is persisted to localStorage as `mc.terminal.shell`.
-//   - Big monospace output area with auto-scroll.
+//   - xterm.js Terminal as the output area (rc43, replaces <pre>+stripAnsi).
 //   - Single-line input box at the bottom.
 //   - "Kill session" button — sends EOF + kill on the backend.
 //
 // Protocol:
 //   1. On mount, call `mc_terminal_start(shell)` → get a session id.
 //   2. setInterval every ~100ms: `mc_terminal_poll(id, lastSeenSeq)`.
-//      Append any new chunks to the output, update lastSeenSeq.
+//      For any new chunks, call `term.write(chunk.data)` — xterm.js
+//      handles ANSI parsing (CSI / OSC / SGR / cursor positioning) and
+//      redraws natively. No frontend regex needed.
 //   3. On Enter in the input: `mc_terminal_write(id, text)`.
 //   4. On Kill click: `mc_terminal_kill(id)` and reset.
 //
-// Unmount: clear the polling interval, kill any active session (we
-// don't want orphaned shells running while the user is on Settings).
+// Unmount: clear the polling interval, dispose xterm.Terminal, kill any
+// active session (we don't want orphaned shells running while the user
+// is on Settings).
 //
-// Xterm.js is NOT used in v1 — plain text is fine for cmd.exe / wsl.
-// Adopting xterm later requires dropping it in for the output area
-// without breaking the rest.
+// rc43 — xterm.js adoption (was Lesson 215 candidate). Reasons for
+// finally doing this:
+//   - stripAnsi (rc41) hid the noise but did not fix root cause: Ink
+//     whole-screen redraws without CSI interpretation leave residue.
+//   - collapseNoise (rc42 plan) would have been ~70% effective. xterm
+//     is 100% — it IS a real terminal emulator.
+//   - Color, scrollback, resize (fullscreen toggle), hyperlink click
+//     all work out of the box.
 //
-// Lesson 215 — Reader-write the buffer in one place (here, `append`).
-// Don't double-track output state in JS or the backend poll will
-// disagree with what's on screen.
+// Pitfalls handled here:
+//   - xterm needs a non-zero container at open-time. We open it after
+//     innerHTML is set + on next animation frame.
+//   - FitAddon.fit() must be called after mount AND after every resize
+//     AND after fullscreen toggle. We use a ResizeObserver for that.
+//   - For mc-openclaw (TUI), the backend sends \r as Enter (rc40); we
+//     preserve that. xterm's onData could feed input too, but for the
+//     mc-openclaw shell we drive input through the backend so the
+//     backend sees \r instead of \r\n.
 
 import { invoke } from "@tauri-apps/api/core";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import "@xterm/xterm/css/xterm.css";
 
 const DEFAULT_SHELL_WIN = "mc-openclaw";
 const DEFAULT_SHELL_NIX = "mc-openclaw";
 
 const POLL_INTERVAL_MS = 100;
-const MAX_OUTPUT_CHARS = 200_000; // hard cap, prevents OOM on runaway output
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -45,48 +62,7 @@ function escapeHtml(s) {
   })[c]);
 }
 
-// Lesson 224: strip ANSI escape sequences from terminal output. Ink-based
-// TUIs (like the bundled `openclaw tui`) write full-screen redraws using
-// cursor-positioning + synchronized-update CSI sequences that look like
-// garbage when rendered into a static <pre>. Until xterm.js is adopted
-// (post-GA), we just strip the ESC sequences so the user sees clean text.
-//
-// Covers the major categories the bundled TUI emits:
-//   - CSI (`ESC [` ... letter):   `[?2004h`, `[?25l`, `[?2026h`, `[2J`, etc.
-//   - OSC (`ESC ]` ... BEL or ST): `]8;;` hyperlinks (terminated by \x07 or \x1b\\)
-//   - DCS / private (`ESC P` ... ST): not currently emitted by openclaw, but cheap to strip
-//   - Plain ESC + single char: cursor mode switches
-//   - 7-bit C1 control range (`\x80`–`\x9f`): some TUIs emit those bare
-//
-// We DO NOT use a full ANSI parser (no color preservation, no cursor
-// tracking). The DOM <pre> treats everything as monospace text, so the
-// best service is to drop the noise.
-const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;          // CSI: ESC [ ... final byte 0x40–0x7E
-const ANSI_OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g; // OSC: ESC ] ... BEL or ST
-const ANSI_DCS_RE = /\x1bP[^\x1b]*\x1b\\/g;              // DCS: ESC P ... ST
-const ANSI_SINGLE_RE = /\x1b[=>]/g;                       // single-char ESC sequences (mode switches)
-const ANSI_C1_RE = /[\x80-\x9f]/g;                        // 7-bit C1 control chars (some TUIs emit bare)
-
-function stripAnsi(s) {
-  if (!s) return s;
-  let out = String(s);
-  // Process longer / greedier patterns first so they don't get partially
-  // consumed by shorter ones.
-  out = out.replace(ANSI_DCS_RE, "");
-  out = out.replace(ANSI_OSC_RE, "");
-  out = out.replace(ANSI_CSI_RE, "");
-  out = out.replace(ANSI_SINGLE_RE, "");
-  out = out.replace(ANSI_C1_RE, "");
-  // Collapse runs of 4+ blanks that result from cleared rows (cursor-aware
-  // redraws leave long blank stretches). 1-3 blanks are user-meaningful.
-  out = out.replace(/ {4,}/g, "    ");
-  return out;
-}
-
-// Order matters: first match wins. Detection runs once.
 function detectOS() {
-  // Tauri exposes OS info via the runtime; we use a coarse UA-style
-  // check that works on Windows itself (for our test) and on macOS/Linux.
   if (navigator.userAgent.includes("Windows")) return "windows";
   if (navigator.userAgent.includes("Mac")) return "macos";
   return "linux";
@@ -95,10 +71,6 @@ function detectOS() {
 function shellOptionsForOS(os) {
   if (os === "windows") {
     return [
-      // Lesson 220: mc-openclaw is the new default. It spawns
-      // `openclaw tui`, which is the OpenClaw terminal UI — the
-      // same chat backend in a terminal-friendly view. Power users
-      // can switch to plain cmd/pwsh/wsl via the picker.
       { value: "mc-openclaw", label: "OpenClaw TUI (mc-openclaw)" },
       { value: "cmd", label: "Command Prompt (cmd.exe)" },
       { value: "pwsh", label: "PowerShell 7 (pwsh.exe)" },
@@ -117,7 +89,6 @@ function defaultShellForOS(os) {
   return os === "windows" ? DEFAULT_SHELL_WIN : DEFAULT_SHELL_NIX;
 }
 
-// localStorage getter that respects a thrown error (private mode).
 function safeLocalGet(key) {
   try {
     return localStorage.getItem(key);
@@ -139,7 +110,7 @@ export const terminalPage = {
   requiresAuth: true,
 
   mount(root, ctx = {}) {
-    const { onBackToDashboard, onNeedsLogin } = ctx;
+    const { onBackToDashboard } = ctx;
 
     const os = detectOS();
     const osOptions = shellOptionsForOS(os);
@@ -153,7 +124,15 @@ export const terminalPage = {
     let lastSeq = 0;
     let pollTimer = null;
     let ended = false;
-    let allOutputText = ""; // running accumulator for the cap
+    let term = null;        // xterm.Terminal instance
+    let fitAddon = null;    // FitAddon instance
+    let resizeObserver = null;
+
+    const appendSystem = (msg) => {
+      if (!term) return;
+      // Yellow brackets, dim grey message — easy to scan in scrollback.
+      term.write(`\r\n\x1b[33m[\x1b[0m\x1b[90m${String(msg ?? "")}\x1b[0m\x1b[33m]\x1b[0m\r\n`);
+    };
 
     const startSession = async (shell) => {
       try {
@@ -190,37 +169,10 @@ export const terminalPage = {
       }
     };
 
-    const appendChunk = (chunk) => {
-      if (chunk.seq <= lastSeq) return;
-      lastSeq = chunk.seq;
-      const out = document.getElementById("terminal-output");
-      if (!out) return;
-
-      // Lesson 224: strip ANSI escape sequences before appending. The
-      // bundled openclaw TUI writes full-screen redraws (CSI / OSC) that
-      // look like garbage when rendered as static text.
-      const clean = stripAnsi(chunk.data);
-      // Combine into the running buffer + cap it.
-      allOutputText += clean;
-      if (allOutputText.length > MAX_OUTPUT_CHARS) {
-        allOutputText = allOutputText.slice(-MAX_OUTPUT_CHARS);
-        out.textContent = allOutputText;
-      } else {
-        out.textContent = allOutputText;
-      }
-      // Auto-scroll only if user is already near the bottom.
-      const nearBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 80;
-      if (nearBottom) out.scrollTop = out.scrollHeight;
-    };
-
-    const appendSystem = (msg) => {
-      const out = document.getElementById("terminal-output");
-      if (!out) return;
-      // Lesson 224: also strip from system messages in case a future
-      // helper injects an Ink-rendered template.
-      allOutputText += `[${stripAnsi(msg)}]\n`;
-      out.textContent = allOutputText;
-      out.scrollTop = out.scrollHeight;
+    const writeChunk = (chunk) => {
+      if (!term) return;
+      // xterm.js interprets ANSI natively. No stripAnsi needed.
+      term.write(chunk.data ?? "");
     };
 
     const pollOnce = async () => {
@@ -231,10 +183,11 @@ export const terminalPage = {
           sinceSeq: lastSeq,
         });
         for (const c of res.chunks || []) {
-          appendChunk(c);
+          if (c.seq <= lastSeq) continue;
+          lastSeq = c.seq;
+          writeChunk(c);
         }
         if (!res.alive && sessionId) {
-          // session died (natural exit, e.g. cmd.exe closed)
           if (res.exit_info) appendSystem(`exit: ${res.exit_info}`);
           sessionId = null;
           setStatus("dead", null, res.exit_info || "exited");
@@ -242,7 +195,6 @@ export const terminalPage = {
       } catch (err) {
         const msg = String(err);
         if (msg.includes("not found")) {
-          // We were killed from another path; flip to dead.
           sessionId = null;
           setStatus("dead", null, "session gone");
           return;
@@ -295,12 +247,12 @@ export const terminalPage = {
           </button>
         </div>
 
-        <pre
-          class="terminal-output"
+        <div
+          class="terminal-output xterm-mount"
           id="terminal-output"
           aria-live="polite"
           tabindex="0"
-        ></pre>
+        ></div>
 
         <form class="terminal-input-row" id="terminal-input-form">
           <input
@@ -318,12 +270,79 @@ export const terminalPage = {
 
         <div class="dashboard-footer">
           <span class="muted small">
-            Output capped at ${(MAX_OUTPUT_CHARS / 1000).toFixed(0)}k chars.
-            This is an UNSANDBOXED shell — anything you type here runs as your user.
+            xterm.js terminal emulator — full PTY rendering, scrollback,
+            colors. This is an UNSANDBOXED shell — anything you type
+            here runs as your user.
           </span>
         </div>
       </div>
     `;
+
+    // rc43: Initialize xterm.js after innerHTML is set; container is
+    // non-zero at this point because the flexbox layout has sized it.
+    // FitAddon reads from the container's dimensions.
+    const termContainer = document.getElementById("terminal-output");
+    term = new Terminal({
+      fontFamily:
+        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+      fontSize: 13,
+      lineHeight: 1.2,
+      cursorBlink: true,
+      cursorStyle: "block",
+      // Generous scrollback — xterm handles its own ring buffer.
+      scrollback: 10000,
+      // Don't convert our \n into \r\n — backend already does that.
+      convertEol: false,
+      // Force a sane default theme that matches our dark dashboard.
+      theme: {
+        background: "#0b1020",
+        foreground: "#e5e7eb",
+        cursor: "#22c55e",
+        cursorAccent: "#0b1020",
+        selectionBackground: "rgba(34,197,94,0.30)",
+        black: "#0b1020",
+        red: "#ef4444",
+        green: "#22c55e",
+        yellow: "#eab308",
+        blue: "#3b82f6",
+        magenta: "#a855f7",
+        cyan: "#06b6d4",
+        white: "#e5e7eb",
+        brightBlack: "#475569",
+        brightRed: "#f87171",
+        brightGreen: "#4ade80",
+        brightYellow: "#facc15",
+        brightBlue: "#60a5fa",
+        brightMagenta: "#c084fc",
+        brightCyan: "#22d3ee",
+        brightWhite: "#f8fafc",
+      },
+    });
+    fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.loadAddon(new WebLinksAddon());
+    term.open(termContainer);
+
+    // First fit must happen AFTER the container has been measured by
+    // the browser (next animation frame is the safe bet). Without
+    // this, FitAddon.fit() reports 0x0 and renders an empty terminal.
+    requestAnimationFrame(() => {
+      try {
+        fitAddon.fit();
+      } catch (e) {
+        // Some browsers throw if container still 0x0; retry on next frame.
+        requestAnimationFrame(() => {
+          try { fitAddon.fit(); } catch { /* ignore */ }
+        });
+      }
+    });
+
+    // Observe container resizes (fullscreen toggle, window resize,
+    // devicePixelRatio change). xterm needs .fit() on every change.
+    resizeObserver = new ResizeObserver(() => {
+      try { fitAddon.fit(); } catch { /* ignore */ }
+    });
+    resizeObserver.observe(termContainer);
 
     const sel = document.getElementById("terminal-shell-select");
     sel.value = initialShell;
@@ -349,17 +368,21 @@ export const terminalPage = {
     });
 
     // Fullscreen toggle: adds `terminal-fullscreen-mode` class to the page
-    // root. CSS enlarges the output area to take ~85vh instead of ~40vh.
-    // Persists across navigation; reset by clicking again.
+    // root. CSS enlarges the output area. ResizeObserver triggers
+    // fitAddon.fit() automatically; we also do an explicit fit on
+    // next tick to race the layout engine's paint.
     const fullscreenBtn = document.getElementById("terminal-fullscreen");
     const pageRoot = root.querySelector(".terminal-page");
-    if (localStorage.getItem("mc.terminal.fullscreen") === "1") {
+    if (safeLocalGet("mc.terminal.fullscreen") === "1") {
       pageRoot.classList.add("terminal-fullscreen-mode");
-      fullscreenBtn.textContent = "⛶"; // already correct
+      fullscreenBtn.textContent = "⛶";
     }
     fullscreenBtn.addEventListener("click", () => {
       const on = pageRoot.classList.toggle("terminal-fullscreen-mode");
-      localStorage.setItem("mc.terminal.fullscreen", on ? "1" : "0");
+      safeLocalSet("mc.terminal.fullscreen", on ? "1" : "0");
+      setTimeout(() => {
+        try { fitAddon.fit(); } catch { /* ignore */ }
+      }, 0);
     });
 
     const form = document.getElementById("terminal-input-form");
@@ -372,12 +395,9 @@ export const terminalPage = {
         appendSystem("no live session — click Restart");
         return;
       }
-      // Echo locally so the user sees what they typed before output
-      // catches up. Remove this once we adopt xterm (which has local
-      // echo by default).
-      allOutputText += `> ${text}\n`;
-      const out = document.getElementById("terminal-output");
-      if (out) out.textContent = allOutputText;
+      // Local echo: render the typed prompt into xterm so the user sees
+      // what they typed. Backend doesn't echo (piped stdio).
+      term.write(`\r\n\x1b[36m> ${text}\x1b[0m\r\n`);
       input.value = "";
       try {
         await invoke("mc_terminal_write", { id: sessionId, input: text });
@@ -397,6 +417,10 @@ export const terminalPage = {
         clearInterval(pollTimer);
         pollTimer = null;
       }
+      if (resizeObserver) {
+        try { resizeObserver.disconnect(); } catch { /* ignore */ }
+        resizeObserver = null;
+      }
       if (sessionId) {
         try {
           await invoke("mc_terminal_kill", { id: sessionId });
@@ -405,14 +429,14 @@ export const terminalPage = {
         }
         sessionId = null;
       }
+      if (term) {
+        try { term.dispose(); } catch { /* ignore */ }
+        term = null;
+      }
     };
   },
 
   unmount() {
-    // Find the root that mounted us (page_registry calls unmount on
-    // page unmount, but we need the root's cleanup handler). We store
-    // the cleanup on root._terminalCleanup; if root is still around
-    // we run it; otherwise we have nothing to do.
     const root = document.getElementById("root");
     if (root && typeof root._terminalCleanup === "function") {
       const c = root._terminalCleanup;

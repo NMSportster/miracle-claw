@@ -1076,6 +1076,10 @@ code {
   outline-offset: 1px;
 }
 
+/* rc43: xterm.js container. xterm injects its own children
+   (.xterm, .xterm-viewport, .xterm-screen) — we just need to give it
+   a sized box. Background and border live on our wrapper; xterm's
+   inner canvas inherits the bg from the theme (set in JS). */
 .terminal-output {
   flex: 1;
   min-height: 240px;
@@ -1083,20 +1087,28 @@ code {
   color: #e5e7eb;
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 12px 16px;
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-    "Liberation Mono", monospace;
-  font-size: 13px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow: auto;
+  padding: 8px 12px;
   margin: 0 0 12px 0;
+  /* xterm-viewport overflow:auto + the inner .xterm-screen is
+     block-display with explicit height/width set by FitAddon. */
+  overflow: hidden;
+  position: relative;
 }
 
 .terminal-output:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+.terminal-output .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+}
+.terminal-output .xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+.terminal-output .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .terminal-input-row {
@@ -1160,9 +1172,7 @@ code {
 .terminal-page.terminal-fullscreen-mode .terminal-output {
   flex: 1 1 auto;
   min-height: 0;
-  font-size: 15px;
-  line-height: 1.5;
-  padding: 16px 20px;
+  padding: 12px 16px;
   border-radius: 6px;
   background: #0b1020;
 }
