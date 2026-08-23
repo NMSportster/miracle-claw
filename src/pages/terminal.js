@@ -45,6 +45,44 @@ function escapeHtml(s) {
   })[c]);
 }
 
+// Lesson 224: strip ANSI escape sequences from terminal output. Ink-based
+// TUIs (like the bundled `openclaw tui`) write full-screen redraws using
+// cursor-positioning + synchronized-update CSI sequences that look like
+// garbage when rendered into a static <pre>. Until xterm.js is adopted
+// (post-GA), we just strip the ESC sequences so the user sees clean text.
+//
+// Covers the major categories the bundled TUI emits:
+//   - CSI (`ESC [` ... letter):   `[?2004h`, `[?25l`, `[?2026h`, `[2J`, etc.
+//   - OSC (`ESC ]` ... BEL or ST): `]8;;` hyperlinks (terminated by \x07 or \x1b\\)
+//   - DCS / private (`ESC P` ... ST): not currently emitted by openclaw, but cheap to strip
+//   - Plain ESC + single char: cursor mode switches
+//   - 7-bit C1 control range (`\x80`–`\x9f`): some TUIs emit those bare
+//
+// We DO NOT use a full ANSI parser (no color preservation, no cursor
+// tracking). The DOM <pre> treats everything as monospace text, so the
+// best service is to drop the noise.
+const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;          // CSI: ESC [ ... final byte 0x40–0x7E
+const ANSI_OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g; // OSC: ESC ] ... BEL or ST
+const ANSI_DCS_RE = /\x1bP[^\x1b]*\x1b\\/g;              // DCS: ESC P ... ST
+const ANSI_SINGLE_RE = /\x1b[=>]/g;                       // single-char ESC sequences (mode switches)
+const ANSI_C1_RE = /[\x80-\x9f]/g;                        // 7-bit C1 control chars (some TUIs emit bare)
+
+function stripAnsi(s) {
+  if (!s) return s;
+  let out = String(s);
+  // Process longer / greedier patterns first so they don't get partially
+  // consumed by shorter ones.
+  out = out.replace(ANSI_DCS_RE, "");
+  out = out.replace(ANSI_OSC_RE, "");
+  out = out.replace(ANSI_CSI_RE, "");
+  out = out.replace(ANSI_SINGLE_RE, "");
+  out = out.replace(ANSI_C1_RE, "");
+  // Collapse runs of 4+ blanks that result from cleared rows (cursor-aware
+  // redraws leave long blank stretches). 1-3 blanks are user-meaningful.
+  out = out.replace(/ {4,}/g, "    ");
+  return out;
+}
+
 // Order matters: first match wins. Detection runs once.
 function detectOS() {
   // Tauri exposes OS info via the runtime; we use a coarse UA-style
@@ -158,8 +196,12 @@ export const terminalPage = {
       const out = document.getElementById("terminal-output");
       if (!out) return;
 
+      // Lesson 224: strip ANSI escape sequences before appending. The
+      // bundled openclaw TUI writes full-screen redraws (CSI / OSC) that
+      // look like garbage when rendered as static text.
+      const clean = stripAnsi(chunk.data);
       // Combine into the running buffer + cap it.
-      allOutputText += chunk.data;
+      allOutputText += clean;
       if (allOutputText.length > MAX_OUTPUT_CHARS) {
         allOutputText = allOutputText.slice(-MAX_OUTPUT_CHARS);
         out.textContent = allOutputText;
@@ -174,7 +216,9 @@ export const terminalPage = {
     const appendSystem = (msg) => {
       const out = document.getElementById("terminal-output");
       if (!out) return;
-      allOutputText += `[${msg}]\n`;
+      // Lesson 224: also strip from system messages in case a future
+      // helper injects an Ink-rendered template.
+      allOutputText += `[${stripAnsi(msg)}]\n`;
       out.textContent = allOutputText;
       out.scrollTop = out.scrollHeight;
     };
