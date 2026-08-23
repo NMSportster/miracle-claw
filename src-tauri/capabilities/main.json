@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Miracle Claw main window — spawn the launcher sidecar to boot the bundled chat gateway, then host the chat UI at localhost:28789/. The launcher sidecar is the only executable the webview is permitted to invoke; the bundled Node runtime is kept off the permission boundary by being exec'd FROM the launcher rather than directly. Permissions include all 13 custom Tauri commands declared in src-tauri/permissions/ (Lesson 513 rc19).",
+  "description": "Miracle Claw main window — spawn the launcher sidecar to boot the bundled chat gateway, then host the chat UI at localhost:28789/. The launcher sidecar is the only executable the webview is permitted to invoke; the bundled Node runtime is kept off the permission boundary by being exec'd FROM the launcher rather than directly. Permissions include all 23 custom Tauri commands declared in src-tauri/permissions/ (Lesson 219 rc36). Every custom command MUST be listed here AND in default.toml — adding it to default.toml alone is NOT enough; Tauri 2 reads this JSON for the runtime ACL and silently rejects any unlisted command with 'not allowed by ACL'.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -32,6 +32,16 @@
     "allow-mc-get-nudge",
     "allow-mc-list-tools",
     "allow-mc-refresh-tier",
-    "allow-mc-apply-tier-change"
+    "allow-mc-apply-tier-change",
+    "allow-mc-get-user-info",
+    "allow-mc-list-memory-files",
+    "allow-mc-read-memory-file",
+    "allow-mc-write-memory-file",
+    "allow-mc-open-data-folder",
+    "allow-mc-terminal-start",
+    "allow-mc-terminal-poll",
+    "allow-mc-terminal-write",
+    "allow-mc-terminal-kill",
+    "allow-mc-terminal-list"
   ]
 }

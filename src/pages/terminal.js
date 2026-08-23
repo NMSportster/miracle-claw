@@ -211,6 +211,13 @@ export const terminalPage = {
             <button
               type="button"
               class="icon-link"
+              id="terminal-fullscreen"
+              title="Toggle larger terminal area"
+              aria-label="Toggle larger terminal area"
+            >⛶</button>
+            <button
+              type="button"
+              class="icon-link"
               id="terminal-back"
               title="Back to Dashboard"
               aria-label="Back to Dashboard"
@@ -289,6 +296,20 @@ export const terminalPage = {
 
     document.getElementById("terminal-back").addEventListener("click", () => {
       if (onBackToDashboard) onBackToDashboard();
+    });
+
+    // Fullscreen toggle: adds `terminal-fullscreen-mode` class to the page
+    // root. CSS enlarges the output area to take ~85vh instead of ~40vh.
+    // Persists across navigation; reset by clicking again.
+    const fullscreenBtn = document.getElementById("terminal-fullscreen");
+    const pageRoot = root.querySelector(".terminal-page");
+    if (localStorage.getItem("mc.terminal.fullscreen") === "1") {
+      pageRoot.classList.add("terminal-fullscreen-mode");
+      fullscreenBtn.textContent = "⛶"; // already correct
+    }
+    fullscreenBtn.addEventListener("click", () => {
+      const on = pageRoot.classList.toggle("terminal-fullscreen-mode");
+      localStorage.setItem("mc.terminal.fullscreen", on ? "1" : "0");
     });
 
     const form = document.getElementById("terminal-input-form");

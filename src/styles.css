@@ -1127,3 +1127,41 @@ code {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* Terminal fullscreen mode (rc37+): unclip from .dashboard 720px constraint,
+   grow output to fill viewport. Triggered by JS toggle on the ⛶ button. */
+.terminal-page.terminal-fullscreen-mode {
+  max-width: none;
+  padding: 16px 24px;
+}
+
+.terminal-page.terminal-fullscreen-mode .terminal-output {
+  min-height: 70vh;
+  max-height: 85vh;
+  font-size: 14px;
+  padding: 16px 20px;
+}
+
+.terminal-page.terminal-fullscreen-mode .terminal-input {
+  font-size: 14px;
+  padding: 12px 14px;
+}
+
+/* Terminal fullscreen mode (rc37+): unclip from .dashboard 720px constraint,
+   grow output to fill viewport. Triggered by JS toggle on the ⛶ button. */
+.terminal-page.terminal-fullscreen-mode {
+  max-width: none;
+  padding: 16px 24px;
+}
+
+.terminal-page.terminal-fullscreen-mode .terminal-output {
+  min-height: 70vh;
+  max-height: 85vh;
+  font-size: 14px;
+  padding: 16px 20px;
+}
+
+.terminal-page.terminal-fullscreen-mode .terminal-input {
+  font-size: 14px;
+  padding: 12px 14px;
+}
