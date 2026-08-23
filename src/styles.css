@@ -1179,3 +1179,18 @@ code {
   font-size: 18px;
 }
 
+/* Make the icon-link buttons clearly visible against the dark
+   fullscreen background. The base .icon-link uses --border which
+   is dark slate (#334155) — basically invisible on #0b1020.
+   Lesson 222: provide explicit contrast for chrome in fullscreen. */
+.terminal-page.terminal-fullscreen-mode .icon-link {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.22);
+  color: #f1f5f9;
+}
+
+.terminal-page.terminal-fullscreen-mode .icon-link:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: var(--accent);
+}
+

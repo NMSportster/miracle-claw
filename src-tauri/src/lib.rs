@@ -4621,9 +4621,40 @@ fn which_first(cmd: &str) -> String {
 
 /// Spawn a shell with piped stdio. On Windows we pass CREATE_NO_WINDOW
 /// so the user doesn't see a second console flash.
-fn spawn_shell(cmd: &str, args: &[&str]) -> Result<std::process::Child, String> {
-    let mut command = std::process::Command::new(cmd);
-    for a in args {
+///
+/// On Windows, `.cmd` and `.bat` files cannot be launched directly by
+/// `CreateProcess` — they must be invoked through `cmd.exe /D /C`.
+/// Lesson 221: this matters for npm bin shims (e.g. `openclaw.cmd`)
+/// and any future shell that resolves to one of those extensions.
+fn spawn_shell(cmd: &str, args: &[String]) -> Result<std::process::Child, String> {
+    // Detect whether `cmd` resolves to a .cmd/.bat shim and, if so,
+    // route through cmd.exe. Return a friendly error if cmd.exe isn't
+    // resolvable either (which would mean Windows itself is broken).
+    #[cfg(windows)]
+    let (real_cmd, real_args): (String, Vec<String>) = {
+        let lower = cmd.to_ascii_lowercase();
+        if lower.ends_with(".cmd") || lower.ends_with(".bat") {
+            let cmd_exe = which_first("cmd.exe");
+            if cmd_exe.is_empty() {
+                return Err(format!(
+                    "internal error: cmd.exe not found on PATH (needed to run {})",
+                    cmd
+                ));
+            }
+            let mut v = vec!["/D".to_string(), "/C".to_string(), cmd.to_string()];
+            v.extend(args.iter().cloned());
+            (cmd_exe, v)
+        } else {
+            (cmd.to_string(), args.to_vec())
+        }
+    };
+    #[cfg(not(windows))]
+    let (real_cmd, real_args): (String, Vec<String>) = {
+        (cmd.to_string(), args.to_vec())
+    };
+
+    let mut command = std::process::Command::new(&real_cmd);
+    for a in &real_args {
         command.arg(a);
     }
     command.stdin(std::process::Stdio::piped());
@@ -4688,12 +4719,48 @@ fn new_terminal_id() -> String {
 #[tauri::command]
 fn mc_terminal_start(
     shell: String,
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     let (cmd, args) = resolve_shell_cmd(&shell)?;
-    let cmd_path = which_first(cmd);
 
-    let mut child = spawn_shell(&cmd_path, &args)?;
+    // Lesson 221: for `mc-openclaw`, use the BUNDLED node.exe +
+    // openclaw.mjs shipped in the installer resources, not the
+    // user's system PATH. Most end users don't have `openclaw`
+    // installed globally, and we ship a self-contained CLI here
+    // so the Terminal tile Just Works. If the bundle is missing
+    // (dev environment without resources vendored), fall back to
+    // PATH lookup with a clear error.
+    let (cmd_path, real_args): (String, Vec<String>) = if shell == "mc-openclaw" {
+        let resources = resources_dir(&app_handle);
+        #[cfg(windows)]
+        let node = resources.join("node.exe");
+        #[cfg(not(windows))]
+        let node = resources.join("node");
+        let mjs = resources.join("openclaw.mjs");
+        if !node.exists() {
+            return Err(format!(
+                "bundled node not found at {} (expected from installer resources)",
+                node.display()
+            ));
+        }
+        if !mjs.exists() {
+            return Err(format!(
+                "bundled openclaw.mjs not found at {} (reinstall MiracleClaw)",
+                mjs.display()
+            ));
+        }
+        let mut v = vec![mjs.to_string_lossy().into_owned()];
+        for a in &args {
+            v.push((*a).to_string());
+        }
+        (node.to_string_lossy().into_owned(), v)
+    } else {
+        let resolved = which_first(cmd);
+        (resolved, args.iter().map(|s| s.to_string()).collect())
+    };
+
+    let mut child = spawn_shell(&cmd_path, &real_args)?;
 
     let stdout = child
         .stdout
@@ -6715,6 +6782,18 @@ mod tests {
         let res = resolve_shell_cmd("totally-not-a-shell");
         assert!(res.is_err(), "unknown shell must error");
         assert!(res.unwrap_err().contains("unknown shell"));
+    }
+
+    /// Lesson 221: mc-openclaw maps to `openclaw tui`. The bundled
+    /// resources dir swap happens in mc_terminal_start (this just
+    /// verifies the (cmd, args) tuple is what we expect so a future
+    /// refactor doesn't silently break the spawn contract).
+    #[test]
+    fn mc_openclaw_maps_to_openclaw_tui() {
+        let res = resolve_shell_cmd("mc-openclaw")
+            .expect("mc-openclaw must resolve on both Windows and *nix");
+        assert_eq!(res.0, "openclaw");
+        assert_eq!(res.1, vec!["tui"]);
     }
 
     #[test]
