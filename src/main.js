@@ -20,6 +20,8 @@ import { loginPage } from "./pages/login.js";
 import { dashboardPage } from "./pages/dashboard.js";
 import { settingsPage } from "./pages/settings.js";
 import { terminalPage } from "./pages/terminal.js";
+import { filesPage } from "./pages/files.js";
+import { notebookPage } from "./pages/notebook.js";
 
 const { invoke } = window.__TAURI__.core;
 const root = document.getElementById("root");
@@ -32,6 +34,8 @@ register("login", loginPage);
 register("dashboard", dashboardPage);
 register("settings", settingsPage);
 register("terminal", terminalPage);
+register("files", filesPage);
+register("notebook", notebookPage);
 
 // --- Boot -----------------------------------------------------------------
 
@@ -63,6 +67,34 @@ function pageCtx() {
       }),
     onOpenSettings: () => mountPage("settings", root, settingsCtx()),
     onOpenTerminal: () => mountPage("terminal", root, terminalCtx()),
+    onOpenFiles: () => mountPage("files", root, filesCtx()),
+    onOpenNotebook: () => mountPage("notebook", root, notebookCtx()),
+    // Open the Terminal page with the OpenClaw TUI (mc-openclaw) pre-selected.
+    // Used by the "OpenClaw · Terminal" tile on the dashboard.
+    onOpenOpenClawTerminal: () =>
+      mountPage("terminal", root, terminalCtx({ defaultShell: "mc-openclaw" })),
+  };
+}
+
+function filesCtx() {
+  return {
+    onBackToDashboard: () => mountPage("dashboard", root, pageCtx()),
+    onNeedsLogin: () =>
+      mountPage("login", root, {
+        endpoint: "https://maicserver.com",
+        onSuccess: () => mountPage("dashboard", root, pageCtx()),
+      }),
+  };
+}
+
+function notebookCtx() {
+  return {
+    onBackToDashboard: () => mountPage("dashboard", root, pageCtx()),
+    onNeedsLogin: () =>
+      mountPage("login", root, {
+        endpoint: "https://maicserver.com",
+        onSuccess: () => mountPage("dashboard", root, pageCtx()),
+      }),
   };
 }
 
@@ -77,7 +109,7 @@ function settingsCtx() {
   };
 }
 
-function terminalCtx() {
+function terminalCtx(opts = {}) {
   return {
     onBackToDashboard: () => mountPage("dashboard", root, pageCtx()),
     onNeedsLogin: () =>
@@ -85,6 +117,10 @@ function terminalCtx() {
         endpoint: "https://maicserver.com",
         onSuccess: () => mountPage("dashboard", root, pageCtx()),
       }),
+    // Optional override for the shell the page boots with. Used when the
+    // dashboard launches OpenClaw directly into the TUI. Falls back to the
+    // user-saved default (localStorage) when not provided.
+    defaultShell: opts.defaultShell || undefined,
   };
 }
 

@@ -27,5 +27,13 @@ permissions = [
   "allow-mc-terminal-poll",
   "allow-mc-terminal-write",
   "allow-mc-terminal-kill",
-  "allow-mc-terminal-list"
+  "allow-mc-terminal-list",
+  # v1.0.9-rc47: UI-facing file browser commands
+  "allow-mc-ui-list-allowed-roots",
+  "allow-mc-ui-list-dir",
+  "allow-mc-ui-read-file",
+  # v1.0.0-prep: image preview + open-in-default-app handoff for
+  # binaries (PDF, Office, archives). Newbie-facing UX.
+  "allow-mc-ui-read-image",
+  "allow-mc-ui-open-externally"
 ]

@@ -5020,6 +5020,289 @@ fn mc_terminal_list(state: tauri::State<'_, AppState>) -> Vec<TerminalSession> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// v1.0.9-rc46: UI-facing filesystem commands for the Files page.
+//
+// These are NOT routed through the model — the user calls them directly
+// from the Files browser. They share the path-allowlist enforcement used
+// by the model-side tools (Documents / Desktop / Downloads / MC workspace)
+// so the same safety guarantees apply even though there's no model in
+// the loop.
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct DirEntry {
+    name: String,
+    path: String,
+    kind: String, // "dir" | "file" | "other"
+    size: u64,
+}
+
+#[derive(serde::Serialize)]
+struct ListDirResult {
+    path: String,
+    entries: Vec<DirEntry>,
+}
+
+/// Return the allowed root directories the Files browser can show.
+/// Surfaced to the UI so we can render the root shortcuts the user
+/// actually has access to.
+#[tauri::command]
+fn mc_ui_list_allowed_roots() -> Vec<String> {
+    crate::tools::exec::allowed_roots()
+        .into_iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect()
+}
+
+/// List the entries of a directory under the allowlist. Returns
+/// structured entries sorted dirs-first then alpha.
+#[tauri::command]
+fn mc_ui_list_dir(path: String) -> Result<ListDirResult, String> {
+    use crate::tools::exec;
+
+    let p = exec::normalize_user_path(&path)
+        .map_err(|e| format!("path error: {e}"))?;
+    exec::assert_path_allowed(&p)?;
+
+    let read = std::fs::read_dir(&p)
+        .map_err(|e| format!("cannot read {p:?}: {e}"))?;
+
+    let mut entries: Vec<DirEntry> = read
+        .filter_map(|e| e.ok())
+        .map(|entry| {
+            let path = entry.path();
+            let metadata = entry.metadata().ok();
+            let (kind, size) = match &metadata {
+                Some(m) if m.is_dir() => ("dir".to_string(), 0),
+                Some(m) => ("file".to_string(), m.len()),
+                None => ("other".to_string(), 0),
+            };
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            DirEntry {
+                name,
+                path: path.to_string_lossy().to_string(),
+                kind,
+                size,
+            }
+        })
+        .filter(|e| !e.name.is_empty())
+        .collect();
+
+    // Sort: dirs first, then alpha (case-insensitive).
+    entries.sort_by(|a, b| {
+        let ak = a.kind == "dir";
+        let bk = b.kind == "dir";
+        bk.cmp(&ak)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+
+    Ok(ListDirResult {
+        path: p.to_string_lossy().to_string(),
+        entries,
+    })
+}
+
+/// Read a file's contents (UTF-8 only, capped). Returns the text and
+/// the canonical path. On size/encoding failure returns Err with a
+/// human-readable message; the UI shows it in the preview pane.
+#[derive(serde::Serialize)]
+struct ReadFileResult {
+    path: String,
+    content: String,
+    bytes: u64,
+    truncated: bool,
+}
+
+#[tauri::command]
+fn mc_ui_read_file(path: String, max_bytes: Option<u64>) -> Result<ReadFileResult, String> {
+    use crate::tools::exec;
+
+    let p = exec::normalize_user_path(&path)
+        .map_err(|e| format!("path error: {e}"))?;
+    exec::assert_path_allowed(&p)?;
+
+    let cap = max_bytes.unwrap_or(1_048_576); // 1 MB
+    let metadata = std::fs::metadata(&p)
+        .map_err(|e| format!("cannot stat {p:?}: {e}"))?;
+    if metadata.is_dir() {
+        return Err(format!("{p:?} is a directory"));
+    }
+    let truncated = metadata.len() > cap;
+    let read_cap = if truncated { cap as usize } else { metadata.len() as usize };
+    let bytes = std::fs::read(&p)
+        .map_err(|e| format!("cannot read {p:?}: {e}"))?;
+    let slice = &bytes[..read_cap];
+    let content = String::from_utf8_lossy(slice).to_string();
+    Ok(ReadFileResult {
+        path: p.to_string_lossy().to_string(),
+        content,
+        bytes: metadata.len(),
+        truncated,
+    })
+}
+
+/// Read a file as bytes and return them as base64 alongside the detected
+/// MIME type. Used by the Files UI to render image previews inline (PNG,
+/// JPEG, GIF, WebP, SVG, BMP). Capped at 5 MB so the data URI stays small.
+/// Returns Err for unsupported extensions or files that exceed the cap.
+#[derive(serde::Serialize)]
+struct ReadImageResult {
+    path: String,
+    mime: String,
+    bytes: u64,
+    data_base64: String,
+}
+
+const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024; // 5 MB
+
+fn image_mime_for_ext(ext_lower: &str) -> Option<&'static str> {
+    match ext_lower {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "svg" => Some("image/svg+xml"),
+        "bmp" => Some("image/bmp"),
+        "ico" => Some("image/x-icon"),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+fn mc_ui_read_image(path: String) -> Result<ReadImageResult, String> {
+    use crate::tools::exec;
+
+    let p = exec::normalize_user_path(&path)
+        .map_err(|e| format!("path error: {e}"))?;
+    exec::assert_path_allowed(&p)?;
+
+    let metadata = std::fs::metadata(&p)
+        .map_err(|e| format!("cannot stat {p:?}: {e}"))?;
+    if metadata.is_dir() {
+        return Err(format!("{p:?} is a directory"));
+    }
+    if metadata.len() > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "image too large: {} bytes (cap {} bytes)",
+            metadata.len(),
+            MAX_IMAGE_BYTES
+        ));
+    }
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let mime = image_mime_for_ext(&ext)
+        .ok_or_else(|| format!("unsupported image extension: .{ext}"))?
+        .to_string();
+    let bytes = std::fs::read(&p)
+        .map_err(|e| format!("cannot read {p:?}: {e}"))?;
+    let data_base64 = base64_encode(&bytes);
+    Ok(ReadImageResult {
+        path: p.to_string_lossy().to_string(),
+        mime,
+        bytes: metadata.len(),
+        data_base64,
+    })
+}
+
+/// Tiny base64 encoder (standard alphabet, no padding). Avoids pulling in
+/// the `base64` crate just for one use site. Output is ASCII-safe.
+fn base64_encode(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(((input.len() + 2) / 3) * 4);
+    let mut i = 0;
+    while i + 3 <= input.len() {
+        let n = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8) | (input[i + 2] as u32);
+        out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+        out.push(ALPHABET[((n >> 6) & 63) as usize] as char);
+        out.push(ALPHABET[(n & 63) as usize] as char);
+        i += 3;
+    }
+    let rem = input.len() - i;
+    if rem == 1 {
+        let n = (input[i] as u32) << 16;
+        out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+        out.push('=');
+        out.push('=');
+    } else if rem == 2 {
+        let n = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8);
+        out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+        out.push(ALPHABET[((n >> 6) & 63) as usize] as char);
+        out.push('=');
+    }
+    out
+}
+
+/// Hand a file path to the OS so the user's default application opens it.
+/// No preview-in-MC possible for binary formats (PDF, Office, archives) —
+/// but the user can still get to the file via their normal tools. Allowlist
+/// enforced the same way as `mc_ui_read_file` and `mc_ui_read_image`.
+#[tauri::command]
+fn mc_ui_open_externally(path: String) -> Result<(), String> {
+    use crate::tools::exec;
+
+    let p = exec::normalize_user_path(&path)
+        .map_err(|e| format!("path error: {e}"))?;
+    exec::assert_path_allowed(&p)?;
+
+    let metadata = std::fs::metadata(&p)
+        .map_err(|e| format!("cannot stat {p:?}: {e}"))?;
+    if metadata.is_dir() {
+        return Err(format!("{p:?} is a directory"));
+    }
+
+    eprintln!("[miracle-claw] mc_ui_open_externally: {:?}", p);
+
+    #[cfg(target_os = "windows")]
+    {
+        // cmd /c start "" <path> — same trick used by open_register_url.
+        // Empty quotes suppress the title arg so cmd doesn't treat the
+        // path as a window title.
+        use std::process::Command;
+        let p_str = p.to_string_lossy().into_owned();
+        let status = Command::new("cmd")
+            .args(["/C", "start", "", &p_str])
+            .status()
+            .map_err(|e| format!("cmd start failed: {e}"))?;
+        if !status.success() {
+            return Err(format!("cmd start exited with {:?}", status.code()));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let p_str = p.to_string_lossy().into_owned();
+        Command::new("open")
+            .arg(&p_str)
+            .spawn()
+            .map_err(|e| format!("open failed: {e}"))?;
+        Ok(())
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        use std::process::Command;
+        let p_str = p.to_string_lossy().into_owned();
+        Command::new("xdg-open")
+            .arg(&p_str)
+            .spawn()
+            .map_err(|e| format!("xdg-open failed: {e}"))?;
+        Ok(())
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -5051,7 +5334,16 @@ pub fn run() {
             mc_terminal_poll,
             mc_terminal_write,
             mc_terminal_kill,
-            mc_terminal_list
+            mc_terminal_list,
+            // v1.0.9-rc46: Files page UI commands
+            mc_ui_list_allowed_roots,
+            mc_ui_list_dir,
+            mc_ui_read_file,
+            // v1.0.0-prep: image preview + external-open handoff for
+            // binary files (PDF, Office, archives). Newbies get a working
+            // "Open in default app" button instead of mojibake.
+            mc_ui_read_image,
+            mc_ui_open_externally
         ])
         .setup(|app| {
             setup(app)?;

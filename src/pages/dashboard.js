@@ -50,7 +50,7 @@ export const dashboardPage = {
   requiresAuth: true,
 
   mount(root, ctx = {}) {
-    const { onNeedsLogin, onOpenSettings, onOpenTerminal } = ctx;
+    const { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook } = ctx;
 
     (async () => {
       const [tierResult, nudgeResult] = await Promise.allSettled([
@@ -98,28 +98,65 @@ export const dashboardPage = {
           </div>
 
           <div class="tiles">
-            <button class="tile tile-primary" id="openclaw-tile" type="button">
+            <button class="tile tile-primary" id="openclaw-windows-tile" type="button">
               <div class="tile-icon">🦞</div>
               <div class="tile-body">
-                <div class="tile-title">OpenClaw</div>
+                <div class="tile-title">OpenClaw · Windows</div>
                 <div class="tile-description">
-                  Your MAIC chat workspace. Talk to any MAIC model, run code,
-                  search the web, work with files. Pro and above unlocks local
-                  file tools, command execution, and persistent memory.
+                  Your MAIC chat workspace in a desktop window. Talk to any
+                  MAIC model, run code, search the web, work with files.
+                  Pro and above unlocks local file tools, command execution,
+                  and persistent memory.
                 </div>
                 <div class="tile-cta">Open in new window →</div>
               </div>
             </button>
-            <button class="tile" id="terminal-tile" type="button">
+            <button class="tile tile-primary" id="openclaw-terminal-tile" type="button">
+              <div class="tile-icon">⌨️</div>
+              <div class="tile-body">
+                <div class="tile-title">OpenClaw · Terminal</div>
+                <div class="tile-description">
+                  The same MAIC workspace, but in your terminal. Great for
+                  SSH sessions, remote boxes, and keyboard-first workflows.
+                  Same tools, same models, same memory.
+                </div>
+                <div class="tile-cta">Launch TUI →</div>
+              </div>
+            </button>
+            <button class="tile" id="local-terminal-tile" type="button">
               <div class="tile-icon">💻</div>
               <div class="tile-body">
-                <div class="tile-title">Terminal</div>
+                <div class="tile-title">Local Terminal</div>
                 <div class="tile-description">
-                  Local shell (cmd.exe / PowerShell / WSL on Windows, bash / sh /
-                  zsh on macOS and Linux). Unsandboxed — anything you type here
-                  runs as you. Useful as a launcher for tools you already use.
+                  Your OS shell — cmd.exe on Windows, bash on macOS and Linux.
+                  Pick a different shell from the dropdown inside. Unsandboxed:
+                  anything you type runs as you.
                 </div>
-                <div class="tile-cta">Open terminal →</div>
+                <div class="tile-cta">Open local shell →</div>
+              </div>
+            </button>
+            <button class="tile" id="files-tile" type="button">
+              <div class="tile-icon">📁</div>
+              <div class="tile-body">
+                <div class="tile-title">Files</div>
+                <div class="tile-description">
+                  Browse files in your Documents, Desktop, Downloads, and the
+                  MC workspace. Click a file to preview it. Same allowlist as
+                  the AI tools — you're always inside a known-safe folder.
+                </div>
+                <div class="tile-cta">Browse files →</div>
+              </div>
+            </button>
+            <button class="tile" id="notebook-tile" type="button">
+              <div class="tile-icon">📓</div>
+              <div class="tile-body">
+                <div class="tile-title">Notebook</div>
+                <div class="tile-description">
+                  Saved notes for the things you don't want to lose — research
+                  snippets, command line tricks, half-formed ideas. Stored
+                  locally on this machine; never leaves the device.
+                </div>
+                <div class="tile-cta">Open notebook →</div>
               </div>
             </button>
           </div>
@@ -132,9 +169,18 @@ export const dashboardPage = {
       `;
 
       // Wire interactions
-      document.getElementById("openclaw-tile").addEventListener("click", openOpenClaw);
+      document.getElementById("openclaw-windows-tile").addEventListener("click", openOpenClaw);
+      if (onOpenOpenClawTerminal) {
+        document.getElementById("openclaw-terminal-tile").addEventListener("click", () => onOpenOpenClawTerminal());
+      }
       if (onOpenTerminal) {
-        document.getElementById("terminal-tile").addEventListener("click", () => onOpenTerminal());
+        document.getElementById("local-terminal-tile").addEventListener("click", () => onOpenTerminal());
+      }
+      if (onOpenFiles) {
+        document.getElementById("files-tile").addEventListener("click", () => onOpenFiles());
+      }
+      if (onOpenNotebook) {
+        document.getElementById("notebook-tile").addEventListener("click", () => onOpenNotebook());
       }
       document.getElementById("tier-badge").addEventListener("click", () => this.refreshTier(root, ctx));
       document.getElementById("refresh-tier").addEventListener("click", () => this.refreshTier(root, ctx));
@@ -185,7 +231,7 @@ export const dashboardPage = {
 // --- helpers below are not part of the page API ---
 
 async function openOpenClaw() {
-  const tile = document.getElementById("openclaw-tile");
+  const tile = document.getElementById("openclaw-windows-tile");
   if (tile) {
     tile.disabled = true;
     const label = tile.querySelector(".tile-cta") || tile;

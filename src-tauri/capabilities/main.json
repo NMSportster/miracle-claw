@@ -42,6 +42,11 @@
     "allow-mc-terminal-poll",
     "allow-mc-terminal-write",
     "allow-mc-terminal-kill",
-    "allow-mc-terminal-list"
+    "allow-mc-terminal-list",
+    "allow-mc-ui-list-allowed-roots",
+    "allow-mc-ui-list-dir",
+    "allow-mc-ui-read-file",
+    "allow-mc-ui-read-image",
+    "allow-mc-ui-open-externally"
   ]
 }

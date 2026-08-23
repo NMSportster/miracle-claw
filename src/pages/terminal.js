@@ -47,8 +47,12 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 
-const DEFAULT_SHELL_WIN = "mc-openclaw";
-const DEFAULT_SHELL_NIX = "mc-openclaw";
+// Default shell for the Terminal tile. Historically `mc-openclaw` so the
+// Terminal button launched the OpenClaw TUI by default. Dashboard v1.0.9-rc45
+// splits that into its own "OpenClaw · Terminal" tile; the Terminal tile is
+// now the local shell launcher (cmd / bash), so it defaults to the OS shell.
+const DEFAULT_SHELL_WIN = "cmd";
+const DEFAULT_SHELL_NIX = "bash";
 
 const POLL_INTERVAL_MS = 100;
 
@@ -110,15 +114,37 @@ export const terminalPage = {
   requiresAuth: true,
 
   mount(root, ctx = {}) {
-    const { onBackToDashboard } = ctx;
+    const { onBackToDashboard, defaultShell: ctxDefaultShell } = ctx;
 
     const os = detectOS();
     const osOptions = shellOptionsForOS(os);
     const allowedShells = new Set(osOptions.map((o) => o.value));
+    // Resolution order:
+    //   1. ctx.defaultShell (caller asked for a specific shell — dashboard
+    //      uses this to drop the user straight into the OpenClaw TUI).
+    //   2. localStorage `mc.terminal.shell` (user's last selection).
+    //   3. OS default.
+    //
+    // Migration (v1.0.9-rc45): pre-rc45 the Terminal tile defaulted to
+    // mc-openclaw, so installs that have used the app have it saved in
+    // localStorage. After the split, "Terminal" is the local shell tile
+    // and mc-openclaw lives on its own dashboard button. If we see the
+    // old saved value here, fall back to the OS default so the user
+    // lands in cmd/bash — the AI shell is one click away on the
+    // dashboard.
     const lastShell = safeLocalGet("mc.terminal.shell");
-    const initialShell = lastShell && allowedShells.has(lastShell)
-      ? lastShell
-      : defaultShellForOS(os);
+    let initialShell;
+    if (ctxDefaultShell && allowedShells.has(ctxDefaultShell)) {
+      initialShell = ctxDefaultShell;
+    } else if (
+      lastShell &&
+      allowedShells.has(lastShell) &&
+      lastShell !== "mc-openclaw"
+    ) {
+      initialShell = lastShell;
+    } else {
+      initialShell = defaultShellForOS(os);
+    }
 
     let sessionId = null;
     let lastSeq = 0;

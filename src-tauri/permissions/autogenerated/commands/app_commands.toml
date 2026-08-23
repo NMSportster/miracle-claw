@@ -231,3 +231,59 @@ commands.allow = ["mc_terminal_list"]
 identifier = "deny-mc-terminal-list"
 description = "Denies the mc_terminal_list command."
 commands.deny = ["mc_terminal_list"]
+
+# v1.0.9-rc47: UI-facing file browser commands
+# (hand-added because tauri-build's autogeneration step was
+# skipped during the rc46 build due to incremental sccache)
+[[permission]]
+identifier = "allow-mc-ui-list-allowed-roots"
+description = "Enables the mc_ui_list_allowed_roots command."
+commands.allow = ["mc_ui_list_allowed_roots"]
+
+[[permission]]
+identifier = "deny-mc-ui-list-allowed-roots"
+description = "Denies the mc_ui_list_allowed_roots command."
+commands.deny = ["mc_ui_list_allowed_roots"]
+
+[[permission]]
+identifier = "allow-mc-ui-list-dir"
+description = "Enables the mc_ui_list_dir command."
+commands.allow = ["mc_ui_list_dir"]
+
+[[permission]]
+identifier = "deny-mc-ui-list-dir"
+description = "Denies the mc_ui_list_dir command."
+commands.deny = ["mc_ui_list_dir"]
+
+[[permission]]
+identifier = "allow-mc-ui-read-file"
+description = "Enables the mc_ui_read_file command."
+commands.allow = ["mc_ui_read_file"]
+
+[[permission]]
+identifier = "deny-mc-ui-read-file"
+description = "Denies the mc_ui_read_file command."
+commands.deny = ["mc_ui_read_file"]
+
+# v1.0.0-prep: image preview + open-in-default-app handoff
+# (hand-added because tauri-build's autogeneration step was skipped
+# during the rc46 build due to incremental sccache; same fix applies here.)
+[[permission]]
+identifier = "allow-mc-ui-read-image"
+description = "Enables the mc_ui_read_image command."
+commands.allow = ["mc_ui_read_image"]
+
+[[permission]]
+identifier = "deny-mc-ui-read-image"
+description = "Denies the mc_ui_read_image command."
+commands.deny = ["mc_ui_read_image"]
+
+[[permission]]
+identifier = "allow-mc-ui-open-externally"
+description = "Enables the mc_ui_open_externally command."
+commands.allow = ["mc_ui_open_externally"]
+
+[[permission]]
+identifier = "deny-mc-ui-open-externally"
+description = "Denies the mc_ui_open_externally command."
+commands.deny = ["mc_ui_open_externally"]

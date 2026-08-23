@@ -1236,3 +1236,373 @@ code {
   border-color: var(--accent);
 }
 
+/* -------------------------------------------------------------------------
+   v1.0.9-rc46: Files page
+   ------------------------------------------------------------------------- */
+
+.files-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  height: 100%;
+  min-height: 0;
+}
+
+.files-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.files-path {
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 6px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.files-roots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.root-chip {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.root-chip:hover {
+  background: var(--tile-hover);
+  border-color: var(--link);
+}
+
+.files-body {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr);
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.files-list,
+.files-preview {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: auto;
+  min-height: 240px;
+}
+
+.entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+}
+
+.entry:hover {
+  background: var(--tile-hover);
+}
+
+.entry:last-child {
+  border-bottom: none;
+}
+
+.entry-icon {
+  flex-shrink: 0;
+}
+
+.entry-name {
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entry-size {
+  flex-shrink: 0;
+}
+
+.preview-head {
+  position: sticky;
+  top: 0;
+  background: var(--card-bg);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.preview-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.preview-meta {
+  margin-top: 4px;
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  background: rgba(234, 179, 8, 0.18);
+  border: 1px solid rgba(234, 179, 8, 0.4);
+  color: #fbbf24;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.preview-body {
+  padding: 12px;
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* v1.0.0-prep: preview upgrades (image inline, binary handoff, line
+   numbers). These sit under .preview-body / .preview-head / .files-preview. */
+
+.preview-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  min-height: 200px;
+  background: #0d0f12;
+}
+.preview-image img {
+  max-width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.preview-binary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  text-align: center;
+  gap: 12px;
+}
+.preview-binary-icon {
+  font-size: 48px;
+  opacity: 0.7;
+}
+.preview-binary-msg {
+  color: var(--muted, #9aa0a6);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.preview-binary button.primary {
+  margin-top: 4px;
+}
+
+/* Line-numbered text body. Each row is a flex container with the gutter
+   (.ln-num) on the left and the escaped line on the right. */
+.preview-body .ln {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 8px 0;
+}
+.preview-body .ln-row {
+  display: flex;
+  align-items: flex-start;
+  white-space: pre;
+}
+.preview-body .ln-num {
+  flex: 0 0 auto;
+  width: 4ch;
+  padding-right: 12px;
+  margin-right: 12px;
+  text-align: right;
+  color: var(--muted, #6c7079);
+  border-right: 1px solid #2a2d31;
+  user-select: none;
+}
+.preview-body .ln-text {
+  flex: 1 1 auto;
+  white-space: pre;
+}
+
+.files-status {
+  min-height: 1.2em;
+}
+
+.files-status[data-kind="error"] {
+  color: #f87171;
+}
+
+/* -------------------------------------------------------------------------
+   v1.0.9-rc46: Notebook page
+   ------------------------------------------------------------------------- */
+
+.notebook-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  height: 100%;
+  min-height: 0;
+}
+
+.notebook-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.notebook-title {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.notebook-body {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.notebook-list {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: auto;
+}
+
+.note-row {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.note-row:hover {
+  background: var(--tile-hover);
+}
+
+.note-row.active {
+  background: rgba(59, 130, 246, 0.14);
+  border-left: 3px solid var(--link);
+  padding-left: 9px;
+}
+
+.note-row-title {
+  font-weight: 500;
+  font-size: 13px;
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-row-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: 2px;
+}
+
+.notebook-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  min-height: 0;
+}
+
+.nb-title-input {
+  font-size: 16px;
+  font-weight: 600;
+  background: transparent;
+  border: 1px solid transparent;
+  color: inherit;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-family: inherit;
+}
+
+.nb-title-input:focus {
+  border-color: var(--link);
+  outline: none;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.nb-body-input {
+  flex: 1;
+  resize: none;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  color: inherit;
+  border-radius: 6px;
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  min-height: 240px;
+}
+
+.nb-body-input:focus {
+  border-color: var(--link);
+  outline: none;
+}
+
+.nb-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.nb-actions > :first-child {
+  flex: 1;
+}
+
+button.primary {
+  background: var(--link);
+  color: white;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+button.primary:hover {
+  filter: brightness(1.1);
+}
+
+button.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
