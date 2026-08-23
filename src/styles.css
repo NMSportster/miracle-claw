@@ -537,17 +537,26 @@ code {
 }
 .attach-message {
   flex: 1 1 auto;
-  background: var(--surface, #0d0f12);
-  color: var(--fg, #e8eaed);
-  border: 1px solid var(--border, #2a2d31);
+  /* rc49: bump contrast so the typed text is clearly readable against
+     the dashboard background. Earlier fallback colors (--surface /
+     --fg) didn't exist in our token set; the input was rendering as
+     near-illegible dark-on-dark. */
+  background: #0d0f12;
+  color: #f1f5f9;
+  border: 1px solid #475569;
   border-radius: 4px;
-  padding: 6px 10px;
+  padding: 8px 10px;
   font-size: 13px;
   font-family: inherit;
+  caret-color: #60a5fa;
+}
+.attach-message::placeholder {
+  color: #94a3b8;
 }
 .attach-message:focus {
   outline: none;
   border-color: var(--link, #6ea8fe);
+  box-shadow: 0 0 0 1px var(--link, #6ea8fe);
 }
 .attach-actions button.primary {
   flex: 0 0 auto;
@@ -561,6 +570,32 @@ code {
 }
 .attach-status[data-kind="error"] {
   color: #f87171;
+}
+
+/* rc49: expandable "How does this work?" help for new users. The
+   default <details>/<summary> styling is fine on dark backgrounds
+   but the surrounding block needs a little breathing room. */
+.attach-zone-help {
+  margin-top: 10px;
+}
+.attach-zone-help summary {
+  cursor: pointer;
+  color: var(--link);
+  font-size: 12px;
+  padding: 2px 0;
+}
+.attach-zone-help summary:hover {
+  text-decoration: underline;
+}
+.attach-zone-help ol {
+  margin: 6px 0 6px 18px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.attach-zone-help p {
+  margin: 4px 0 0 0;
+  font-size: 11px;
 }
 
 .link-button {
@@ -1427,6 +1462,18 @@ code {
   background: var(--tile-hover);
 }
 
+/* rc49: visually mark the file that's currently in the preview pane.
+   Newer-newbie-friendly affordance — users were losing track of which
+   file they had clicked when the list was scrolled down. */
+.entry.selected {
+  background: rgba(110, 168, 254, 0.18);
+  border-left: 3px solid var(--link);
+  padding-left: 9px; /* compensate for the border so icons stay aligned */
+}
+.entry.selected .entry-name {
+  font-weight: 500;
+}
+
 .entry:last-child {
   border-bottom: none;
 }
@@ -1713,3 +1760,139 @@ button.primary:disabled {
   cursor: not-allowed;
 }
 
+
+/* ============================================================================
+   rc49: Cmd-K command palette (src/cmd_k_palette.js).
+   Layout: full-screen dim overlay + centered narrow panel (60ch wide).
+   Sits on top of every page; closes on Esc or click-outside.
+   ============================================================================ */
+
+.cmd-k-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  z-index: 2000;
+  animation: fadeIn 0.12s ease;
+}
+
+.cmd-k-panel {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  width: min(720px, 92vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  animation: slideDown 0.18s ease;
+}
+
+.cmd-k-input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #334155;
+  color: #f1f5f9;
+  font-size: 16px;
+  padding: 16px 18px;
+  outline: none;
+  font-family: inherit;
+  caret-color: #60a5fa;
+}
+.cmd-k-input::placeholder {
+  color: #94a3b8;
+}
+
+.cmd-k-results {
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px 0;
+}
+
+.cmd-k-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 18px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #f1f5f9;
+}
+.cmd-k-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.cmd-k-item.selected {
+  background: rgba(96, 165, 250, 0.18);
+  border-left: 3px solid #60a5fa;
+  padding-left: 15px; /* compensate for the border */
+}
+
+.cmd-k-icon {
+  flex: 0 0 auto;
+  width: 20px;
+  text-align: center;
+  font-size: 15px;
+}
+.cmd-k-label {
+  flex: 1 1 auto;
+  font-weight: 500;
+}
+.cmd-k-category {
+  flex: 0 0 auto;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cmd-k-empty {
+  padding: 18px;
+  text-align: center;
+}
+
+.cmd-k-status {
+  border-top: 1px solid #334155;
+  padding: 8px 18px;
+  font-size: 11px;
+}
+.cmd-k-status[data-kind="error"] {
+  color: #f87171;
+}
+
+/* Shortcuts modal — small inline table. Reuses the existing modal
+   styling; just adds the kbd chip and the table layout. */
+.shortcut-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 12px 0;
+}
+.shortcut-table td {
+  padding: 6px 4px;
+  font-size: 13px;
+  color: var(--text);
+}
+.shortcut-table td:first-child {
+  width: 1%;
+  white-space: nowrap;
+  padding-right: 16px;
+}
+kbd {
+  display: inline-block;
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #f1f5f9;
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.4);
+}
+
+@keyframes slideDown {
+  from { transform: translateY(-12px); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}

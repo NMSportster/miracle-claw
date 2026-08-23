@@ -22,6 +22,11 @@ import { settingsPage } from "./pages/settings.js";
 import { terminalPage } from "./pages/terminal.js";
 import { filesPage } from "./pages/files.js";
 import { notebookPage } from "./pages/notebook.js";
+// rc49: centralized navigation so the Cmd-K palette (and future deep
+// links / keyboard shortcuts) can jump between pages without
+// re-implementing the per-page context dance.
+import { installNavigation, navigate } from "./navigation.js";
+import { initPalette } from "./cmd_k_palette.js";
 
 const { invoke } = window.__TAURI__.core;
 const root = document.getElementById("root");
@@ -36,6 +41,59 @@ register("settings", settingsPage);
 register("terminal", terminalPage);
 register("files", filesPage);
 register("notebook", notebookPage);
+
+// rc49: install the central navigation map. Every entry takes the
+// same shape: (extras) -> ctx object, where ctx carries the page's
+// callbacks. The dashboard ctx is the canonical "home" ctx; other
+// pages reuse its needsLogin bounce but expose their own back target.
+installNavigation({
+  root,
+  mount: mountPage,
+  builders: new Map([
+    [
+      "dashboard",
+      () => pageCtx(),
+    ],
+    [
+      "settings",
+      () => settingsCtx(),
+    ],
+    [
+      "files",
+      () => filesCtx(),
+    ],
+    [
+      "notebook",
+      () => notebookCtx(),
+    ],
+    [
+      "terminal",
+      (extras) => terminalCtx(extras || {}),
+    ],
+    [
+      "login",
+      (extras) => ({
+        endpoint: (extras && extras.endpoint) || "https://maicserver.com",
+        onSuccess: () => navigate("dashboard"),
+      }),
+    ],
+  ]),
+});
+
+// rc49: install the global Ctrl+K (and Cmd+K on macOS) palette. It
+// attaches its own keyboard listener and renders the palette
+// overlay into document.body. Page navigation happens through the
+// navigate() helper above.
+initPalette({
+  open: () => {
+    // openPalette() returns a Promise that resolves to the action's
+    // return value (or undefined if Esc). The palette handles its own
+    // UI; this function is intentionally a no-op stub so initPalette's
+    // initial test path stays simple.
+  },
+  navigate,
+  runAction: (fn) => fn(),
+});
 
 // --- Boot -----------------------------------------------------------------
 
@@ -65,20 +123,24 @@ function pageCtx() {
         endpoint: "https://maicserver.com",
         onSuccess: () => mountPage("dashboard", root, pageCtx()),
       }),
-    onOpenSettings: () => mountPage("settings", root, settingsCtx()),
-    onOpenTerminal: () => mountPage("terminal", root, terminalCtx()),
-    onOpenFiles: () => mountPage("files", root, filesCtx()),
-    onOpenNotebook: () => mountPage("notebook", root, notebookCtx()),
+    // rc49: route every page navigation through navigate() so the
+    // palette, dashboard tiles, and back buttons share one source of
+    // truth. The page builders in installNavigation above own the
+    // per-page ctx shape (e.g. terminalCtx with defaultShell).
+    onOpenSettings: () => navigate("settings"),
+    onOpenTerminal: () => navigate("terminal"),
+    onOpenFiles: () => navigate("files"),
+    onOpenNotebook: () => navigate("notebook"),
     // Open the Terminal page with the OpenClaw TUI (mc-openclaw) pre-selected.
     // Used by the "OpenClaw · Terminal" tile on the dashboard.
     onOpenOpenClawTerminal: () =>
-      mountPage("terminal", root, terminalCtx({ defaultShell: "mc-openclaw" })),
+      navigate("terminal", { defaultShell: "mc-openclaw" }),
   };
 }
 
 function filesCtx() {
   return {
-    onBackToDashboard: () => mountPage("dashboard", root, pageCtx()),
+    onBackToDashboard: () => navigate("dashboard"),
     onNeedsLogin: () =>
       mountPage("login", root, {
         endpoint: "https://maicserver.com",
@@ -89,7 +151,7 @@ function filesCtx() {
 
 function notebookCtx() {
   return {
-    onBackToDashboard: () => mountPage("dashboard", root, pageCtx()),
+    onBackToDashboard: () => navigate("dashboard"),
     onNeedsLogin: () =>
       mountPage("login", root, {
         endpoint: "https://maicserver.com",
@@ -100,7 +162,7 @@ function notebookCtx() {
 
 function settingsCtx() {
   return {
-    onBackToDashboard: () => mountPage("dashboard", root, pageCtx()),
+    onBackToDashboard: () => navigate("dashboard"),
     onNeedsLogin: () =>
       mountPage("login", root, {
         endpoint: "https://maicserver.com",
@@ -111,7 +173,7 @@ function settingsCtx() {
 
 function terminalCtx(opts = {}) {
   return {
-    onBackToDashboard: () => mountPage("dashboard", root, pageCtx()),
+    onBackToDashboard: () => navigate("dashboard"),
     onNeedsLogin: () =>
       mountPage("login", root, {
         endpoint: "https://maicserver.com",

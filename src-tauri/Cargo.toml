@@ -50,6 +50,12 @@ tauri-build = { version = "=2.6.3", features = [] }
 # original scaffold; we tighten here.
 tauri = { version = "=2.11.5", features = [] }
 tauri-plugin-shell = "=2.3.5"
+# rc49 (feature/drag-drop): reliable OS clipboard for the "Send to chat"
+# handoff. navigator.clipboard.writeText() in JS depends on the webview
+# being focused, which fails silently if the user clicked Send right
+# after dropping a file. The Rust plugin writes directly to the OS
+# clipboard via Win32 / cocoa / xclip — no focus required.
+tauri-plugin-clipboard-manager = "=2.3.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

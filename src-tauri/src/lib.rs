@@ -5549,6 +5549,10 @@ fn mc_send_attachments_to_chat(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        // rc49 (feature/drag-drop): OS clipboard for the "Send to chat"
+        // handoff. Writes directly via Win32 / cocoa / xclip so the
+        // dashboard doesn't depend on the webview being focused.
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             first_run_report,

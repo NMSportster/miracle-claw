@@ -52,6 +52,7 @@
     "allow-mc-list-attachments",
     "allow-mc-remove-attachment",
     "allow-mc-clear-attachments",
-    "allow-mc-send-attachments-to-chat"
+    "allow-mc-send-attachments-to-chat",
+    "clipboard-manager:allow-write-text"
   ]
 }

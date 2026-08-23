@@ -17,6 +17,7 @@
 //   - The tile grid is already structured to accept more tiles.
 
 import { invoke } from "@tauri-apps/api/core";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -183,6 +184,18 @@ export const dashboardPage = {
               <button type="button" class="primary" id="attach-send">Send to chat →</button>
               <button type="button" class="link-button" id="attach-clear">Clear queue</button>
             </div>
+            <div class="attach-zone-help muted small" id="attach-zone-help">
+              <details>
+                <summary>How does this work?</summary>
+                <ol>
+                  <li>Drop one or more files above. They copy into MC's workspace.</li>
+                  <li>Click <strong>Send to chat</strong>. The OpenClaw chat window opens and the file paths land in your clipboard.</li>
+                  <li>Click into the chat input and press <strong>Ctrl+V</strong>. The model sees the file paths and reads them with its file tool.</li>
+                </ol>
+                <p class="muted small">MC can't paste directly into the chat window, so the clipboard is the bridge. One keystroke after each Send.</p>
+              </details>
+            </div>
+
             <div class="attach-status muted small" id="attach-status"></div>
           </div>
 
@@ -421,18 +434,20 @@ function wireAttachZone(root) {
       const payload = await invoke("mc_send_attachments_to_chat", {
         userMessage: messageEl.value || null,
       });
-      // Hand the markdown to the OS clipboard via the browser API.
-      // WebView2 + WebKitGTK + WKWebView all support this in their
-      // secure contexts; Tauri serves the page over tauri:// which is
-      // treated as secure.
+      // Use the OS clipboard via the Tauri clipboard plugin (rc49).
+      // navigator.clipboard.writeText() in JS depends on the webview
+      // being focused; right after a drop the focus may be elsewhere
+      // and the write silently no-ops. The plugin writes via the OS API
+      // directly with no focus requirement.
       try {
-        await navigator.clipboard.writeText(payload);
+        await writeText(payload);
         setStatus(
           "Copied to clipboard. OpenClaw window opened — paste with Ctrl+V."
         );
       } catch (clipErr) {
         setStatus(
-          `Chat opened, but clipboard copy failed: ${clipErr}. The file paths are listed above in the queue.`
+          `Chat opened, but clipboard copy failed: ${clipErr}. Copy the file paths above manually.`,
+          "error"
         );
       }
       // Clear the queue (and the staged files) after a successful send.

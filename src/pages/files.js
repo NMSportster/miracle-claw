@@ -216,6 +216,14 @@ export const filesPage = {
       listEl.innerHTML = rows.join("");
       listEl.querySelectorAll(".entry").forEach((el) => {
         el.addEventListener("click", () => {
+          // Mark the new selection visually so the user can see which
+          // file is currently being previewed — fixes the "I clicked
+          // something toward the bottom and don't know what I picked"
+          // confusion (rc49).
+          listEl.querySelectorAll(".entry.selected").forEach((sel) => {
+            sel.classList.remove("selected");
+          });
+          el.classList.add("selected");
           const kind = el.dataset.kind;
           const p = el.dataset.path;
           if (kind === "dir" || el.classList.contains("entry-up")) {
@@ -231,7 +239,16 @@ export const filesPage = {
       if (busy) return;
       busy = true;
       setStatus(`Loading ${path}…`);
+      // Reset selection — the user is navigating directories, so any
+      // prior file selection is no longer the "current" file (rc49).
+      listEl
+        .querySelectorAll(".entry.selected")
+        .forEach((el) => el.classList.remove("selected"));
+      // Scroll the preview back to the top so the user sees the new
+      // empty-preview placeholder immediately, not a leftover from a
+      // previously-loaded file (rc49).
       previewEl.innerHTML = `<div class="muted small">Click a file to preview its contents.</div>`;
+      previewEl.scrollTop = 0;
       try {
         const result = await invoke("mc_ui_list_dir", { path });
         currentPath = result.path;
@@ -249,9 +266,14 @@ export const filesPage = {
       if (busy) return;
       busy = true;
       const name = normalizeSlashes(path).split("/").pop();
+      // Scroll preview to top so the new file's preview-head (path +
+      // Open-in-default-app button) is visible immediately. Without
+      // this, if the previous preview had been scrolled down, the user
+      // would think nothing happened when they clicked a new file (rc49).
       previewEl.innerHTML = `<div class="muted small">Loading ${escapeHtml(
         name
       )}…</div>`;
+      previewEl.scrollTop = 0;
       setStatus(`Reading ${path}…`);
       const kind = classifyKind(path);
 
