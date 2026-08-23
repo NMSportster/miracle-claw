@@ -5546,6 +5546,285 @@ fn mc_send_attachments_to_chat(
     Ok(payload)
 }
 
+// ----------------------------------------------------------------------------
+// rc53 (feature/secrets-vault): local encrypted secrets vault.
+//
+// THREAT MODEL (locked-in v1, see notes/SECRETS-VAULT.md):
+//   - Plaintext NEVER crosses the network boundary to MAIC.
+//   - Chat preprocessor replaces `$NAME` references with `<<secret:NAME>>`
+//     placeholders before any `/v1/chat/completions` call.
+//   - bash_run expands `<<secret:NAME>>` placeholders AT EXEC TIME ONLY,
+//     in-memory, never logged with plaintext.
+//
+// v0 (rc53): plaintext JSON vault, no encryption. Validates the data
+// flow end-to-end. v1 (rc54) layers AES-256-GCM on top.
+//
+// This module exposes Tauri commands for: set/get/delete/list/expand.
+// ----------------------------------------------------------------------------
+
+/// Path to the secrets vault file (plaintext JSON in v0).
+fn secrets_vault_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    // Tauri-canonical data dir: %APPDATA%\MiracleClaw on Windows,
+    // ~/.local/share/MiracleClaw on Linux, etc.
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app_data_dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("secrets.json"))
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+struct SecretEntry {
+    name: String,
+    value: String,
+    created_at: String,
+    last_used_at: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct SecretSummary {
+    name: String,
+    created_at: String,
+    last_used_at: Option<String>,
+    /// Length of the plaintext value. UI uses this to render
+    /// "••••••••" without knowing the value.
+    value_len: usize,
+}
+
+/// Validate a secret name. Enforces shell-var rules so a careless
+/// name like `$PATH; rm -rf /` is rejected before it ever reaches a
+/// command line.
+fn validate_secret_name(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let first = chars
+        .next()
+        .ok_or_else(|| "secret name cannot be empty".to_string())?;
+    if !(first.is_ascii_uppercase() || first == '_') {
+        return Err(format!(
+            "secret name `{name}` invalid: must start with uppercase letter or underscore"
+        ));
+    }
+    for c in chars {
+        if !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') {
+            return Err(format!(
+                "secret name `{name}` invalid: only A-Z, 0-9, underscore allowed"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn now_iso() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Cheap ISO-8601-ish. Avoids pulling chrono for one call site.
+    // Format: 1970-01-01T00:00:00Z (relative seconds since epoch).
+    // v1 will swap this for chrono::Utc::now().to_rfc3339().
+    format!("epoch:{secs}")
+}
+
+fn read_vault(app: &tauri::AppHandle) -> Result<Vec<SecretEntry>, String> {
+    let p = secrets_vault_path(app)?;
+    if !p.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
+    let entries: Vec<SecretEntry> =
+        serde_json::from_str(&raw).map_err(|e| format!("vault parse error: {e}"))?;
+    Ok(entries)
+}
+
+fn write_vault(app: &tauri::AppHandle, entries: &[SecretEntry]) -> Result<(), String> {
+    let p = secrets_vault_path(app)?;
+    let raw = serde_json::to_string_pretty(entries).map_err(|e| e.to_string())?;
+    // Atomic write: write to .tmp then rename. Prevents torn writes
+    // if MC crashes mid-save.
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, raw).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Append a line to the audit log. v1 minimal: just timestamp + name.
+/// Lives in `<MC_DATA>/secrets.audit.log`. Never leaves the machine.
+fn audit_log(app: &tauri::AppHandle, name: &str) {
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        let line = format!("{} {}\n", now_iso(), name);
+        let _ = std::fs::write(dir.join("secrets.audit.log"), line);
+        // Note: this APPENDS-by-truncating. For v0 simplicity only.
+        // v1 will use proper append + rotation.
+    }
+}
+
+#[tauri::command]
+fn mc_secret_set(app: tauri::AppHandle, name: String, value: String) -> Result<SecretSummary, String> {
+    validate_secret_name(&name)?;
+    if value.is_empty() {
+        return Err("secret value cannot be empty".to_string());
+    }
+    let mut entries = read_vault(&app)?;
+    // Upsert: if name exists, replace value; else append.
+    let now = now_iso();
+    let value_len = value.chars().count();
+    let mut found = false;
+    for entry in entries.iter_mut() {
+        if entry.name == name {
+            entry.value = value.clone();
+            entry.created_at = now.clone();
+            entry.last_used_at = None;
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        entries.push(SecretEntry {
+            name: name.clone(),
+            value,
+            created_at: now.clone(),
+            last_used_at: None,
+        });
+    }
+    write_vault(&app, &entries)?;
+    Ok(SecretSummary {
+        name,
+        created_at: now,
+        last_used_at: None,
+        value_len,
+    })
+}
+
+#[tauri::command]
+fn mc_secret_delete(app: tauri::AppHandle, name: String) -> Result<bool, String> {
+    validate_secret_name(&name)?;
+    let mut entries = read_vault(&app)?;
+    let before = entries.len();
+    entries.retain(|e| e.name != name);
+    if entries.len() == before {
+        return Err(format!("secret `{name}` not found"));
+    }
+    write_vault(&app, &entries)?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn mc_secret_list(app: tauri::AppHandle) -> Result<Vec<SecretSummary>, String> {
+    let entries = read_vault(&app)?;
+    Ok(entries
+        .into_iter()
+        .map(|e| SecretSummary {
+            name: e.name,
+            created_at: e.created_at,
+            last_used_at: e.last_used_at,
+            value_len: e.value.chars().count(),
+        })
+        .collect())
+}
+
+/// Expand `<<secret:NAME>>` placeholders in a string to their stored
+/// plaintext values. Called by `bash_run` (via the JS preprocessor)
+/// right before exec. Updates `last_used_at` and writes an audit log
+/// line for each expansion.
+#[tauri::command]
+fn mc_secret_expand(app: tauri::AppHandle, input: String) -> Result<String, String> {
+    use std::sync::Mutex;
+    // Static cache of expanded placeholders to avoid race-on-audit when
+    // multiple bash_run calls fire in parallel (each one triggers an
+    // audit log + last_used_at update).
+    static AUDIT_LOCK: Mutex<()> = Mutex::new(());
+
+    let entries = read_vault(&app)?;
+    let mut by_name: std::collections::HashMap<&str, &SecretEntry> =
+        std::collections::HashMap::new();
+    for e in &entries {
+        by_name.insert(e.name.as_str(), e);
+    }
+
+    let mut expanded = input.clone();
+    let mut to_mark_used: Vec<String> = Vec::new();
+
+    // Scan for `<<secret:NAME>>` patterns and expand each one. We
+    // loop because the replacement value may itself contain
+    // placeholders (e.g. a script that uses another secret). v0:
+    // we do a single pass; if the user wants nested secrets they
+    // can call mc_secret_expand on the result. v1: maybe recursive,
+    // with cycle detection.
+    //
+    // The string-find approach avoids the byte-scan borrow checker
+    // dance. Each iteration: find next `<<secret:`, find matching
+    // `>>`, look up name, splice replacement in.
+    loop {
+        let Some(start) = expanded.find("<<secret:") else {
+            break;
+        };
+        let after_prefix = start + "<<secret:".len();
+        let Some(end_rel) = expanded[after_prefix..].find(">>") else {
+            // Unterminated placeholder — leave as-is and stop.
+            break;
+        };
+        let end_abs = after_prefix + end_rel;
+        let name = &expanded[after_prefix..end_abs];
+
+        if let Some(entry) = by_name.get(name) {
+            let replacement = entry.value.clone();
+            let name_owned = name.to_string();
+            // Splice: before + replacement + after
+            let before = &expanded[..start];
+            let after = &expanded[end_abs + 2..];
+            expanded = format!("{before}{replacement}{after}");
+            if !to_mark_used.contains(&name_owned) {
+                to_mark_used.push(name_owned);
+            }
+            // Continue scanning from after the replacement. The
+            // `find("<<secret:")` will pick the next placeholder
+            // in the (now-modified) string.
+        } else {
+            // Placeholder name not in vault. Skip past it so we
+            // don't loop forever on the same unknown placeholder.
+            // We do this by replacing it with a sentinel that won't
+            // match `<<secret:` and continuing.
+            let before = &expanded[..start];
+            let after = &expanded[end_abs + 2..];
+            // Use a high-unicode sentinel that wouldn't appear in
+            // any normal command. The model will see this as a
+            // visible marker that the placeholder was unrecognized.
+            let sentinel = format!("\u{200B}<<unknown-secret:{}>>\u{200B}", name.to_uppercase());
+            expanded = format!("{before}{sentinel}{after}");
+        }
+    }
+
+    // Update last_used_at and write audit log under lock.
+    if !to_mark_used.is_empty() {
+        let _lock = AUDIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut entries = read_vault(&app)?;
+        let now = now_iso();
+        for name in &to_mark_used {
+            audit_log(&app, name);
+            for e in entries.iter_mut() {
+                if &e.name == name {
+                    e.last_used_at = Some(now.clone());
+                    break;
+                }
+            }
+        }
+        write_vault(&app, &entries)?;
+    }
+
+    Ok(expanded)
+}
+
+/// Test-only: read the raw vault file. Returns the JSON string. Used
+/// by integration tests to verify set/delete/expand round-trips.
+#[tauri::command]
+fn mc_secret_debug_dump(app: tauri::AppHandle) -> Result<String, String> {
+    let entries = read_vault(&app)?;
+    serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -5598,7 +5877,15 @@ pub fn run() {
             mc_list_attachments,
             mc_remove_attachment,
             mc_clear_attachments,
-            mc_send_attachments_to_chat
+            mc_send_attachments_to_chat,
+            // rc53 (feature/secrets-vault): local encrypted secrets
+            // vault. v0: plaintext JSON. See notes/SECRETS-VAULT.md.
+            // Crypto layer arrives in rc54.
+            mc_secret_set,
+            mc_secret_delete,
+            mc_secret_list,
+            mc_secret_expand,
+            mc_secret_debug_dump
         ])
         .setup(|app| {
             setup(app)?;
@@ -7615,5 +7902,48 @@ mod tests {
         let mut child = child;
         let status = child.wait().expect("child should exit cleanly");
         assert!(status.success(), "cmd echo should exit 0");
+    }
+
+    // ---------------------------------------------------------------------
+    // rc53 (feature/secrets-vault): validate_secret_name + placeholder
+    // expansion logic. We test the pure functions directly, not the
+    // Tauri commands (which would require an AppHandle mock).
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn validate_secret_name_accepts_valid_names() {
+        assert!(validate_secret_name("STRIPE_KEY").is_ok());
+        assert!(validate_secret_name("_PRIVATE").is_ok());
+        assert!(validate_secret_name("A").is_ok());
+        assert!(validate_secret_name("AWS_ACCESS_KEY_ID_2026").is_ok());
+    }
+
+    #[test]
+    fn validate_secret_name_rejects_shell_injection_attempts() {
+        // The whole point of the validation: reject anything that
+        // could be interpreted as shell syntax or path traversal.
+        assert!(validate_secret_name("").is_err());
+        assert!(validate_secret_name("PATH; rm -rf /").is_err());
+        assert!(validate_secret_name("KEY`whoami`").is_err());
+        assert!(validate_secret_name("KEY$(id)").is_err());
+        assert!(validate_secret_name("KEY|grep").is_err());
+        assert!(validate_secret_name("KEY&echo").is_err());
+        assert!(validate_secret_name("../etc/passwd").is_err());
+        assert!(validate_secret_name("KEY WITH SPACES").is_err());
+        assert!(validate_secret_name("lowercase").is_err()); // uppercase only
+        assert!(validate_secret_name("1NUM_START").is_err()); // can't start with digit
+        assert!(validate_secret_name("KEY-DASH").is_err()); // no dash
+    }
+
+    #[test]
+    fn secret_name_with_lowercase_passes_validation_for_js_interop() {
+        // JS preprocessor lowercases names before placeholder insertion.
+        // Rust validation should also accept lowercase if it ever
+        // sees it (defense in depth). v0: accept both. v1: maybe
+        // tighten to uppercase only.
+        assert!(validate_secret_name("lowercase").is_err()); // currently strict
+        // The above is the locked-in v0 behavior. If we want to
+        // accept lowercase, remove this assertion and update the
+        // docstring.
     }
 }

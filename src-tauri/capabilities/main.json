@@ -53,6 +53,11 @@
     "allow-mc-remove-attachment",
     "allow-mc-clear-attachments",
     "allow-mc-send-attachments-to-chat",
-    "clipboard-manager:allow-write-text"
+    "clipboard-manager:allow-write-text",
+    "allow-mc-secret-set",
+    "allow-mc-secret-delete",
+    "allow-mc-secret-list",
+    "allow-mc-secret-expand",
+    "allow-mc-secret-debug-dump"
   ]
 }

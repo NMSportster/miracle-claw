@@ -42,5 +42,13 @@ permissions = [
   "allow-mc-list-attachments",
   "allow-mc-remove-attachment",
   "allow-mc-clear-attachments",
-  "allow-mc-send-attachments-to-chat"
+  "allow-mc-send-attachments-to-chat",
+  # rc53 (feature/secrets-vault): local encrypted secrets vault.
+  # v0 plaintext JSON; crypto in rc54. Threat model locked in
+  # notes/SECRETS-VAULT.md. Plaintext never crosses the network.
+  "allow-mc-secret-set",
+  "allow-mc-secret-delete",
+  "allow-mc-secret-list",
+  "allow-mc-secret-expand",
+  "allow-mc-secret-debug-dump"
 ]

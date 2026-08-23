@@ -22,6 +22,9 @@ import { settingsPage } from "./pages/settings.js";
 import { terminalPage } from "./pages/terminal.js";
 import { filesPage } from "./pages/files.js";
 import { notebookPage } from "./pages/notebook.js";
+// rc53 (feature/secrets-vault): debug page for v0 verification.
+// Not registered in the main page map; mounted via window.__mc_openSecretsDebug.
+import { secretsDebugPage } from "./secrets/debug_page.js";
 // rc49: centralized navigation so the Cmd-K palette (and future deep
 // links / keyboard shortcuts) can jump between pages without
 // re-implementing the per-page context dance.
@@ -41,6 +44,9 @@ register("settings", settingsPage);
 register("terminal", terminalPage);
 register("files", filesPage);
 register("notebook", notebookPage);
+// rc53 (feature/secrets-vault): debug page registration. Mounted
+// only via window.__mc_openSecretsDebug() (dev escape hatch).
+register("secrets-debug", secretsDebugPage);
 
 // rc49: install the central navigation map. Every entry takes the
 // same shape: (extras) -> ctx object, where ctx carries the page's
@@ -139,6 +145,15 @@ function mountLogin(extras) {
 // palette logic. Set up after installNavigation so it's available
 // before any palette action could possibly fire.
 window.__mc_mountLogin = mountLogin;
+
+// rc53 (feature/secrets-vault): dev-only escape hatch to open the
+// secrets debug page. Used during v0 verification. Will be removed
+// once the dashboard tile + UI flow ship in rc54.
+window.__mc_openSecretsDebug = function () {
+  mountPage("secrets-debug", root, {
+    onBackToDashboard: () => navigate("dashboard"),
+  });
+};
 
 function pageCtx() {
   return {
