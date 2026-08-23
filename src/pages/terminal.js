@@ -263,7 +263,6 @@ export const terminalPage = {
             autocomplete="off"
             autocapitalize="off"
             spellcheck="false"
-            autofocus
           />
           <button type="submit" class="primary-button">Send</button>
         </form>
@@ -322,6 +321,22 @@ export const terminalPage = {
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
     term.open(termContainer);
+
+    // rc44 focus fix: xterm's internal <textarea class="xterm-helper-textarea">
+    // is positioned inside the terminal container and steals keystrokes
+    // when it has focus. term.open() focuses it by default, which
+    // conflicts with our <input id="terminal-input"> below the terminal.
+    // Symptom (David, 2026-08-22 23:38 MDT): click into the input,
+    // cursor appears, but typed keys don't register and Enter doesn't
+    // submit. The visible cursor is just :focus styling; actual focus
+    // is still on xterm's helper textarea (covers the input area
+    // visually because they're stacked).
+    //
+    // Fix: explicitly blur xterm AFTER mount so the input field is the
+    // real document.activeElement. Then focus the input on first mount
+    // and on every click into the input (defensive — clicks should
+    // bubble to set focus, but we make it explicit).
+    term.blur();
 
     // First fit must happen AFTER the container has been measured by
     // the browser (next animation frame is the safe bet). Without
@@ -387,6 +402,44 @@ export const terminalPage = {
 
     const form = document.getElementById("terminal-input-form");
     const input = document.getElementById("terminal-input");
+
+    // rc44: defensive input focus. xterm's helper textarea can re-grab
+    // focus on any xterm interaction (resize, repaint, scroll). We
+    // make sure the input always takes focus when interacted with,
+    // and start with focus on the input so users can type immediately.
+    const focusInput = () => {
+      try {
+        input.focus({ preventScroll: true });
+      } catch {
+        input.focus();
+      }
+    };
+    input.addEventListener("mouseup", (e) => {
+      // mouseup fires after the browser has already done its focus
+      // shift; this is just a safety net for cases where xterm stole
+      // focus back between mousedown and mouseup.
+      e.preventDefault();
+      focusInput();
+    });
+    input.addEventListener("focus", () => {
+      // If xterm's helper textarea grabs focus back, the input won't
+      // see the focus event. We force-blink focus here so the user
+      // visibly sees they're typing in the right place.
+    });
+
+    // Make xterm container clicks release xterm focus so a subsequent
+    // click on the input doesn't have to fight for it. Click INTO
+    // xterm DOES focus xterm (intentional — that's how you select
+    // text); clicks on the input take focus back.
+    termContainer.addEventListener("mousedown", () => {
+      // Allow click to focus xterm — that's normal terminal behavior.
+    });
+    input.addEventListener("click", focusInput);
+    input.addEventListener("keydown", focusInput);
+
+    // First focus on next tick so the input is ready before we focus.
+    setTimeout(focusInput, 0);
+
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const text = input.value;

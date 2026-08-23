@@ -259,6 +259,13 @@ code {
   max-width: 720px;
   margin: 0 auto;
   padding: 32px 24px;
+  /* Flex column so the fullscreen output area can flex-grow to fill
+     available height while header/input/footer stay their natural
+     sizes. Non-fullscreen pages don't care — block children just
+     stack normally inside a flex column. */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .dashboard-header {
@@ -1145,10 +1152,14 @@ code {
    - position:fixed + inset:0 breaks out of the .dashboard 720px clamp
      AND overlays everything else (header nav, etc.) so the output
      really IS the screen.
-   - Toolbar (shell picker, restart, kill) and input row are hidden.
-     When you toggle out of fullscreen they come back. Power users
-     in fullscreen mostly use OpenClaw TUI which has its own input.
-   - Output grows to fill all available space with bigger font. */
+   - Toolbar (shell picker, restart, kill) is hidden — that chrome is
+     for picking/starting sessions, and we already picked one before
+     going fullscreen. (rc43 changed this; rc44 keeps input visible
+     so you can still type commands / pipe messages to the shell.)
+   - Output grows to fill all available space with bigger font.
+   - Input row stays anchored to the bottom so fullscreen-mode users
+     can still type. Toolbar staying hidden gives us room to enlarge
+     both the input and the output font. */
 .terminal-page.terminal-fullscreen-mode {
   position: fixed;
   inset: 0;
@@ -1164,9 +1175,30 @@ code {
   margin-bottom: 8px;
 }
 
-.terminal-page.terminal-fullscreen-mode .terminal-toolbar,
-.terminal-page.terminal-fullscreen-mode .terminal-input-row {
+/* Toolbar hides in fullscreen; input row stays visible. (rc44 fix:
+   user reported no input area in fullscreen — fullscreen users DO
+   want to type. Toolbar can stay hidden because shell/restart are
+   pre-fullscreen choices.) */
+.terminal-page.terminal-fullscreen-mode .terminal-toolbar {
   display: none;
+}
+
+/* rc44: fullscreen-mode input row gets a slightly larger font and
+   dark theme tint so it sits naturally against the #0b1020 terminal
+   backdrop. Without this the input felt small and out of place. */
+.terminal-page.terminal-fullscreen-mode .terminal-input-row {
+  flex: 0 0 auto;
+  margin-top: 8px;
+}
+.terminal-page.terminal-fullscreen-mode .terminal-input {
+  background: #0f172a;
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #e5e7eb;
+  font-size: 14px;
+  padding: 10px 12px;
+}
+.terminal-page.terminal-fullscreen-mode .terminal-input:focus {
+  border-color: var(--accent);
 }
 
 .terminal-page.terminal-fullscreen-mode .terminal-output {

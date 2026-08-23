@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "MiracleClaw",
-  "version": "1.0.9-rc43",
+  "version": "1.0.9-rc44",
   "identifier": "com.adealauto.miracle-claw",
   "build": {
     "beforeBuildCommand": "bash scripts/build-launcher-sidecar.sh && npx vite build",
