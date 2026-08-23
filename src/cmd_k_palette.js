@@ -39,6 +39,12 @@ let _statusEl = null;
 let _items = [];        // current filtered list
 let _selectedIdx = 0;
 let _lastQuery = "";
+// Palette gates itself on auth: the Ctrl+K shortcut does nothing
+// until enable() is called (called by main.js right after a successful
+// login). This is what stops the palette from popping up on the
+// login page — login has its own input focus needs and the palette
+// overlay would steal clicks AND make login fail.
+let _enabled = false;
 
 /**
  * Initialize the palette. Attaches the global keyboard listener and
@@ -53,6 +59,29 @@ export function initPalette(deps) {
   _deps = deps;
   ensureOverlay();
   document.addEventListener("keydown", onGlobalKeydown, true);
+  // Belt-and-suspenders: also listen on the overlay's own keydown. If
+  // the input ever loses focus (autofocus war with a login form, blur
+  // after open, etc.) and Esc is pressed, the overlay-level handler
+  // will still close it.
+  _paletteEl.addEventListener("keydown", onOverlayKeydown);
+}
+
+/**
+ * Enable the palette (Ctrl+K shortcut starts working). Call this after
+ * the user successfully logs in. To disable (e.g. before logging out),
+ * call disable().
+ */
+export function enable() {
+  _enabled = true;
+}
+
+/**
+ * Disable the palette (Ctrl+K shortcut stops working). If the palette
+ * is currently open, close it first.
+ */
+export function disable() {
+  _enabled = false;
+  if (_paletteEl && !_paletteEl.hidden) close();
 }
 
 function ensureOverlay() {
@@ -88,11 +117,13 @@ function ensureOverlay() {
 }
 
 function onGlobalKeydown(e) {
-  // Ctrl+K (Linux/Windows) or Cmd+K (macOS). Avoid plain "K" — Ctrl+K
-  // is the muscle-memory users expect from Cursor, Linear, Slack.
+  // Ctrl+K / Cmd+K shortcut. Gated on _enabled so the palette doesn't
+  // pop up on the login page (where the overlay would steal the
+  // email/password input clicks and lock the user out — the exact
+  // bug David hit in rc49).
   const isMac = navigator.platform.toLowerCase().includes("mac");
   const accel = isMac ? e.metaKey : e.ctrlKey;
-  // Ignore when modifier other than accel+shift is held.
+  if (!_enabled) return;
   if (
     accel &&
     !e.altKey &&
@@ -119,6 +150,31 @@ function onInputKeydown(e) {
   } else if (e.key === "Enter") {
     e.preventDefault();
     runSelected();
+  }
+}
+
+/**
+ * Same keys as onInputKeydown, but at the overlay level. Catches the
+ * case where the input lost focus mid-palette (rare, but possible
+ * after a tab away or a focus war with an autofocus'd login field).
+ */
+function onOverlayKeydown(e) {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation();
+    close();
+  } else if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter") {
+    // If the input doesn't have focus, forward the key back into it
+    // so the user sees cursor movement + has working Enter without
+    // having to click first. Re-dispatching is the simplest path.
+    if (document.activeElement !== _inputEl) {
+      e.preventDefault();
+      _inputEl.focus();
+      _inputEl.dispatchEvent(
+        new KeyboardEvent("keydown", { ...e, bubbles: true })
+      );
+    }
+    // Otherwise let the input's own listener handle it.
   }
 }
 
@@ -316,8 +372,17 @@ function buildCommands() {
         }
         try {
           await invoke("maic_logout");
-          // Bounce to login via the navigation system.
-          _deps.navigate("login");
+          // Bounce to login via the navigation system. We could call
+          // navigate('login') but that doesn't disable the palette —
+          // main.js's mountLogin() does. The palette import isn't
+          // supposed to reach into main.js, so we route through a
+          // window-exposed helper that main.js sets up.
+          if (window.__mc_mountLogin) {
+            window.__mc_mountLogin();
+          } else {
+            // Fallback if main.js hasn't wired it up (e.g. tests).
+            _deps.navigate("login");
+          }
         } catch (err) {
           setStatus(`Sign out failed: ${err}`, true);
         }

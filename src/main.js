@@ -26,7 +26,7 @@ import { notebookPage } from "./pages/notebook.js";
 // links / keyboard shortcuts) can jump between pages without
 // re-implementing the per-page context dance.
 import { installNavigation, navigate } from "./navigation.js";
-import { initPalette } from "./cmd_k_palette.js";
+import { initPalette, enable as enablePalette, disable as disablePalette } from "./cmd_k_palette.js";
 
 const { invoke } = window.__TAURI__.core;
 const root = document.getElementById("root");
@@ -107,22 +107,42 @@ async function boot() {
   }
 
   if (report.needs_maic_login) {
-    mountPage("login", root, {
-      endpoint: report.maic_provider_endpoint || "https://maicserver.com",
-      onSuccess: () => mountPage("dashboard", root, pageCtx()),
-    });
+    // Not logged in — palette stays disabled (Ctrl+K is a no-op until
+    // auth completes). The palette overlay would steal clicks from
+    // the login form, so we don't enable it here.
+    disablePalette();
+    mountLogin();
   } else {
+    // Already authenticated (returning user). Palette is on.
+    enablePalette();
     mountPage("dashboard", root, pageCtx());
   }
 }
 
+// Single source of truth for bouncing to the login page. Used by the
+// initial boot and by every onNeedsLogin in every per-page ctx.
+// Disables the palette so the overlay can't steal clicks from the
+// login form (rc49 bug).
+function mountLogin(extras) {
+  disablePalette();
+  mountPage("login", root, {
+    endpoint: (extras && extras.endpoint) || "https://maicserver.com",
+    onSuccess: () => {
+      enablePalette();
+      mountPage("dashboard", root, pageCtx());
+    },
+  });
+}
+
+// Expose mountLogin on window so the Cmd-K palette's "Sign out"
+// command can bounce to login without re-implementing the disable-
+// palette logic. Set up after installNavigation so it's available
+// before any palette action could possibly fire.
+window.__mc_mountLogin = mountLogin;
+
 function pageCtx() {
   return {
-    onNeedsLogin: () =>
-      mountPage("login", root, {
-        endpoint: "https://maicserver.com",
-        onSuccess: () => mountPage("dashboard", root, pageCtx()),
-      }),
+    onNeedsLogin: mountLogin,
     // rc49: route every page navigation through navigate() so the
     // palette, dashboard tiles, and back buttons share one source of
     // truth. The page builders in installNavigation above own the
@@ -141,44 +161,28 @@ function pageCtx() {
 function filesCtx() {
   return {
     onBackToDashboard: () => navigate("dashboard"),
-    onNeedsLogin: () =>
-      mountPage("login", root, {
-        endpoint: "https://maicserver.com",
-        onSuccess: () => mountPage("dashboard", root, pageCtx()),
-      }),
+    onNeedsLogin: mountLogin,
   };
 }
 
 function notebookCtx() {
   return {
     onBackToDashboard: () => navigate("dashboard"),
-    onNeedsLogin: () =>
-      mountPage("login", root, {
-        endpoint: "https://maicserver.com",
-        onSuccess: () => mountPage("dashboard", root, pageCtx()),
-      }),
+    onNeedsLogin: mountLogin,
   };
 }
 
 function settingsCtx() {
   return {
     onBackToDashboard: () => navigate("dashboard"),
-    onNeedsLogin: () =>
-      mountPage("login", root, {
-        endpoint: "https://maicserver.com",
-        onSuccess: () => mountPage("dashboard", root, pageCtx()),
-      }),
+    onNeedsLogin: mountLogin,
   };
 }
 
 function terminalCtx(opts = {}) {
   return {
     onBackToDashboard: () => navigate("dashboard"),
-    onNeedsLogin: () =>
-      mountPage("login", root, {
-        endpoint: "https://maicserver.com",
-        onSuccess: () => mountPage("dashboard", root, pageCtx()),
-      }),
+    onNeedsLogin: mountLogin,
     // Optional override for the shell the page boots with. Used when the
     // dashboard launches OpenClaw directly into the TUI. Falls back to the
     // user-saved default (localStorage) when not provided.
