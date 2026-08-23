@@ -4553,11 +4553,16 @@ fn resolve_shell_cmd(shell: &str) -> Result<(&'static str, Vec<&'static str>), S
             "cmd" => Ok(("cmd.exe", vec![])),
             "pwsh" => Ok(("pwsh.exe", vec!["-NoLogo"])),
             "wsl" => Ok(("wsl.exe", vec!["--distribution", "Ubuntu", "bash"])),
-            // Lesson 220: spawn the OpenClaw TUI (Miracle Claw's chat
-            // in a terminal-friendly view). npm installs this as
-            // `openclaw.cmd` on Windows; `which_first` now resolves
-            // .cmd shims in addition to .exe.
-            "mc-openclaw" => Ok(("openclaw", vec!["tui"])),
+            // Lesson 220 + 223: spawn the OpenClaw TUI. The bundled
+            // resources invoke `node <resources>/openclaw.mjs tui --local`
+            // (the actual wiring is in mc_terminal_start). With `--local`
+            // the TUI runs an embedded agent runtime instead of trying to
+            // reach a remote Gateway at ws://127.0.0.1:18789, which is
+            // empty/not-yet-listening from a fresh Terminal tile and
+            // causes the TUI to exit immediately with code 0. The shell
+            // label here is just a key — `resolve_shell_cmd` returns a
+            // marker we re-interpret in mc_terminal_start.
+            "mc-openclaw" => Ok(("__MC_OPENCLAW__", vec!["tui", "--local"])),
             _ => Err(format!(
                 "unknown shell on Windows: '{}' (supported: cmd, pwsh, wsl, mc-openclaw)",
                 shell
@@ -4568,7 +4573,9 @@ fn resolve_shell_cmd(shell: &str) -> Result<(&'static str, Vec<&'static str>), S
             "bash" => Ok(("bash", vec!["-i"])),
             "sh" => Ok(("sh", vec!["-i"])),
             "zsh" => Ok(("zsh", vec!["-i"])),
-            "mc-openclaw" => Ok(("openclaw", vec!["tui"])),
+            // Lesson 220 + 223: --local avoids the TUI exiting at
+            // startup because there's no remote Gateway listening.
+            "mc-openclaw" => Ok(("__MC_OPENCLAW__", vec!["tui", "--local"])),
             _ => Err(format!(
                 "unknown shell on *nix: '{}' (supported: bash, sh, zsh, mc-openclaw)",
                 shell
@@ -4728,10 +4735,10 @@ fn mc_terminal_start(
     // openclaw.mjs shipped in the installer resources, not the
     // user's system PATH. Most end users don't have `openclaw`
     // installed globally, and we ship a self-contained CLI here
-    // so the Terminal tile Just Works. If the bundle is missing
-    // (dev environment without resources vendored), fall back to
-    // PATH lookup with a clear error.
-    let (cmd_path, real_args): (String, Vec<String>) = if shell == "mc-openclaw" {
+    // so the Terminal tile Just Works. resolve_shell_cmd returns
+    // a `__MC_OPENCLAW__` marker for this shell so we can detect
+    // it without an additional string compare.
+    let (cmd_path, real_args): (String, Vec<String>) = if cmd == "__MC_OPENCLAW__" {
         let resources = resources_dir(&app_handle);
         #[cfg(windows)]
         let node = resources.join("node.exe");
@@ -4761,6 +4768,20 @@ fn mc_terminal_start(
     };
 
     let mut child = spawn_shell(&cmd_path, &real_args)?;
+
+    // Lesson 223: for `mc-openclaw` we also set OPENCLAW_NO_PLUGINS=1
+    // env var so the TUI doesn't spit `plugins.allow` warnings on every
+    // startup. The bundled MAIC plugin is loaded automatically by the
+    // launcher; the user shouldn't be told to whitelist things from
+    // their own installer. Stdlib env vars are inherited by the child.
+    if shell == "mc-openclaw" {
+        #[cfg(unix)]
+        {
+            // SAFETY: setting env vars before spawn is the common pattern
+            // and we only do this in the rc40+ spawn path.
+        }
+        std::env::set_var("OPENCLAW_NO_PLUGINS", "1");
+    }
 
     let stdout = child
         .stdout
@@ -4866,8 +4887,13 @@ fn mc_terminal_poll(
 }
 
 /// Write to a session's stdin. The frontend's input box feeds this on
-/// enter. For interactive shells we append `\n` so the shell sees the
-/// line; the frontend doesn't have to know about line endings.
+/// enter. For interactive shells we append `\r\n` so the shell sees a
+/// complete line; the frontend doesn't have to know about line endings.
+///
+/// Lesson 223: `mc-openclaw` uses Ink (terminal UI) which expects `\r`
+/// as the Enter key (PTY-style), not just `\n`. So for that shell kind
+/// we emit `\r` rather than `\n`. For real shells (cmd, pwsh, bash) we
+/// keep `\r\n` which works universally on Windows + *nix.
 #[tauri::command]
 fn mc_terminal_write(
     id: String,
@@ -4878,6 +4904,12 @@ fn mc_terminal_write(
     let handle = map
         .get(&id)
         .ok_or_else(|| format!("terminal session '{}' not found", id))?;
+
+    // Capture shell kind up front so mc_terminal_write can use the
+    // right line terminator (\r for Ink TUI vs \r\n for real shells)
+    // without needing to introspect again. The handle here is an
+    // Arc<TerminalHandle> so we can hold the &Arc across .child.lock().
+    let is_tui = handle.shell == "mc-openclaw";
 
     let mut child_lock = handle.child.lock().unwrap();
     let child = child_lock
@@ -4891,8 +4923,15 @@ fn mc_terminal_write(
         .ok_or_else(|| "stdin not piped".to_string())?;
 
     let mut to_send = input;
-    if !to_send.ends_with('\n') {
-        to_send.push('\n');
+    if !to_send.ends_with('\n') && !to_send.ends_with('\r') {
+        // Use \r for Ink TUI (mc-openclaw), \r\n for everything else.
+        // \r\n works for both cmd and bash; \r alone is the canonical
+        // Enter key Ink / readline uses in a PTY context.
+        if is_tui {
+            to_send.push('\r');
+        } else {
+            to_send.push_str("\r\n");
+        }
     }
     stdin
         .write_all(to_send.as_bytes())
@@ -6771,8 +6810,11 @@ mod tests {
             assert!(resolve_shell_cmd("sh").is_ok());
             assert!(resolve_shell_cmd("zsh").is_ok());
             let mc = resolve_shell_cmd("mc-openclaw").expect("mc-openclaw must resolve on *nix too");
-            assert_eq!(mc.0, "openclaw");
-            assert_eq!(mc.1, vec!["tui"]);
+            // Lesson 221 + 223: sentinel marker; mc_terminal_start
+            // expands it to bundled openclaw.mjs. The full tuple is
+            // validated by `mc_openclaw_maps_to_openclaw_tui_local`.
+            assert_eq!(mc.0, "__MC_OPENCLAW__");
+            assert_eq!(mc.1, vec!["tui", "--local"]);
             assert!(resolve_shell_cmd("pwsh").is_err());
         }
     }
@@ -6784,16 +6826,21 @@ mod tests {
         assert!(res.unwrap_err().contains("unknown shell"));
     }
 
-    /// Lesson 221: mc-openclaw maps to `openclaw tui`. The bundled
+    /// Lesson 221: mc-openclaw maps to `openclaw tui --local`. The bundled
     /// resources dir swap happens in mc_terminal_start (this just
     /// verifies the (cmd, args) tuple is what we expect so a future
     /// refactor doesn't silently break the spawn contract).
     #[test]
-    fn mc_openclaw_maps_to_openclaw_tui() {
+    fn mc_openclaw_maps_to_openclaw_tui_local() {
         let res = resolve_shell_cmd("mc-openclaw")
             .expect("mc-openclaw must resolve on both Windows and *nix");
-        assert_eq!(res.0, "openclaw");
-        assert_eq!(res.1, vec!["tui"]);
+        // We use a sentinel so mc_terminal_start can detect the bundled
+        // openclaw path without string-comparing the shell name twice.
+        assert_eq!(res.0, "__MC_OPENCLAW__");
+        // Lesson 223: --local avoids the TUI exiting at startup because
+        // there's no remote Gateway listening on ws://127.0.0.1:18789
+        // (we use the in-process embedded agent instead).
+        assert_eq!(res.1, vec!["tui", "--local"]);
     }
 
     #[test]
