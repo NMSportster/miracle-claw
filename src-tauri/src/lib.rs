@@ -5303,6 +5303,249 @@ fn mc_ui_open_externally(path: String) -> Result<(), String> {
     }
 }
 
+// ============================================================================
+// v1.1.0-prep: drag-and-drop file attachment staging (feature/drag-drop).
+//
+// User drops files from OS File Explorer onto the dashboard. We copy
+// each file into <workspace>/inbox/ under a timestamped name so the
+// path is stable (no spaces, no unicode edge cases) and under the
+// existing path allowlist (read_file can see them). Original names
+// are preserved as the suffix so the user can recognize the file.
+//
+// The dashboard shows a queue of staged attachments. "Send to chat"
+// opens the OpenClaw webview and returns a markdown payload the JS
+// writes to the OS clipboard via navigator.clipboard.writeText. The
+// user pastes (Ctrl+V) into the chat. The chat model then reads the
+// file via its existing `read_file` tool — paths are in the allowlist.
+//
+// We deliberately do NOT inject into the OpenClaw chat DOM (we don't
+// own it). Clipboard paste is the simplest reliable handoff that works
+// across MC versions and OpenClaw session changes.
+
+#[derive(serde::Deserialize)]
+struct StageAttachmentArgs {
+    src_path: String,
+    #[serde(default)]
+    original_name: Option<String>,
+}
+
+const ATTACHMENT_MAX_BYTES: u64 = 100 * 1024 * 1024; // 100 MB per file
+const INBOX_DIR: &str = "inbox";
+
+#[derive(serde::Serialize, Clone)]
+struct AttachmentMeta {
+    /// Timestamped id, stable across calls (used by mc_remove_attachment).
+    id: String,
+    /// Absolute path of the staged copy in inbox/.
+    staged_path: String,
+    /// Original filename from the OS for display.
+    original_name: String,
+    size: u64,
+    /// "staged" once copied; "missing" if the file vanished between
+    /// stage and the next render. UI can hide missing rows.
+    status: String,
+}
+
+/// Return the absolute path of <workspace>/<INBOX_DIR>, creating it
+/// if missing. Used by all attachment commands below.
+fn inbox_dir() -> Result<PathBuf, String> {
+    let root = workspace_root()?;
+    let dir = root.join(INBOX_DIR);
+    if !dir.exists() {
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("create {}: {}", dir.display(), e))?;
+    }
+    Ok(dir)
+}
+
+#[tauri::command]
+fn mc_stage_attachment(args: StageAttachmentArgs) -> Result<AttachmentMeta, String> {
+    let src = PathBuf::from(&args.src_path);
+    let metadata = fs::metadata(&src).map_err(|e| {
+        format!("cannot stat {}: {}", args.src_path, e)
+    })?;
+    if metadata.is_dir() {
+        return Err(format!(
+            "{} is a directory (drop a file, not a folder)",
+            args.src_path
+        ));
+    }
+    if metadata.len() > ATTACHMENT_MAX_BYTES {
+        return Err(format!(
+            "{} is too large: {} bytes (cap {} bytes)",
+            args.src_path,
+            metadata.len(),
+            ATTACHMENT_MAX_BYTES
+        ));
+    }
+
+    let dir = inbox_dir()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("clock error: {e}"))?
+        .as_millis();
+    let raw_name = args
+        .original_name
+        .clone()
+        .or_else(|| {
+            PathBuf::from(&args.src_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "attachment".to_string());
+    // Sanitize the suffix so the staged filename is portable across
+    // tools that consume it (model chat, terminal paste, etc.).
+    let safe_name = raw_name
+        .replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_");
+    let filename = format!("{}-{}", now, safe_name);
+    let dst = dir.join(&filename);
+
+    fs::copy(&src, &dst).map_err(|e| {
+        format!("copy {} -> {}: {}", args.src_path, dst.display(), e)
+    })?;
+
+    Ok(AttachmentMeta {
+        id: now.to_string(),
+        staged_path: dst.to_string_lossy().into_owned(),
+        original_name: raw_name,
+        size: metadata.len(),
+        status: "staged".to_string(),
+    })
+}
+
+#[tauri::command]
+fn mc_list_attachments() -> Vec<AttachmentMeta> {
+    // The queue is "everything currently in inbox/". v1 doesn't keep a
+    // separate sent/cleared marker; the dashboard can call
+    // mc_clear_attachments once the user clicks Send.
+    let dir = match inbox_dir() {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let entries = match fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<AttachmentMeta> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let metadata = entry.metadata().ok()?;
+            if metadata.is_dir() {
+                return None;
+            }
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            let (id, original) = match name.split_once('-') {
+                Some((id, rest)) => (id.to_string(), rest.to_string()),
+                None => (String::new(), name.clone()),
+            };
+            let status = if metadata.len() > 0 {
+                "staged".to_string()
+            } else {
+                "missing".to_string()
+            };
+            Some(AttachmentMeta {
+                id,
+                staged_path: path.to_string_lossy().into_owned(),
+                original_name: original,
+                size: metadata.len(),
+                status,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.id.cmp(&a.id));
+    out
+}
+
+#[tauri::command]
+fn mc_remove_attachment(id: String) -> Result<(), String> {
+    let dir = inbox_dir()?;
+    for entry in fs::read_dir(&dir).map_err(|e| format!("read dir: {e}"))? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let name = match entry.file_name().into_string() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        if let Some((prefix, _)) = name.split_once('-') {
+            if prefix == id {
+                let path = entry.path();
+                fs::remove_file(&path).map_err(|e| {
+                    format!("delete {}: {}", path.display(), e)
+                })?;
+                return Ok(());
+            }
+        }
+    }
+    Err(format!("no attachment with id {id}"))
+}
+
+#[tauri::command]
+fn mc_clear_attachments() -> Result<usize, String> {
+    let dir = inbox_dir()?;
+    let mut removed = 0;
+    for entry in fs::read_dir(&dir).map_err(|e| format!("read dir: {e}"))? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// Build the markdown payload the user pastes into chat. Paths are
+/// absolute so the chat model's read_file tool can resolve them
+/// regardless of cwd. Backticks in paths are escaped to keep the
+/// markdown well-formed.
+fn build_attachment_message(attachments: &[AttachmentMeta], user_msg: Option<&str>) -> String {
+    let mut out = String::new();
+    if let Some(m) = user_msg {
+        let trimmed = m.trim();
+        if !trimmed.is_empty() {
+            out.push_str(trimmed);
+            out.push_str("\n\n");
+        }
+    }
+    out.push_str("Attached files:\n");
+    for a in attachments {
+        out.push_str(&format!(
+            "- `{}` ({} bytes)\n",
+            a.staged_path.replace('`', "\\`"),
+            a.size
+        ));
+    }
+    out
+}
+
+/// Finalize the queue: build the markdown payload, open the OpenClaw
+/// webview window, and return the payload so the JS can write it to
+/// the OS clipboard via navigator.clipboard.writeText. The dashboard
+/// is responsible for clearing the queue after a successful send.
+#[tauri::command]
+fn mc_send_attachments_to_chat(
+    app: tauri::AppHandle,
+    user_message: Option<String>,
+) -> Result<String, String> {
+    let attachments = mc_list_attachments();
+    if attachments.is_empty() {
+        return Err("no staged attachments to send".to_string());
+    }
+    let payload = build_attachment_message(&attachments, user_message.as_deref());
+
+    // Open (or focus) the OpenClaw webview window. Non-fatal if it
+    // fails — the user can still paste from clipboard into any window.
+    if let Err(e) = crate::openclaw_open_window(app) {
+        eprintln!("[miracle-claw] openclaw_open_window failed: {e}");
+    }
+
+    Ok(payload)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -5343,7 +5586,15 @@ pub fn run() {
             // binary files (PDF, Office, archives). Newbies get a working
             // "Open in default app" button instead of mojibake.
             mc_ui_read_image,
-            mc_ui_open_externally
+            mc_ui_open_externally,
+            // v1.1.0-prep: drag-and-drop attachment staging
+            // (feature/drag-drop branch). Dashboard drop zone, queue,
+            // and send-to-chat via clipboard handoff.
+            mc_stage_attachment,
+            mc_list_attachments,
+            mc_remove_attachment,
+            mc_clear_attachments,
+            mc_send_attachments_to_chat
         ])
         .setup(|app| {
             setup(app)?;

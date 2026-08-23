@@ -35,5 +35,12 @@ permissions = [
   # v1.0.0-prep: image preview + open-in-default-app handoff for
   # binaries (PDF, Office, archives). Newbie-facing UX.
   "allow-mc-ui-read-image",
-  "allow-mc-ui-open-externally"
+  "allow-mc-ui-open-externally",
+  # v1.1.0-prep (feature/drag-drop): drag-and-drop attachment staging
+  # for the dashboard drop zone + send-to-chat handoff.
+  "allow-mc-stage-attachment",
+  "allow-mc-list-attachments",
+  "allow-mc-remove-attachment",
+  "allow-mc-clear-attachments",
+  "allow-mc-send-attachments-to-chat"
 ]

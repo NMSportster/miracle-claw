@@ -287,3 +287,56 @@ commands.allow = ["mc_ui_open_externally"]
 identifier = "deny-mc-ui-open-externally"
 description = "Denies the mc_ui_open_externally command."
 commands.deny = ["mc_ui_open_externally"]
+
+# v1.1.0-prep (feature/drag-drop): attachment staging commands.
+# Hand-added because tauri-build's autogeneration step is skipped on
+# this host (Lesson 219 / sccache trap).
+[[permission]]
+identifier = "allow-mc-stage-attachment"
+description = "Enables the mc_stage_attachment command."
+commands.allow = ["mc_stage_attachment"]
+
+[[permission]]
+identifier = "deny-mc-stage-attachment"
+description = "Denies the mc_stage_attachment command."
+commands.deny = ["mc_stage_attachment"]
+
+[[permission]]
+identifier = "allow-mc-list-attachments"
+description = "Enables the mc_list_attachments command."
+commands.allow = ["mc_list_attachments"]
+
+[[permission]]
+identifier = "deny-mc-list-attachments"
+description = "Denies the mc_list_attachments command."
+commands.deny = ["mc_list_attachments"]
+
+[[permission]]
+identifier = "allow-mc-remove-attachment"
+description = "Enables the mc_remove_attachment command."
+commands.allow = ["mc_remove_attachment"]
+
+[[permission]]
+identifier = "deny-mc-remove-attachment"
+description = "Denies the mc_remove_attachment command."
+commands.deny = ["mc_remove_attachment"]
+
+[[permission]]
+identifier = "allow-mc-clear-attachments"
+description = "Enables the mc_clear_attachments command."
+commands.allow = ["mc_clear_attachments"]
+
+[[permission]]
+identifier = "deny-mc-clear-attachments"
+description = "Denies the mc_clear_attachments command."
+commands.deny = ["mc_clear_attachments"]
+
+[[permission]]
+identifier = "allow-mc-send-attachments-to-chat"
+description = "Enables the mc_send_attachments_to_chat command."
+commands.allow = ["mc_send_attachments_to_chat"]
+
+[[permission]]
+identifier = "deny-mc-send-attachments-to-chat"
+description = "Denies the mc_send_attachments_to_chat command."
+commands.deny = ["mc_send_attachments_to_chat"]

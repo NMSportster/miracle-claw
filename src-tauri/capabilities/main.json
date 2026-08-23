@@ -47,6 +47,11 @@
     "allow-mc-ui-list-dir",
     "allow-mc-ui-read-file",
     "allow-mc-ui-read-image",
-    "allow-mc-ui-open-externally"
+    "allow-mc-ui-open-externally",
+    "allow-mc-stage-attachment",
+    "allow-mc-list-attachments",
+    "allow-mc-remove-attachment",
+    "allow-mc-clear-attachments",
+    "allow-mc-send-attachments-to-chat"
   ]
 }

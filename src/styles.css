@@ -456,6 +456,113 @@ code {
   border-top: 1px solid var(--border);
 }
 
+/* v1.1.0-prep (feature/drag-drop): attachment staging zone.
+   Lives below the tile grid on the dashboard. Subtle when idle,
+   lights up on dragover so users see where the drop target is. */
+.attach-zone {
+  margin-top: 24px;
+  padding: 20px;
+  border: 2px dashed var(--border, #3a3d41);
+  border-radius: 8px;
+  background: var(--surface-alt, #181b1f);
+  transition: border-color 120ms ease, background-color 120ms ease;
+  cursor: copy;
+  outline: none;
+}
+.attach-zone:focus-visible {
+  border-color: var(--link, #6ea8fe);
+}
+.attach-zone-hot {
+  border-color: var(--link, #6ea8fe);
+  background: rgba(110, 168, 254, 0.08);
+}
+.attach-zone-empty {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  text-align: left;
+}
+.attach-zone-icon {
+  font-size: 32px;
+  opacity: 0.7;
+  flex: 0 0 auto;
+}
+.attach-zone-msg {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.attach-zone-msg strong {
+  font-weight: 600;
+}
+.attach-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.attach-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.attach-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.attach-item-icon {
+  flex: 0 0 auto;
+  font-size: 18px;
+}
+.attach-item-name {
+  flex: 1 1 auto;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attach-item-size {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+.attach-item-remove {
+  flex: 0 0 auto;
+}
+.attach-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.attach-message {
+  flex: 1 1 auto;
+  background: var(--surface, #0d0f12);
+  color: var(--fg, #e8eaed);
+  border: 1px solid var(--border, #2a2d31);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.attach-message:focus {
+  outline: none;
+  border-color: var(--link, #6ea8fe);
+}
+.attach-actions button.primary {
+  flex: 0 0 auto;
+}
+.attach-actions button.link-button {
+  flex: 0 0 auto;
+}
+.attach-status {
+  min-height: 1.2em;
+  margin-top: 8px;
+}
+.attach-status[data-kind="error"] {
+  color: #f87171;
+}
+
 .link-button {
   background: none;
   border: none;
