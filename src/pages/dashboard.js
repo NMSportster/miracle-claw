@@ -18,6 +18,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { openPalette as openCmdKPalette } from "../cmd_k_palette.js";
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -79,6 +80,13 @@ export const dashboardPage = {
           <header class="dashboard-header">
             <h1 class="logo">MiracleClaw</h1>
             <div class="dashboard-header-actions">
+              <button
+                type="button"
+                class="icon-link cmd-k-hint"
+                id="cmd-k-open"
+                title="Command palette (Ctrl+K)"
+                aria-label="Open command palette"
+              ><kbd>Ctrl</kbd>+<kbd>K</kbd></button>
               <button
                 type="button"
                 class="icon-link"
@@ -225,6 +233,13 @@ export const dashboardPage = {
       document.getElementById("signout").addEventListener("click", () => this.signOut(root, ctx));
       if (onOpenSettings) {
         document.getElementById("settings-link").addEventListener("click", () => onOpenSettings());
+      }
+      // Command palette button: visible "Ctrl+K" chip in the header so
+      // users discover the shortcut. Without this, nobody would know
+      // the shortcut exists (rc52 feedback).
+      const cmdKBtn = document.getElementById("cmd-k-open");
+      if (cmdKBtn) {
+        cmdKBtn.addEventListener("click", () => openCmdKPalette());
       }
 
       // Wire the drag-and-drop attachment zone. Dragover/drop are

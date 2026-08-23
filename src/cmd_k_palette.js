@@ -183,6 +183,16 @@ function toggle() {
   else close();
 }
 
+/**
+ * Public open() for callers (e.g. dashboard's "Ctrl+K" header button)
+ * that want to programmatically show the palette. No-op if the palette
+ * hasn't been enabled yet (i.e. user is on the login page).
+ */
+export function openPalette() {
+  if (!_enabled) return;
+  open();
+}
+
 function open() {
   ensureOverlay();
   _paletteEl.hidden = false;
