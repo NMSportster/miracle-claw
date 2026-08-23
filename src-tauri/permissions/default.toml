@@ -50,5 +50,13 @@ permissions = [
   "allow-mc-secret-delete",
   "allow-mc-secret-list",
   "allow-mc-secret-expand",
-  "allow-mc-secret-debug-dump"
+  "allow-mc-secret-debug-dump",
+  # rc53.6 (feature/secrets-vault): friendly setter + in-memory pool
+  # (Once / PerSession / Vault lifetimes). Single Mutex<HashMap<...>>
+  # with a Lifetime enum; canonicalize_label() turns user-typed labels
+  # into shell-var names. See src/secrets_friendly.rs.
+  "allow-mc-secret-set-friendly",
+  "allow-mc-secret-list-ephemerals",
+  "allow-mc-secret-clear-session-ephemerals",
+  "allow-mc-secret-clear-all-ephemerals"
 ]

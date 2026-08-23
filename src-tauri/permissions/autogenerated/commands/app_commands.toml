@@ -390,3 +390,43 @@ commands.allow = ["mc_secret_debug_dump"]
 identifier = "deny-mc-secret-debug-dump"
 description = "Denies the mc_secret_debug_dump command."
 commands.deny = ["mc_secret_debug_dump"]
+
+[[permission]]
+identifier = "allow-mc-secret-set-friendly"
+description = "Enables the mc_secret_set_friendly command."
+commands.allow = ["mc_secret_set_friendly"]
+
+[[permission]]
+identifier = "deny-mc-secret-set-friendly"
+description = "Denies the mc_secret_set_friendly command."
+commands.deny = ["mc_secret_set_friendly"]
+
+[[permission]]
+identifier = "allow-mc-secret-list-ephemerals"
+description = "Enables the mc_secret_list_ephemerals command."
+commands.allow = ["mc_secret_list_ephemerals"]
+
+[[permission]]
+identifier = "deny-mc-secret-list-ephemerals"
+description = "Denies the mc_secret_list_ephemerals command."
+commands.deny = ["mc_secret_list_ephemerals"]
+
+[[permission]]
+identifier = "allow-mc-secret-clear-session-ephemerals"
+description = "Enables the mc_secret_clear_session_ephemerals command."
+commands.allow = ["mc_secret_clear_session_ephemerals"]
+
+[[permission]]
+identifier = "deny-mc-secret-clear-session-ephemerals"
+description = "Denies the mc_secret_clear_session_ephemerals command."
+commands.deny = ["mc_secret_clear_session_ephemerals"]
+
+[[permission]]
+identifier = "allow-mc-secret-clear-all-ephemerals"
+description = "Enables the mc_secret_clear_all_ephemerals command."
+commands.allow = ["mc_secret_clear_all_ephemerals"]
+
+[[permission]]
+identifier = "deny-mc-secret-clear-all-ephemerals"
+description = "Denies the mc_secret_clear_all_ephemerals command."
+commands.deny = ["mc_secret_clear_all_ephemerals"]

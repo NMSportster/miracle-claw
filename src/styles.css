@@ -1995,3 +1995,237 @@ kbd {
   margin: 0 auto;
   padding: 24px;
 }
+
+/* rc53.6 — friendly secrets page styles */
+.secrets-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  color: var(--fg);
+}
+
+.secrets-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.secrets-header h1 {
+  margin: 0;
+  font-size: 22px;
+}
+.badge-warn {
+  margin-left: auto;
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.secrets-add h2,
+.secrets-list-section h2 {
+  margin: 0 0 8px 0;
+  font-size: 16px;
+  color: var(--fg);
+}
+
+.secrets-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.secrets-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.secrets-field > span {
+  font-size: 13px;
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+.secrets-field input[type="text"],
+.secrets-field textarea {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 14px;
+}
+.secrets-field input[type="text"]:focus,
+.secrets-field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.2);
+}
+.secrets-field textarea {
+  resize: vertical;
+  min-height: 64px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+}
+
+/* Type chips */
+.secrets-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.kind-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 13px;
+  user-select: none;
+}
+.kind-chip:has(input:checked) {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: var(--accent);
+  color: var(--fg);
+}
+.kind-chip input { margin: 0; }
+
+/* Lifetime radio cards */
+.secrets-lifetimes {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.lifetime-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 0;
+  min-width: 160px;
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 120ms, background 120ms;
+}
+.lifetime-option:hover {
+  border-color: var(--pill-color, var(--accent));
+}
+.lifetime-option:has(input:checked) {
+  border-color: var(--pill-color, var(--accent));
+  background: color-mix(in srgb, var(--pill-color, var(--accent)) 12%, var(--bg));
+}
+.lifetime-option input { margin: 0; }
+.lifetime-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--pill-color, var(--accent));
+  flex-shrink: 0;
+}
+.lifetime-body {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+.lifetime-body strong {
+  font-size: 13px;
+  color: var(--fg);
+}
+.lifetime-body small {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.secrets-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.secrets-actions #sec-set-status code {
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+}
+
+/* Lifetime pill (used in list rows + status messages) */
+.lifetime-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  vertical-align: middle;
+}
+
+/* Secrets list */
+.secrets-list-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.secrets-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.secrets-list-actions {
+  display: flex;
+  gap: 8px;
+}
+.secrets-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.secret-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.secret-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.secret-name {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 14px;
+  color: var(--fg);
+}
+.secret-row-actions {
+  flex-shrink: 0;
+}
+
+.secrets-footer {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.secrets-footer p { margin: 6px 0; }
+.secrets-footer code {
+  background: var(--bg-card);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+}

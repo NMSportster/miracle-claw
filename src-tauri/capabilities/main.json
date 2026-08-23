@@ -58,6 +58,10 @@
     "allow-mc-secret-delete",
     "allow-mc-secret-list",
     "allow-mc-secret-expand",
-    "allow-mc-secret-debug-dump"
+    "allow-mc-secret-debug-dump",
+    "allow-mc-secret-set-friendly",
+    "allow-mc-secret-list-ephemerals",
+    "allow-mc-secret-clear-session-ephemerals",
+    "allow-mc-secret-clear-all-ephemerals"
   ]
 }

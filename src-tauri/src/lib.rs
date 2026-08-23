@@ -51,6 +51,10 @@ use launcher_info::{launcher_binary_name, MAIC_PLUGIN_FILENAMES, OPENCLAW_PORT};
 // Lesson 458 / v1.0.6: silent-relogin via cached creds in OS keychain.
 // See src/auto_relogin.rs for the full design.
 mod auto_relogin;
+// rc53.6 (feature/secrets-vault): three-tier friendly secrets (Once /
+// PerSession / Vault) layered on top of the rc53 plaintext vault. See
+// src/secrets_friendly.rs for the in-memory pool + canonicalizer.
+mod secrets_friendly;
 
 // v1.0.7: tier fetching + token-quota nudges.
 pub mod auth;
@@ -5769,7 +5773,19 @@ fn mc_secret_expand(app: tauri::AppHandle, input: String) -> Result<String, Stri
         let end_abs = after_prefix + end_rel;
         let name = &expanded[after_prefix..end_abs];
 
-        if let Some(entry) = by_name.get(name) {
+        // rc53.6: check the in-memory friendly pool FIRST (Once + PerSession +
+        // Vault-mirror entries). Falls back to disk vault if not present.
+        // Pool entries take() and remove themselves when Lifetime::Once.
+        if let Some(replacement) = secrets_friendly::take(name) {
+            let name_owned = name.to_string();
+            let before = &expanded[..start];
+            let after = &expanded[end_abs + 2..];
+            expanded = format!("{before}{replacement}{after}");
+            if !to_mark_used.contains(&name_owned) {
+                to_mark_used.push(name_owned);
+            }
+            // Continue scanning — next find() picks the next placeholder.
+        } else if let Some(entry) = by_name.get(name) {
             let replacement = entry.value.clone();
             let name_owned = name.to_string();
             // Splice: before + replacement + after
@@ -5885,7 +5901,14 @@ pub fn run() {
             mc_secret_delete,
             mc_secret_list,
             mc_secret_expand,
-            mc_secret_debug_dump
+            mc_secret_debug_dump,
+            // rc53.6 (feature/secrets-vault): friendly setter + ephemeral
+            // pool management. UI merges list_ephemerals() with the
+            // disk-vault list() to render the full secrets table.
+            secrets_friendly::mc_secret_set_friendly,
+            secrets_friendly::mc_secret_list_ephemerals,
+            secrets_friendly::mc_secret_clear_session_ephemerals,
+            secrets_friendly::mc_secret_clear_all_ephemerals
         ])
         .setup(|app| {
             setup(app)?;
