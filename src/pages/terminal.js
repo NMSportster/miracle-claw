@@ -29,8 +29,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-const DEFAULT_SHELL_WIN = "cmd";
-const DEFAULT_SHELL_NIX = "bash";
+const DEFAULT_SHELL_WIN = "mc-openclaw";
+const DEFAULT_SHELL_NIX = "mc-openclaw";
 
 const POLL_INTERVAL_MS = 100;
 const MAX_OUTPUT_CHARS = 200_000; // hard cap, prevents OOM on runaway output
@@ -57,12 +57,18 @@ function detectOS() {
 function shellOptionsForOS(os) {
   if (os === "windows") {
     return [
+      // Lesson 220: mc-openclaw is the new default. It spawns
+      // `openclaw tui`, which is the OpenClaw terminal UI — the
+      // same chat backend in a terminal-friendly view. Power users
+      // can switch to plain cmd/pwsh/wsl via the picker.
+      { value: "mc-openclaw", label: "OpenClaw TUI (mc-openclaw)" },
       { value: "cmd", label: "Command Prompt (cmd.exe)" },
       { value: "pwsh", label: "PowerShell 7 (pwsh.exe)" },
       { value: "wsl", label: "WSL bash" },
     ];
   }
   return [
+    { value: "mc-openclaw", label: "OpenClaw TUI (mc-openclaw)" },
     { value: "bash", label: "bash" },
     { value: "sh", label: "sh" },
     { value: "zsh", label: "zsh" },

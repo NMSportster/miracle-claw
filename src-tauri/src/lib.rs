@@ -4553,8 +4553,13 @@ fn resolve_shell_cmd(shell: &str) -> Result<(&'static str, Vec<&'static str>), S
             "cmd" => Ok(("cmd.exe", vec![])),
             "pwsh" => Ok(("pwsh.exe", vec!["-NoLogo"])),
             "wsl" => Ok(("wsl.exe", vec!["--distribution", "Ubuntu", "bash"])),
+            // Lesson 220: spawn the OpenClaw TUI (Miracle Claw's chat
+            // in a terminal-friendly view). npm installs this as
+            // `openclaw.cmd` on Windows; `which_first` now resolves
+            // .cmd shims in addition to .exe.
+            "mc-openclaw" => Ok(("openclaw", vec!["tui"])),
             _ => Err(format!(
-                "unknown shell on Windows: '{}' (supported: cmd, pwsh, wsl)",
+                "unknown shell on Windows: '{}' (supported: cmd, pwsh, wsl, mc-openclaw)",
                 shell
             )),
         }
@@ -4563,8 +4568,9 @@ fn resolve_shell_cmd(shell: &str) -> Result<(&'static str, Vec<&'static str>), S
             "bash" => Ok(("bash", vec!["-i"])),
             "sh" => Ok(("sh", vec!["-i"])),
             "zsh" => Ok(("zsh", vec!["-i"])),
+            "mc-openclaw" => Ok(("openclaw", vec!["tui"])),
             _ => Err(format!(
-                "unknown shell on *nix: '{}' (supported: bash, sh, zsh)",
+                "unknown shell on *nix: '{}' (supported: bash, sh, zsh, mc-openclaw)",
                 shell
             )),
         }
@@ -4584,12 +4590,26 @@ fn which_first(cmd: &str) -> String {
             }
             let candidate = std::path::PathBuf::from(dir).join(cmd);
             if cfg!(windows) {
+                // Try the bare name first (e.g. cmd.exe resolves directly).
                 if candidate.exists() {
                     return candidate.to_string_lossy().into_owned();
                 }
+                // Then try .exe (e.g. openclaw.exe would resolve here).
                 let with_exe = candidate.with_extension("exe");
                 if with_exe.exists() {
                     return with_exe.to_string_lossy().into_owned();
+                }
+                // Then try .cmd (npm bin shims like openclaw.cmd).
+                // Needed for `mc-openclaw` which resolves to npm's
+                // openclaw.cmd on Windows. Lesson 220.
+                let with_cmd = candidate.with_extension("cmd");
+                if with_cmd.exists() {
+                    return with_cmd.to_string_lossy().into_owned();
+                }
+                // And .bat for older shims.
+                let with_bat = candidate.with_extension("bat");
+                if with_bat.exists() {
+                    return with_bat.to_string_lossy().into_owned();
                 }
             } else if candidate.exists() {
                 return candidate.to_string_lossy().into_owned();
@@ -6672,11 +6692,20 @@ mod tests {
             assert!(resolve_shell_cmd("cmd").is_ok());
             assert!(resolve_shell_cmd("pwsh").is_ok());
             assert!(resolve_shell_cmd("wsl").is_ok());
+            // Lesson 220: mc-openclaw is the new default. It maps to
+            // `openclaw tui` and resolves to npm's openclaw.cmd on
+            // Windows via the .cmd extension in which_first.
+            let mc = resolve_shell_cmd("mc-openclaw").expect("mc-openclaw must resolve");
+            assert_eq!(mc.0, "openclaw");
+            assert_eq!(mc.1, vec!["tui"]);
             assert!(resolve_shell_cmd("bash").is_err());
         } else {
             assert!(resolve_shell_cmd("bash").is_ok());
             assert!(resolve_shell_cmd("sh").is_ok());
             assert!(resolve_shell_cmd("zsh").is_ok());
+            let mc = resolve_shell_cmd("mc-openclaw").expect("mc-openclaw must resolve on *nix too");
+            assert_eq!(mc.0, "openclaw");
+            assert_eq!(mc.1, vec!["tui"]);
             assert!(resolve_shell_cmd("pwsh").is_err());
         }
     }
@@ -6698,6 +6727,45 @@ mod tests {
         } else {
             assert_eq!(which_first("/bin/sh"), "/bin/sh");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn which_first_resolves_cmd_shims() {
+        // Lesson 220: npm installs `openclaw` as `openclaw.cmd` on
+        // Windows. which_first must resolve the .cmd shim so that
+        // spawning `openclaw` (via the mc-openclaw shell kind)
+        // actually finds the CLI. We synthesize a temp dir with a
+        // fake.cmd to test the lookup logic in isolation from PATH.
+        use std::env;
+        use std::fs;
+        use std::path::PathBuf;
+
+        let tmp = env::temp_dir().join("mc_which_test_dir");
+        let _ = fs::create_dir_all(&tmp);
+        let shim_path = tmp.join("fakeshell.cmd");
+        fs::write(&shim_path, "@echo off\r\n").unwrap();
+
+        // Prepend tmp to PATH.
+        let old_path = env::var("PATH").unwrap_or_default();
+        let new_path = format!("{};{}", tmp.display(), old_path);
+        // SAFETY: setting PATH in a single-threaded test is fine; the
+        // race window is microscopic and the test is hermetic.
+        unsafe { env::set_var("PATH", &new_path) };
+
+        let resolved = which_first("fakeshell");
+        assert_eq!(
+            resolved,
+            shim_path.to_string_lossy().into_owned(),
+            "which_first must find .cmd shims on Windows"
+        );
+
+        // Restore.
+        unsafe { env::set_var("PATH", old_path) };
+        let _ = fs::remove_file(&shim_path);
+        let _ = fs::remove_dir(&tmp);
+        // Suppress unused warning on non-windows builds if cfg drops it.
+        let _ = PathBuf::new();
     }
 
     #[test]

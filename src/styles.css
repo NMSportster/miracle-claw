@@ -1128,40 +1128,54 @@ code {
   cursor: not-allowed;
 }
 
-/* Terminal fullscreen mode (rc37+): unclip from .dashboard 720px constraint,
-   grow output to fill viewport. Triggered by JS toggle on the ⛶ button. */
+/* Terminal fullscreen mode (rc38+).
+   Goal: feel like a real terminal app, not a long page.
+   - position:fixed + inset:0 breaks out of the .dashboard 720px clamp
+     AND overlays everything else (header nav, etc.) so the output
+     really IS the screen.
+   - Toolbar (shell picker, restart, kill) and input row are hidden.
+     When you toggle out of fullscreen they come back. Power users
+     in fullscreen mostly use OpenClaw TUI which has its own input.
+   - Output grows to fill all available space with bigger font. */
 .terminal-page.terminal-fullscreen-mode {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
   max-width: none;
-  padding: 16px 24px;
+  margin: 0;
+  padding: 8px 16px;
+  background: #0b1020;
+}
+
+.terminal-page.terminal-fullscreen-mode .dashboard-header {
+  flex: 0 0 auto;
+  margin-bottom: 8px;
+}
+
+.terminal-page.terminal-fullscreen-mode .terminal-toolbar,
+.terminal-page.terminal-fullscreen-mode .terminal-input-row {
+  display: none;
 }
 
 .terminal-page.terminal-fullscreen-mode .terminal-output {
-  min-height: 70vh;
-  max-height: 85vh;
-  font-size: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
+  font-size: 15px;
+  line-height: 1.5;
   padding: 16px 20px;
+  border-radius: 6px;
+  background: #0b1020;
 }
 
-.terminal-page.terminal-fullscreen-mode .terminal-input {
-  font-size: 14px;
-  padding: 12px 14px;
+/* Hide-mode chrome bits inside the fullscreen header (status badge
+   etc.) so it really IS just one line. The status is still useful
+   info though, so we keep it small. */
+.terminal-page.terminal-fullscreen-mode .terminal-status {
+  font-size: 11px;
+  padding: 1px 6px;
 }
 
-/* Terminal fullscreen mode (rc37+): unclip from .dashboard 720px constraint,
-   grow output to fill viewport. Triggered by JS toggle on the ⛶ button. */
-.terminal-page.terminal-fullscreen-mode {
-  max-width: none;
-  padding: 16px 24px;
+.terminal-page.terminal-fullscreen-mode h1.logo {
+  font-size: 18px;
 }
 
-.terminal-page.terminal-fullscreen-mode .terminal-output {
-  min-height: 70vh;
-  max-height: 85vh;
-  font-size: 14px;
-  padding: 16px 20px;
-}
-
-.terminal-page.terminal-fullscreen-mode .terminal-input {
-  font-size: 14px;
-  padding: 12px 14px;
-}
