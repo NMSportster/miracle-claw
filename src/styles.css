@@ -1778,6 +1778,27 @@ button.primary:disabled {
   z-index: 2000;
   animation: fadeIn 0.12s ease;
 }
+/* Defense: [hidden] attribute should hide the overlay. The base
+   stylesheet above uses `display: flex`, which overrides the UA
+   stylesheet's `[hidden] { display: none }` rule. Re-assert it
+   explicitly so the palette stays invisible until Ctrl+K fires.
+   Without this, the overlay sits on top of EVERY page (including
+   login) and steals clicks from form inputs — the exact bug David
+   hit in rc49 + rc50. Lesson 229. */
+.cmd-k-overlay[hidden] {
+  display: none !important;
+}
+
+/* Same bug pattern applies to attach-queue / attach-actions /
+   attach-zone-empty — they all set `display: flex` which would
+   otherwise override [hidden]'s display:none. Re-assert [hidden]
+   for these too so the dashboard's drag-drop UI works correctly
+   when toggled. */
+.attach-queue[hidden],
+.attach-actions[hidden],
+.attach-zone-empty[hidden] {
+  display: none !important;
+}
 
 .cmd-k-panel {
   background: #0f172a;
