@@ -22,6 +22,7 @@ import { settingsPage } from "./pages/settings.js";
 import { terminalPage } from "./pages/terminal.js";
 import { filesPage } from "./pages/files.js";
 import { notebookPage } from "./pages/notebook.js";
+import { secretsPage } from "./pages/secrets.js";
 // rc53 (feature/secrets-vault): debug page for v0 verification.
 // Not registered in the main page map; mounted via window.__mc_openSecretsDebug.
 import { secretsDebugPage } from "./secrets/debug_page.js";
@@ -44,6 +45,9 @@ register("settings", settingsPage);
 register("terminal", terminalPage);
 register("files", filesPage);
 register("notebook", notebookPage);
+// rc53.5: secrets page registered for palette use; toolbar in
+// terminal page opens it as an overlay. Not in main nav (yet).
+register("secrets", secretsPage);
 // rc53 (feature/secrets-vault): debug page registration. Mounted
 // only via window.__mc_openSecretsDebug() (dev escape hatch).
 register("secrets-debug", secretsDebugPage);

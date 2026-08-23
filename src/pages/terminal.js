@@ -46,6 +46,10 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+// rc53.5 (feature/secrets-vault): mount the secrets page inside an
+// overlay when the toolbar button is clicked. Re-uses the existing
+// page factory — no duplicate UI code.
+import { secretsPage } from "./secrets.js";
 
 // Default shell for the Terminal tile. Historically `mc-openclaw` so the
 // Terminal button launched the OpenClaw TUI by default. Dashboard v1.0.9-rc45
@@ -271,6 +275,12 @@ export const terminalPage = {
                   title="Forcefully end the running shell">
             Kill session
           </button>
+          <span class="terminal-toolbar-spacer"></span>
+          <button type="button" id="terminal-secrets-btn" class="icon-link"
+                  title="Manage secrets vault (rc53.5 v0 — plaintext)"
+                  aria-label="Open secrets vault">
+            🔑 Secrets
+          </button>
         </div>
 
         <div
@@ -408,6 +418,60 @@ export const terminalPage = {
       if (onBackToDashboard) onBackToDashboard();
     });
 
+    // rc53.5 (feature/secrets-vault): toolbar 🔑 Secrets button.
+    // Opens the secrets page as a fullscreen overlay on top of the
+    // terminal. The overlay has its own z-index and Escape closes it.
+    // If the user has unsaved typed input, we keep it warm but pause
+    // polling while the overlay is up so the terminal doesn't scroll
+    // underneath.
+    const secretsOverlay = document.createElement("div");
+    secretsOverlay.className = "secrets-overlay";
+    secretsOverlay.id = "terminal-secrets-overlay";
+    secretsOverlay.setAttribute("hidden", "");
+    secretsOverlay.innerHTML = `
+      <div class="secrets-overlay-header">
+        <button class="icon-link" id="terminal-secrets-close"
+                title="Close secrets" aria-label="Close secrets">✕</button>
+      </div>
+      <div class="secrets-overlay-body" id="terminal-secrets-body"></div>
+    `;
+    root.appendChild(secretsOverlay);
+    const secretsBody = document.getElementById("terminal-secrets-body");
+    const secretsCloseBtn = document.getElementById("terminal-secrets-close");
+
+    let secretsOpen = false;
+    function openSecretsOverlay() {
+      // Pause terminal polling so the overlay doesn't render behind
+      // a moving terminal. Resume on close.
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      secretsOpen = true;
+      secretsOverlay.removeAttribute("hidden");
+      // Mount the secrets page into the overlay body. onBack = close.
+      secretsPage.mount(secretsBody, {
+        onBackToDashboard: closeSecretsOverlay,
+      });
+    }
+    function closeSecretsOverlay() {
+      if (!secretsOpen) return;
+      secretsOpen = false;
+      secretsPage.unmount();
+      secretsBody.innerHTML = "";
+      secretsOverlay.setAttribute("hidden", "");
+      // Resume polling.
+      if (!ended && sessionId && !pollTimer) {
+        pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS);
+      }
+    }
+    secretsCloseBtn.addEventListener("click", closeSecretsOverlay);
+    // Esc closes the overlay when it's open.
+    secretsOverlay.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeSecretsOverlay();
+    });
+    document.getElementById("terminal-secrets-btn").addEventListener("click", openSecretsOverlay);
+
     // Fullscreen toggle: adds `terminal-fullscreen-mode` class to the page
     // root. CSS enlarges the output area. ResizeObserver triggers
     // fitAddon.fit() automatically; we also do an explicit fit on
@@ -492,6 +556,8 @@ export const terminalPage = {
     // Keep handlers around for unmount.
     root._terminalCleanup = async () => {
       ended = true;
+      // Close the secrets overlay if it's open (rc53.5)
+      if (secretsOpen) closeSecretsOverlay();
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;

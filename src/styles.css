@@ -1220,6 +1220,10 @@ code {
   flex-wrap: wrap;
 }
 
+.terminal-toolbar-spacer {
+  flex: 1 1 auto;
+}
+
 .terminal-shell-label {
   font-size: 13px;
   color: var(--fg-muted);
@@ -1947,4 +1951,47 @@ kbd {
 @keyframes slideDown {
   from { transform: translateY(-12px); opacity: 0; }
   to   { transform: translateY(0); opacity: 1; }
+}
+
+/* ---------------------------------------------------------------------
+   Secrets overlay (rc53.5, feature/secrets-vault)
+   Full-screen overlay that mounts the secretsPage factory on top of
+   the terminal. The overlay has its own header with a Close button.
+   --------------------------------------------------------------------- */
+
+.secrets-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.secrets-overlay[hidden] {
+  display: none !important;
+}
+
+.secrets-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+  flex-shrink: 0;
+}
+
+.secrets-overlay-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Inherit the secrets page's natural styling inside the overlay */
+.secrets-overlay .secrets-page {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 24px;
 }
