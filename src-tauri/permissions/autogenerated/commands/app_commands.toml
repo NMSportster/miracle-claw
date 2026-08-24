@@ -113,6 +113,36 @@ description = "Denies the mc_list_tools command."
 commands.deny = ["mc_list_tools"]
 
 [[permission]]
+identifier = "allow-mc-get-quota"
+description = "Enables the mc_get_quota command."
+commands.allow = ["mc_get_quota"]
+
+[[permission]]
+identifier = "deny-mc-get-quota"
+description = "Denies the mc_get_quota command."
+commands.deny = ["mc_get_quota"]
+
+[[permission]]
+identifier = "allow-mc-list-plans"
+description = "Enables the mc_list_plans command."
+commands.allow = ["mc_list_plans"]
+
+[[permission]]
+identifier = "deny-mc-list-plans"
+description = "Denies the mc_list_plans command."
+commands.deny = ["mc_list_plans"]
+
+[[permission]]
+identifier = "allow-mc-open-checkout-url"
+description = "Enables the mc_open_checkout_url command."
+commands.allow = ["mc_open_checkout_url"]
+
+[[permission]]
+identifier = "deny-mc-open-checkout-url"
+description = "Denies the mc_open_checkout_url command."
+commands.deny = ["mc_open_checkout_url"]
+
+[[permission]]
 identifier = "allow-mc-refresh-tier"
 description = "Enables the mc_refresh_tier command."
 commands.allow = ["mc_refresh_tier"]

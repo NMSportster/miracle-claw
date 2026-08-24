@@ -266,6 +266,15 @@ code {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* Lesson 561: these variables were referenced via `var(--card-bg)`
+     and `var(--muted)` in child rules but never declared. They
+     silently fell through to nothing, leaving the usage-bar flat
+     (which is part of why it looked "dead"). Promote them to the
+     dashboard scope so existing rules + the new plans-card pick
+     them up. Falls back to the tokens on :root for everything else. */
+  --card-bg: var(--bg-card);
+  --card-bg-2: rgba(91, 108, 255, 0.06);
+  --muted: var(--fg-muted);
 }
 
 .dashboard-header {
@@ -341,6 +350,190 @@ code {
 
 .usage-text {
   font-variant-numeric: tabular-nums;
+}
+
+/* Lesson 561 (2026-08-24 16:08 MDT, David): the dashboard's usage
+   line used to be a one-liner that read "—" (em dash) when the user
+   was below any MAIC nudge threshold — looked broken. We now render
+   a thin progress bar under the text, plus an inline CTA button when
+   a soft/hard nudge fires. */
+.usage-progress {
+  margin-top: 8px;
+  height: 4px;
+  background: rgba(91, 108, 255, 0.12);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.usage-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #5b6cff 0%, #7d8bff 100%);
+  border-radius: 999px;
+  transition: width 240ms ease;
+}
+
+.usage-cta {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 6px 14px;
+  background: #5b6cff;
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.usage-cta:hover { background: #6c7dff; }
+
+/* Lesson 561 Plans card. Sits between the usage bar and the tiles
+   grid. Compact horizontal grid on wide screens, single-column stack
+   on narrow. Highlighted plan (Pro) gets a brand-purple border + a
+   "Most popular" chip that floats above the card. The "Current plan"
+   plan gets a faint green tint + a non-interactive CTA. */
+.plans-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 16px 20px;
+  margin-bottom: 24px;
+}
+
+.plans-card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  gap: 12px;
+}
+
+.plans-card-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0;
+  color: var(--fg);
+}
+
+.plans-card-link {
+  font-size: 12px;
+  color: #5b6cff;
+  text-decoration: none;
+  font-weight: 500;
+}
+.plans-card-link:hover { text-decoration: underline; }
+
+.plans-card-empty {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+.plan-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.plan-card {
+  position: relative;
+  background: var(--card-bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.plan-card.featured {
+  border-color: #5b6cff;
+  box-shadow: 0 0 0 1px rgba(91, 108, 255, 0.3);
+}
+.plan-card.current {
+  border-color: rgba(123, 224, 163, 0.45);
+  background: rgba(123, 224, 163, 0.04);
+}
+
+.plan-badge {
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #5b6cff;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.plan-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--fg);
+  letter-spacing: 0.2px;
+}
+
+.plan-price {
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--fg);
+  line-height: 1.1;
+}
+.plan-price-suffix {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-left: 2px;
+}
+
+.plan-features {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+  flex: 1;
+}
+.plan-features li strong {
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.plan-cta {
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: #5b6cff;
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  width: 100%;
+  transition: background 120ms ease, transform 120ms ease;
+}
+.plan-cta:hover:not([disabled]) { background: #6c7dff; transform: translateY(-1px); }
+.plan-cta.is-featured {
+  background: #5b6cff;
+  box-shadow: 0 2px 8px rgba(91, 108, 255, 0.25);
+}
+.plan-cta.is-current {
+  background: rgba(123, 224, 163, 0.18);
+  color: var(--fg);
+  cursor: default;
+}
+.plan-cta[disabled] {
+  background: rgba(123, 224, 163, 0.16);
+  color: var(--muted);
+  cursor: default;
+  transform: none;
 }
 
 .tiles {

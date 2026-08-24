@@ -95,7 +95,7 @@ pub struct NudgeDecision {
     pub from_server: bool,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct QuotaResponse {
     #[serde(default)]
     used: u64,
@@ -105,7 +105,7 @@ pub struct QuotaResponse {
     messages: Vec<QuotaMessage>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 struct QuotaMessage {
     kind: String,
     #[serde(default)]

@@ -4303,6 +4303,149 @@ fn mc_get_nudge() -> Result<crate::auth::nudge::NudgeDecision, String> {
     Ok(crate::auth::nudge::evaluate_nudge(tier, &quota))
 }
 
+// Returns the raw quota (used + limit) regardless of threshold.
+//
+// Lesson 561 (2026-08-24 16:08 MDT, David): the dashboard's usage line
+// was "dead" because `mc_get_nudge` only returns a struct when the user
+// has hit a 500/1000/cap/80/95/100% threshold — below threshold, the
+// dashboard fell back to rendering just an em dash. This new command
+// returns the quota unconditionally so the dashboard can ALWAYS show
+// "X / Y tokens this period" and a progress bar.
+//
+// Reuses the same fetch + cache as `mc_get_nudge` so quota and nudge
+// can never disagree about the current token count.
+#[tauri::command]
+fn mc_get_quota() -> Result<crate::auth::nudge::QuotaResponse, String> {
+    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let maic_base = resolve_maic_base_url();
+    crate::auth::nudge::fetch_quota_cached(&jwt, &maic_base)
+}
+
+// Returns the list of available plans + pricing for the in-app
+// upgrade card. Mirrors MAIC's `/v1/billing/plans` endpoint but is
+// served from Rust so we don't need a separate HTTP fetch from JS.
+//
+// Lesson 561: pulled into the dashboard so free users can upgrade
+// without leaving the Tauri webview. The endpoint is unauthenticated
+// on MAIC's side, so we don't need a JWT here — but we still use
+// `resolve_maic_base_url()` so test/dev environments work.
+#[tauri::command]
+fn mc_list_plans() -> Result<Vec<serde_json::Value>, String> {
+    let maic_base = resolve_maic_base_url();
+    let url = format!(
+        "{}/v1/billing/plans",
+        crate::auth::tier::normalize_api_base(&maic_base)
+    );
+    let resp = ureq::get(&url)
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| format!("/v1/billing/plans: {e}"))?;
+    let plans: Vec<serde_json::Value> = resp
+        .into_json()
+        .map_err(|e| format!("parse /v1/billing/plans: {e}"))?;
+    Ok(plans)
+}
+
+// Opens a Stripe Checkout URL for the given plan in the OS default
+// browser. Used by the in-app "Plans" card on the dashboard so free
+// users can upgrade without leaving the Tauri webview.
+//
+// Lesson 561: existing `open_register_url` allow-lists only
+// milagrocloud.com; Stripe checkout URLs are on checkout.stripe.com.
+// We add a NEW command instead of widening that allow-list so the
+// billing flow has its own dedicated defense-in-depth boundary.
+//
+// Flow:
+//   1. JS calls `mc_open_checkout_url("pro")`.
+//   2. Rust POSTs to MAIC `/v1/billing/checkout` with the user's JWT
+//      + plan_code, plus success_url/cancel_url pointing at
+//      milagrocloud.com/welcome and /pricing respectively.
+//   3. MAIC returns a Stripe Checkout URL.
+//   4. Rust validates the URL is checkout.stripe.com (defense-in-depth)
+//      and opens it via `cmd /c start ""` on Windows (the cross-platform
+//      `open`/`xdg-open` pattern in `open_register_url` handles
+//      macOS/Linux).
+#[tauri::command]
+fn mc_open_checkout_url(plan_code: String) -> Result<(), String> {
+    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let maic_base = resolve_maic_base_url();
+    let base = crate::auth::tier::normalize_api_base(&maic_base);
+    let url = format!("{}/v1/billing/checkout", base);
+
+    // MAIC's CheckoutIn shape (see /opt/maic/api/routes/billing.py:281).
+    // We always send success_url=/welcome?plan=<code> so the post-payment
+    // redirect lands on the same page as /signup?plan=free (Lesson 553).
+    let body = serde_json::json!({
+        "plan_code": plan_code,
+        "success_url": format!("https://milagrocloud.com/welcome?plan={}", plan_code),
+        "cancel_url": "https://milagrocloud.com/pricing?canceled=1",
+    });
+
+    let resp = ureq::post(&url)
+        .set("Authorization", &format!("Bearer {jwt}"))
+        .set("Content-Type", "application/json")
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(15))
+        .send_json(&body)
+        .map_err(|e| format!("/v1/billing/checkout POST: {e}"))?;
+
+    let parsed: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse checkout response: {e}"))?;
+
+    let checkout_url = parsed
+        .get("url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "checkout response missing `url` field".to_string())?
+        .to_string();
+
+    // Defense-in-depth: only open Stripe checkout URLs. If MAIC ever
+    // returns a different host, refuse rather than open a phishing
+    // redirect. Covers the case where a future MAIC bug or a frontend
+    // compromise tries to redirect the user to an attacker site.
+    if !(checkout_url.starts_with("https://checkout.stripe.com/")
+        || checkout_url.starts_with("https://buy.stripe.com/"))
+    {
+        return Err(format!(
+            "checkout URL host not in Stripe allow-list: {checkout_url}"
+        ));
+    }
+
+    eprintln!(
+        "[miracle-claw] mc_open_checkout_url: opening {} for plan={}",
+        checkout_url, plan_code
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let status = Command::new("cmd")
+            .args(["/C", "start", "", &checkout_url])
+            .status()
+            .map_err(|e| format!("cmd start failed: {e}"))?;
+        if !status.success() {
+            return Err(format!("cmd start exited with {:?}", status.code()));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::process::Command;
+        #[cfg(target_os = "macos")]
+        let mut cmd = Command::new("open");
+        #[cfg(not(target_os = "macos"))]
+        let mut cmd = Command::new("xdg-open");
+        cmd.arg(&checkout_url);
+        let status = cmd.status().map_err(|e| format!("browser launch failed: {e}"))?;
+        if !status.success() {
+            return Err(format!("browser exited with {:?}", status.code()));
+        }
+        Ok(())
+    }
+}
+
 // Returns the list of tool names the current tier can use. Used by the
 // dashboard to render "what you have access to" + the upgrade CTA.
 #[tauri::command]
@@ -6166,6 +6309,15 @@ pub fn run() {
             mc_refresh_tier,
             mc_apply_tier_change,
             mc_set_tier_defaults,
+            // rc53.12 (Lesson 561): in-app upgrade flow. Free users see
+            // a "Plans" card on the dashboard with one-click Stripe
+            // upgrade buttons. The card shows live pricing pulled from
+            // MAIC's `/v1/billing/plans`. Clicking a plan opens Stripe
+            // Checkout in the OS default browser — user pays there,
+            // returns to /welcome?plan=<code> on success.
+            mc_get_quota,
+            mc_list_plans,
+            mc_open_checkout_url,
             // v1.0.9-rc35: Settings page
             mc_get_user_info,
             mc_list_memory_files,

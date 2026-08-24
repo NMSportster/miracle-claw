@@ -16,6 +16,12 @@ permissions = [
   "allow-mc-list-tools",
   "allow-mc-refresh-tier",
   "allow-mc-apply-tier-change",
+  # rc53.12 (Lesson 561): in-app upgrade flow on the dashboard
+  # Plans card. Free users see live pricing pulled from MAIC;
+  # clicking a plan opens Stripe Checkout in the OS default browser.
+  "allow-mc-get-quota",
+  "allow-mc-list-plans",
+  "allow-mc-open-checkout-url",
   # v1.0.9-rc35: Settings page commands
   "allow-mc-get-user-info",
   "allow-mc-list-memory-files",

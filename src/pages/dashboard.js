@@ -46,6 +46,82 @@ function formatNumber(n) {
   return Number(n).toLocaleString("en-US");
 }
 
+// Lesson 561 (2026-08-24 16:08 MDT, David): render the in-app "Plans"
+// card that sits between the usage bar and the tiles grid. Mirrors
+// the same info as milagrocloud.com/pricing so free users can upgrade
+// without leaving the Tauri webview.
+//
+// Plan button:
+//   - Free plan       → always disabled ("Current plan" for free users)
+//   - Current plan    → "Current plan" badge, no button
+//   - Other paid plan → "Choose <Name>" → calls `mc_open_checkout_url(plan.code)`
+//
+// Featured plan (Pro) gets a `featured` class so we can highlight it
+// with a "Most popular" chip — same UX as the web pricing page so the
+// two surfaces stay in sync.
+function renderPlansCard(plans, currentPlanCode) {
+  if (!Array.isArray(plans) || plans.length === 0) {
+    // MAIC unreachable / no plans — render an empty card with a
+    // friendly fallback so the dashboard doesn't look broken.
+    return `
+      <section class="plans-card" id="plans-card" aria-label="Plans and pricing">
+        <div class="plans-card-header">
+          <h2 class="plans-card-title">Plans &amp; Pricing</h2>
+          <a class="plans-card-link" href="https://milagrocloud.com/pricing" target="_blank" rel="noopener">
+            See full pricing ↗
+          </a>
+        </div>
+        <p class="plans-card-empty muted small">
+          Couldn't load plans right now. Check milagrocloud.com/pricing for live pricing.
+        </p>
+      </section>`;
+  }
+
+  const cards = plans.map((p) => {
+    const isCurrent = (p.code || "").toLowerCase() === (currentPlanCode || "").toLowerCase();
+    const isFree = p.code === "free";
+    const dollars = (p.monthly_cents / 100).toFixed(0);
+    const priceLabel = p.monthly_cents === 0 ? "$0" : `$${dollars}`;
+    const featured = p.code === "pro"; // "Most popular" — same as web
+    const ctaLabel = isCurrent ? "Current plan" : (isFree ? "Always free" : `Choose ${escapeHtml(p.name)}`);
+    const ctaDisabled = isCurrent || isFree;
+    const seats = p.code === "pro_plus" ? " · 5 seats"
+                : p.code === "team"     ? " · 8 seats"
+                : "";
+    return `
+      <div class="plan-card ${featured ? "featured" : ""} ${isCurrent ? "current" : ""}" data-plan="${escapeHtml(p.code)}">
+        ${featured ? `<div class="plan-badge">Most popular</div>` : ""}
+        <div class="plan-name">${escapeHtml(p.name)}</div>
+        <div class="plan-price">${priceLabel}<span class="plan-price-suffix">/mo</span></div>
+        <ul class="plan-features">
+          <li><strong>${formatNumber(p.included_tokens)}</strong> tokens / mo</li>
+          <li><strong>${formatNumber(p.rpm)}</strong> requests / min</li>
+          ${p.overage_per_1k > 0
+            ? `<li>$${(p.overage_per_1k / 100).toFixed(2)} per 1K overage</li>`
+            : `<li>No overage charges</li>`}
+          ${seats ? `<li>${escapeHtml(seats.replace(/^·\s*/, ""))}</li>` : ""}
+        </ul>
+        <button type="button"
+                class="plan-cta ${isCurrent ? "is-current" : ""} ${featured ? "is-featured" : ""}"
+                data-plan="${escapeHtml(p.code)}"
+                ${ctaDisabled ? "disabled" : ""}>
+          ${escapeHtml(ctaLabel)}
+        </button>
+      </div>`;
+  }).join("");
+
+  return `
+    <section class="plans-card" id="plans-card" aria-label="Plans and pricing">
+      <div class="plans-card-header">
+        <h2 class="plans-card-title">Plans &amp; Pricing</h2>
+        <a class="plans-card-link" href="https://milagrocloud.com/pricing" target="_blank" rel="noopener">
+          See full pricing ↗
+        </a>
+      </div>
+      <div class="plan-grid">${cards}</div>
+    </section>`;
+}
+
 export const dashboardPage = {
   label: "Dashboard",
   icon: null,
@@ -55,9 +131,17 @@ export const dashboardPage = {
     const { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras } = ctx;
 
     (async () => {
-      const [tierResult, nudgeResult] = await Promise.allSettled([
+      // Lesson 561 (2026-08-24 16:08 MDT, David): the dashboard's usage
+      // line used to render only an em-dash below threshold because
+      // `mc_get_nudge` returns null-ish when the user hasn't hit a
+      // 500/1000/cap/80/95/100% trigger. We now fetch the RAW quota
+      // from `mc_get_quota` and use it to ALWAYS render
+      // "X / Y tokens this period" + a progress bar. `mc_get_nudge`
+      // stays in the request so the existing nudge modal still fires.
+      const [tierResult, nudgeResult, quotaResult] = await Promise.allSettled([
         invoke("mc_get_tier"),
         invoke("mc_get_nudge"),
+        invoke("mc_get_quota"),
       ]);
 
       // If the tier fetch failed with "not logged in", bounce back to login.
@@ -67,13 +151,35 @@ export const dashboardPage = {
         return;
       }
 
+      // Lesson 561: pull live pricing from MAIC so the in-app Plans
+      // card stays in sync with milagrocloud.com/pricing. Failures
+      // are non-fatal — we just hide the card.
+      let plans = [];
+      try {
+        plans = await invoke("mc_list_plans");
+      } catch (err) {
+        console.warn("[dashboard] mc_list_plans failed:", err);
+      }
+
       const tier = tierResult.status === "fulfilled" ? tierResult.value : null;
       const nudge = nudgeResult.status === "fulfilled" ? nudgeResult.value : null;
+      const quota = quotaResult.status === "fulfilled" ? quotaResult.value : null;
 
       const tierLabel = tier ? formatTierLabel(tier.tier) : "Unknown";
-      const usageText = nudge
-        ? `${formatNumber(nudge.used)} / ${formatNumber(nudge.limit)} tokens this period`
-        : "—";
+
+      // Always show a real number, even when below any nudge threshold.
+      // Falls back to em-dash only when MAIC is unreachable (network
+      // error / quota endpoint down). That's the "dead line" David's
+      // been seeing — previously we hit this on every successful load.
+      let usageText;
+      let usageFraction;
+      if (quota && quota.limit > 0) {
+        usageText = `${formatNumber(quota.used)} / ${formatNumber(quota.limit)} tokens this period`;
+        usageFraction = Math.min(quota.used / quota.limit, 1);
+      } else {
+        usageText = "—";
+        usageFraction = 0;
+      }
 
       root.innerHTML = `
         <div class="dashboard">
@@ -104,7 +210,15 @@ export const dashboardPage = {
 
           <div class="usage-bar" id="usage-bar" title="Token usage this period">
             <span class="usage-text">${escapeHtml(usageText)}</span>
+            <div class="usage-progress" aria-hidden="true">
+              <div class="usage-progress-fill" style="width: ${Math.round(usageFraction * 100)}%"></div>
+            </div>
+            ${nudge && nudge.text && nudge.kind !== "none"
+              ? `<button type="button" class="usage-cta" id="usage-cta">${escapeHtml(nudge.text.split('.')[0])} → Upgrade</button>`
+              : ""}
           </div>
+
+          ${renderPlansCard(plans, tier?.plan_code || tier?.tier || "free")}
 
           <div class="tiles">
             <button class="tile tile-primary" id="openclaw-windows-tile" type="button">
@@ -267,6 +381,47 @@ export const dashboardPage = {
       const cmdKBtn = document.getElementById("cmd-k-open");
       if (cmdKBtn) {
         cmdKBtn.addEventListener("click", () => openCmdKPalette());
+      }
+
+      // Lesson 561: wire the in-app Plans card CTAs. Each paid-plan
+      // button calls `mc_open_checkout_url(<plan_code>)`, which:
+      //   1. POSTs to MAIC /v1/billing/checkout with the JWT
+      //   2. Receives a Stripe Checkout URL
+      //   3. Validates the URL host (defense-in-depth)
+      //   4. Opens the URL in the OS default browser
+      // The user pays on Stripe; on success, Stripe redirects to
+      // /welcome?plan=<code> on milagrocloud.com. Free + current-plan
+      // buttons are disabled at render time (Lesson 561: disabled=true
+      // in the markup), so we only wire live ones.
+      document.querySelectorAll(".plan-cta:not([disabled])").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const planCode = btn.dataset.plan;
+          if (!planCode) return;
+          const originalLabel = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = "Opening Stripe…";
+          try {
+            await invoke("mc_open_checkout_url", { planCode });
+            // Stripe opens in the user's default browser. They pay there,
+            // return to /welcome. We don't unmount — they may want to
+            // keep the dashboard open while paying.
+          } catch (err) {
+            showFatal(`Couldn't open checkout: ${escapeHtml(err)}`);
+            btn.disabled = false;
+            btn.textContent = originalLabel;
+          }
+        });
+      });
+
+      // Wire the usage-bar CTA (the "Upgrade" button that appears
+      // when a nudge fires). It just scrolls the user to the plans
+      // card below.
+      const usageCta = document.getElementById("usage-cta");
+      if (usageCta) {
+        usageCta.addEventListener("click", () => {
+          const plansCard = document.getElementById("plans-card");
+          if (plansCard) plansCard.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
       }
 
       // Wire the drag-and-drop attachment zone. Dragover/drop are
