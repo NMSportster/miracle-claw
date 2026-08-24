@@ -132,7 +132,20 @@ async function boot() {
   } else {
     // Already authenticated (returning user). Palette is on.
     enablePalette();
-    mountPage("dashboard", root, pageCtx());
+    // rc53.9 (Lesson 243): if the page loaded with `#mcAutoOpen=<key>`
+    // in the URL hash, route straight to the Terminal page with the
+    // hash as ctx extras. The hash is consumed and cleared by
+    // terminal.js mount(). Used by the OpenClaw chat MC-PATCH
+    // toolbar buttons to deep-link into 🔑 Secrets / 📎 Attach
+    // overlays on return from the chat.
+    const hashMatch = (window.location.hash || "").match(
+      /mcAutoOpen=(secrets|attach)/
+    );
+    if (hashMatch) {
+      navigate("terminal", { autoOpenOverlay: hashMatch[1] });
+    } else {
+      mountPage("dashboard", root, pageCtx());
+    }
   }
 }
 

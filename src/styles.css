@@ -1340,12 +1340,29 @@ code {
   margin-bottom: 8px;
 }
 
-/* Toolbar hides in fullscreen; input row stays visible. (rc44 fix:
-   user reported no input area in fullscreen — fullscreen users DO
-   want to type. Toolbar can stay hidden because shell/restart are
-   pre-fullscreen choices.) */
+/* rc53.9 (Lesson 243): KEEP toolbar visible in fullscreen. The old
+   rc44 rule `display: none` predates rc53.5 where the toolbar gained
+   runtime-action buttons (🔑 Secrets, 📎 Attach). Those buttons need
+   to be reachable while the terminal is fullscreen — pre-fullscreen
+   choices assumption no longer holds. David explicitly asked for this
+   2026-08-23.
+
+   Make the toolbar compact in fullscreen: smaller padding, smaller
+   font, wrap onto a second line if it would otherwise force horizontal
+   scroll on a 1200px window. The shell-select dropdown, status badge,
+   and the two icon buttons all need to fit. */
 .terminal-page.terminal-fullscreen-mode .terminal-toolbar {
-  display: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.terminal-page.terminal-fullscreen-mode .terminal-toolbar .icon-link {
+  font-size: 12px;
+  padding: 4px 8px;
 }
 
 /* rc44: fullscreen-mode input row gets a slightly larger font and

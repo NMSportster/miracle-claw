@@ -122,7 +122,7 @@ export const terminalPage = {
   requiresAuth: true,
 
   mount(root, ctx = {}) {
-    const { onBackToDashboard, defaultShell: ctxDefaultShell, initialCommand: ctxInitialCommand } = ctx;
+    const { onBackToDashboard, defaultShell: ctxDefaultShell, initialCommand: ctxInitialCommand, autoOpenOverlay: ctxAutoOpenOverlay } = ctx;
 
     const os = detectOS();
     const osOptions = shellOptionsForOS(os);
@@ -590,6 +590,56 @@ export const terminalPage = {
       if (e.key === "Escape") closeAttachOverlay();
     });
     document.getElementById("terminal-attach-btn").addEventListener("click", openAttachOverlay);
+
+    // rc53.9 (Lesson 243): auto-open one of the overlays on mount if
+    // requested. Three sources, in priority order:
+    //   1. ctx.autoOpenOverlay (caller passed extras via navigate())
+    //   2. URL hash #mcAutoOpen=secrets|attach (cross-origin path —
+    //      the OpenClaw chat MC-PATCH toolbar navigates to
+    //      tauri://localhost/index.html#mcAutoOpen=secrets because
+    //      localStorage IS NOT shared across origins, but URL hashes
+    //      make it through the cross-scheme WebView2 navigation).
+    //   3. localStorage mc.terminal.autoOpenOverlay (same-origin
+    //      fallback, e.g. future internal shortcuts).
+    //
+    // The flag is cleared after consumption so re-mounts (user
+    // navigates Terminal → Dashboard → Terminal) don't re-open.
+    let desiredAutoOpen = ctxAutoOpenOverlay;
+    if (!desiredAutoOpen) {
+      try {
+        const hashMatch = (window.location.hash || "").match(
+          /mcAutoOpen=(secrets|attach)/
+        );
+        if (hashMatch) desiredAutoOpen = hashMatch[1];
+      } catch { /* ignore */ }
+    }
+    if (!desiredAutoOpen) {
+      desiredAutoOpen = safeLocalGet("mc.terminal.autoOpenOverlay");
+    }
+    if (desiredAutoOpen === "secrets" || desiredAutoOpen === "attach") {
+      // Clear all three sources so re-mounts don't re-open the overlay.
+      try { safeLocalSet("mc.terminal.autoOpenOverlay", ""); } catch { /* ignore */ }
+      try {
+        if (window.location.hash && /mcAutoOpen=/.test(window.location.hash)) {
+          // Strip just the mcAutoOpen param, leave the rest of the hash alone.
+          const newHash = window.location.hash.replace(
+            /[#&]?(mcAutoOpen=(secrets|attach))/,
+            ""
+          );
+          history.replaceState(
+            null,
+            "",
+            window.location.pathname + window.location.search + newHash
+          );
+        }
+      } catch { /* ignore — hash strip is best-effort */ }
+      // Defer one tick so listeners + DOM are fully settled (overlay
+      // divs need to be appended first).
+      setTimeout(() => {
+        if (desiredAutoOpen === "secrets") openSecretsOverlay();
+        else openAttachOverlay();
+      }, 0);
+    }
 
     // Fullscreen toggle: adds `terminal-fullscreen-mode` class to the page
     // root. CSS enlarges the output area. ResizeObserver triggers

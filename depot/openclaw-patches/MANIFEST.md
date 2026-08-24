@@ -7,16 +7,6 @@ by `scripts/patch-openclaw-dist.sh` as part of `build-windows-docker.sh`.
 
 ## Patch inventory
 
-### dist/control-ui/index.html (APPEND)
-
-- **Marker**: `<!-- MC-PATCH: mc-back-button -->`
-- **Effect**: Appends a `<script type="module" src="./mc-back-button.js"></script>`
-  tag to the chat UI's `index.html`. Runs after the chat UI's own scripts.
-- **Why**: Lesson 502 — fallback back-button that uses `window.location.href`
-  instead of Tauri IPC. Independent of the bridge pill (which uses invoke).
-- **Idempotent**: re-running the patcher skips because the marker is already
-  present in the target file.
-
 ### dist/control-ui/mc-back-button.js (WRITE)
 
 - **Source**: `depot/openclaw-patches/dist/control-ui/mc-back-button.js`
@@ -29,6 +19,41 @@ by `scripts/patch-openclaw-dist.sh` as part of `build-windows-docker.sh`.
   fails on the cross-origin chat page (Lesson 491/495 root cause), this
   button uses plain DOM navigation, which WebView2 follows natively.
 - **Idempotent**: skips if target file content already matches.
+
+### dist/control-ui/mc-chat-toolbar.js (WRITE)
+
+- **Source**: `depot/openclaw-patches/dist/control-ui/mc-chat-toolbar.js`
+- **Target**: `src-tauri/resources/dist/control-ui/mc-chat-toolbar.js`
+- **Effect**: Adds a 🔑 Secrets + 📎 Attach floating toolbar at the
+  **top-right** of the chat UI when `window.location.host ===
+  '127.0.0.1:28789'` (Lesson 511 — IPC-INDEPENDENT detection). Each
+  click does
+  `window.location.href = 'tauri://localhost/index.html#mcAutoOpen=<key>'`.
+- **Why**: Lesson 243 (rc53.9). David asked 2026-08-23 to mirror the
+  terminal toolbar's 🔑 + 📎 buttons onto the OpenClaw chat topbar's
+  right side. The chat topbar is a vendored React bundle we don't
+  fork, so we render a floating overlay at fixed top-right that LOOKS
+  attached. Mirrors the IPC-INDEPENDENT navigation trick used by
+  `mc-back-button.js`. The `#mcAutoOpen=<key>` URL hash carries the
+  intent across the cross-origin boundary (127.0.0.1:28789 →
+  tauri://localhost have separate localStorage, so URL hash is the
+  only signal that survives); MC's main.js boot reads the hash,
+  routes straight to Terminal with `autoOpenOverlay` extras; the
+  Terminal mount consumes the hash, opens the matching overlay, and
+  strips the hash from the URL.
+- **Idempotent**: skips if target file content already matches.
+
+### dist/control-ui/index.html (APPEND) — extended for rc53.9
+
+- **Marker**: `<!-- MC-PATCH: mc-back-button -->`
+- **Effect**: Appends two `<script type="module">` tags before
+  `</body>`: `./mc-back-button.js` and `./mc-chat-toolbar.js`.
+- **Why**: Lesson 243 — bundling the rc53.9 toolbar load alongside
+  the existing back-button load keeps the patch surface area minimal
+  (one insert file, one marker) and the runtime order matches the
+  source file order.
+- **Idempotent**: re-running the patcher skips because the marker is
+  already present in the target file.
 
 ### dist/openai-transport-stream-B0WkSqXp.js (INSERT)
 
