@@ -122,7 +122,7 @@ export const terminalPage = {
   requiresAuth: true,
 
   mount(root, ctx = {}) {
-    const { onBackToDashboard, defaultShell: ctxDefaultShell } = ctx;
+    const { onBackToDashboard, defaultShell: ctxDefaultShell, initialCommand: ctxInitialCommand } = ctx;
 
     const os = detectOS();
     const osOptions = shellOptionsForOS(os);
@@ -174,6 +174,29 @@ export const terminalPage = {
         lastSeq = 0;
         appendSystem(`Started ${shell} session (id ${sessionId.slice(0, 8)}…)`);
         setStatus("alive", shell);
+        // rc53.8 (feature/extras-hub): if the caller passed an initial
+        // command (e.g. extras hub launches us with "mlg-doctor"), wait
+        // briefly for the shell to settle and then write + enter it.
+        // The 350ms delay gives cmd.exe / bash time to print its first
+        // prompt before we send input — otherwise some shells swallow
+        // the first command line.
+        if (ctxInitialCommand && sessionId) {
+          setTimeout(async () => {
+            try {
+              term.write(`\r\n\x1b[36m> ${ctxInitialCommand}\x1b[0m\r\n`);
+              await invoke("mc_terminal_write", {
+                id: sessionId,
+                input: ctxInitialCommand + "\n",
+              });
+              // Show the command in the visible input too so the user
+              // can edit it (and so the input isn't blank if the
+              // shell prompt hasn't drawn yet).
+              if (input) input.value = "";
+            } catch (err) {
+              appendSystem(`initial command failed: ${escapeHtml(err)}`);
+            }
+          }, 350);
+        }
       } catch (err) {
         appendSystem(`Failed to start ${shell}: ${escapeHtml(err)}`);
         setStatus("dead", shell, `start failed: ${err}`);

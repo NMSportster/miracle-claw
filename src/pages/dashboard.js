@@ -52,7 +52,7 @@ export const dashboardPage = {
   requiresAuth: true,
 
   mount(root, ctx = {}) {
-    const { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook } = ctx;
+    const { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras } = ctx;
 
     (async () => {
       const [tierResult, nudgeResult] = await Promise.allSettled([
@@ -168,6 +168,22 @@ export const dashboardPage = {
                 <div class="tile-cta">Open notebook →</div>
               </div>
             </button>
+            <!-- rc53.8 (feature/extras-hub): tile linking to the
+                 Extras hub page. Lists all mlg-* commands with one-click
+                 "Run in Terminal" actions. -->
+            <button class="tile" id="extras-tile" type="button">
+              <div class="tile-icon">🛠️</div>
+              <div class="tile-body">
+                <div class="tile-title">Extras</div>
+                <div class="tile-description">
+                  Companion CLI tools for Miracle Claw: diagnostics,
+                  stats, cost analytics, snapshot sharing, project
+                  templates. Each card launches the tool live in the
+                  Terminal.
+                </div>
+                <div class="tile-cta">Browse extras →</div>
+              </div>
+            </button>
           </div>
 
           <!-- feature/drag-drop: file attachment staging zone. Drop a
@@ -227,6 +243,12 @@ export const dashboardPage = {
       }
       if (onOpenNotebook) {
         document.getElementById("notebook-tile").addEventListener("click", () => onOpenNotebook());
+        // rc53.8 (feature/extras-hub): dashboard tile for the Extras
+        // hub page.
+        const extrasTile = document.getElementById("extras-tile");
+        if (extrasTile && typeof onOpenExtras === "function") {
+          extrasTile.addEventListener("click", () => onOpenExtras());
+        }
       }
       document.getElementById("tier-badge").addEventListener("click", () => this.refreshTier(root, ctx));
       document.getElementById("refresh-tier").addEventListener("click", () => this.refreshTier(root, ctx));

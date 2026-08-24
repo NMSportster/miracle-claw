@@ -85,7 +85,7 @@ export const secretsPage = {
         <header class="secrets-header">
           <button class="icon-link" id="back-btn" title="Back to dashboard" aria-label="Back">←</button>
           <h1>🔑 Secrets</h1>
-          <span class="badge-warn" title="v0 — plaintext JSON on disk. Encryption ships in rc54.">v0 — unencrypted</span>
+          <span class="badge-ok" title="rc53.8 — AES-256-GCM at rest. Master key in OS keychain. Legacy plaintext vaults auto-migrate on first save.">🔒 Encrypted at rest</span>
         </header>
 
         <section class="secrets-add">

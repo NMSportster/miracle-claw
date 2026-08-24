@@ -23,6 +23,10 @@ import { terminalPage } from "./pages/terminal.js";
 import { filesPage } from "./pages/files.js";
 import { notebookPage } from "./pages/notebook.js";
 import { secretsPage } from "./pages/secrets.js";
+// rc53.8 (feature/extras-hub): hub page listing all mlg-* commands
+// with a "Run in Terminal" action per card. Also exposes a palette
+// action per command for keyboard-driven access.
+import { extrasPage, extrasPaletteActions } from "./pages/extras.js";
 // rc53 (feature/secrets-vault): debug page for v0 verification.
 // Not registered in the main page map; mounted via window.__mc_openSecretsDebug.
 import { secretsDebugPage } from "./secrets/debug_page.js";
@@ -48,6 +52,9 @@ register("notebook", notebookPage);
 // rc53.5: secrets page registered for palette use; toolbar in
 // terminal page opens it as an overlay. Not in main nav (yet).
 register("secrets", secretsPage);
+// rc53.8 (feature/extras-hub): Extras hub — mlg-* companion CLIs.
+// Reachable via dashboard tile or Cmd-K palette.
+register("extras", extrasPage);
 // rc53 (feature/secrets-vault): debug page registration. Mounted
 // only via window.__mc_openSecretsDebug() (dev escape hatch).
 register("secrets-debug", secretsDebugPage);
@@ -170,6 +177,13 @@ function pageCtx() {
     onOpenTerminal: () => navigate("terminal"),
     onOpenFiles: () => navigate("files"),
     onOpenNotebook: () => navigate("notebook"),
+    onOpenExtras: () => navigate("extras"),
+    // rc53.8 (feature/extras-hub): hand off to Terminal with a
+    // pre-filled command + the right shell for the OS. cmd on
+    // Windows, bash on Linux/macOS — both can resolve mlg-* from
+    // PATH.
+    onOpenTerminalWithCommand: (command, shell) =>
+      navigate("terminal", { defaultShell: shell, initialCommand: command }),
     // Open the Terminal page with the OpenClaw TUI (mc-openclaw) pre-selected.
     // Used by the "OpenClaw · Terminal" tile on the dashboard.
     onOpenOpenClawTerminal: () =>

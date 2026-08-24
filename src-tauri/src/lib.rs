@@ -54,6 +54,11 @@ mod auto_relogin;
 // rc53.6 (feature/secrets-vault): three-tier friendly secrets (Once /
 // PerSession / Vault) layered on top of the rc53 plaintext vault. See
 // src/secrets_friendly.rs for the in-memory pool + canonicalizer.
+//
+// rc53.8 (feature/extras-hub): AES-256-GCM encryption-at-rest for the
+// Vault tier. Master key lives in the OS keychain. See
+// src/secrets_encryption.rs.
+mod secrets_encryption;
 mod secrets_friendly;
 
 // v1.0.7: tier fetching + token-quota nudges.
@@ -5636,19 +5641,28 @@ fn read_vault(app: &tauri::AppHandle) -> Result<Vec<SecretEntry>, String> {
     if !p.exists() {
         return Ok(Vec::new());
     }
-    let raw = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
+    let raw = std::fs::read(&p).map_err(|e| e.to_string())?;
+    // rc53.8: read_vault_bytes transparently decrypts MCV1-encrypted
+    // blobs OR passes legacy plaintext JSON through for on-save
+    // migration.
+    let plain = secrets_encryption::read_vault_bytes(&raw)?;
     let entries: Vec<SecretEntry> =
-        serde_json::from_str(&raw).map_err(|e| format!("vault parse error: {e}"))?;
+        serde_json::from_slice(&plain).map_err(|e| format!("vault parse error: {e}"))?;
     Ok(entries)
 }
 
 fn write_vault(app: &tauri::AppHandle, entries: &[SecretEntry]) -> Result<(), String> {
     let p = secrets_vault_path(app)?;
-    let raw = serde_json::to_string_pretty(entries).map_err(|e| e.to_string())?;
+    let plain = serde_json::to_vec_pretty(entries).map_err(|e| e.to_string())?;
+    // rc53.8: write_vault_bytes encrypts the JSON with a per-install
+    // master key from the OS keychain. Legacy plaintext callers are
+    // migrated automatically — the next save after upgrading overwrites
+    // the plaintext with MCV1-encrypted bytes.
+    let blob = secrets_encryption::write_vault_bytes(&plain)?;
     // Atomic write: write to .tmp then rename. Prevents torn writes
     // if MC crashes mid-save.
     let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, raw).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, blob).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
     Ok(())
 }
