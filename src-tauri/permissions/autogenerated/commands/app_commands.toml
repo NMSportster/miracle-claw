@@ -422,6 +422,26 @@ description = "Denies the mc_secret_clear_session_ephemerals command."
 commands.deny = ["mc_secret_clear_session_ephemerals"]
 
 [[permission]]
+identifier = "allow-mc-open-overlay"
+description = "Enables the mc_open_overlay command without any pre-configured scope."
+commands.allow = ["mc_open_overlay"]
+
+[[permission]]
+identifier = "deny-mc-open-overlay"
+description = "Denies the mc_open_overlay command without any pre-configured scope."
+commands.deny = ["mc_open_overlay"]
+
+[[permission]]
+identifier = "allow-mc-close-overlay"
+description = "Enables the mc_close_overlay command without any pre-configured scope."
+commands.allow = ["mc_close_overlay"]
+
+[[permission]]
+identifier = "deny-mc-close-overlay"
+description = "Denies the mc_close_overlay command without any pre-configured scope."
+commands.deny = ["mc_close_overlay"]
+
+[[permission]]
 identifier = "allow-mc-secret-clear-all-ephemerals"
 description = "Enables the mc_secret_clear_all_ephemerals command."
 commands.allow = ["mc_secret_clear_all_ephemerals"]

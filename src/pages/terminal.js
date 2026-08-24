@@ -496,6 +496,23 @@ export const terminalPage = {
       if (!ended && sessionId && !pollTimer) {
         pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS);
       }
+      // rc53.11 (Lesson 247): if the user opened this overlay from the
+      // OpenClaw chat window (via the floating 🔑 button in mc-chat-
+      // toolbar), the close handler should also navigate them BACK to
+      // the chat URL — not leave them stranded on the dashboard. The
+      // Rust mc_close_overlay command captures the URL we came from
+      // (stashed by mc_open_overlay) and navigates back.
+      //
+      // Fall back to plain DOM close if the bridge isn't present
+      // (e.g. dev/test environments) — the overlay still hides
+      // locally, the user just stays on whatever page they were on.
+      try {
+        const bridge = window.__openclawHostBridge;
+        if (bridge && typeof bridge.closeOverlay === 'function') {
+          bridge.closeOverlay();
+          return;
+        }
+      } catch (_) { /* fall through */ }
     }
     secretsCloseBtn.addEventListener("click", closeSecretsOverlay);
     // Esc closes the overlay when it's open.
@@ -583,6 +600,16 @@ export const terminalPage = {
       if (!ended && sessionId && !pollTimer) {
         pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS);
       }
+      // rc53.11 (Lesson 247): same close-and-return logic as secrets —
+      // if opened from the OpenClaw chat window, navigate back to the
+      // chat URL rather than stranding the user on the dashboard.
+      try {
+        const bridge = window.__openclawHostBridge;
+        if (bridge && typeof bridge.closeOverlay === 'function') {
+          bridge.closeOverlay();
+          return;
+        }
+      } catch (_) { /* fall through */ }
     }
     attachCloseBtn.addEventListener("click", closeAttachOverlay);
     // Esc closes the overlay when it's open.

@@ -22,6 +22,8 @@ permissions = [
   "allow-mc-read-memory-file",
   "allow-mc-write-memory-file",
   "allow-mc-open-data-folder",
+  "allow-mc-open-overlay",
+  "allow-mc-close-overlay",
   # v1.0.9-rc36: Terminal tab commands
   "allow-mc-terminal-start",
   "allow-mc-terminal-poll",

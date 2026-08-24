@@ -162,6 +162,57 @@
     return null;
   }
 
+  // rc53.10 (Lesson 244): generic invoke wrapper exposed as
+  // window.openclawBridge.invoke(cmd, args). Used by
+  // mc-chat-toolbar.js to call mc_open_overlay without duplicating
+  // the resolveInvoke/fallback chain. Returns a Promise.
+  //
+  // Why this lives here (not inside mc-chat-toolbar.js):
+  // mc-chat-toolbar is injected by the patcher AFTER the bridge IIFE
+  // runs, so it can rely on the bridge having already wired everything
+  // up. Putting the fallback chain here means the chat toolbar stays
+  // a thin presentation layer that just calls one method.
+  function bridgeInvoke(cmd, args) {
+    const resolved = resolveInvoke();
+    if (!resolved) return Promise.reject(new Error('no Tauri invoke available'));
+    return resolved.fn(cmd, args).catch(function (firstErr) {
+      // Try the other layers in case the first resolved path is flaky
+      // for this particular command. Mirrors the multi-path fallback
+      // the back button uses inline.
+      const tauri = window.__TAURI__;
+      const internals = window.__TAURI_INTERNALS__;
+      const fallbacks = [
+        tauri && tauri.core && typeof tauri.core.invoke === 'function'
+          ? tauri.core.invoke.bind(tauri.core) : null,
+        internals && typeof internals.invoke === 'function'
+          ? function (c, a) { return internals.invoke(c, a); } : null,
+      ].filter(Boolean);
+      let lastErr = firstErr;
+      return fallbacks.reduce(function (p, fn) {
+        return p.catch(function () {
+          return fn(cmd, args).catch(function (e) { lastErr = e; throw e; });
+        });
+      }, Promise.reject(firstErr)).catch(function () {
+        throw lastErr || new Error('all invoke paths failed for ' + cmd);
+      });
+    });
+  }
+  window.__openclawHostBridge.invoke = bridgeInvoke;
+
+  // rc53.11 (Lesson 247): convenience wrapper for the overlay-close
+  // round trip. Page code calls `__openclawHostBridge.closeOverlay()`
+  // from inside the dashboard (Terminal page Secrets/Attach close
+  // handlers). The Rust `mc_close_overlay` command captures the URL
+  // the user was on before `mc_open_overlay` navigated, and navigates
+  // back to it — typically the OpenClaw chat window at
+  // http://127.0.0.1:28789/chat?session=...
+  //
+  // If the bridge isn't wired (dev / test), the wrapper rejects so
+  // the page can fall back to plain DOM close (no navigation).
+  window.__openclawHostBridge.closeOverlay = function () {
+    return bridgeInvoke('mc_close_overlay', {});
+  };
+
   function showOverlay() {
     if (document.getElementById('__mc-back-overlay')) return;
 

@@ -121,6 +121,16 @@ struct AppState {
     /// at 11:27 MDT 2026-08-22). The lock flag ensures we capture the
     /// first `tauri.localhost` URL and never overwrite it with chat URLs.
     dashboard_url_locked: Mutex<bool>,
+    /// v1.1.0-rc53.11 (Lesson 247): URL we navigated FROM when opening
+    /// an overlay via `mc_open_overlay`. Used by `mc_close_overlay` to
+    /// restore the user's previous context (typically the OpenClaw
+    /// chat window at `http://127.0.0.1:28789/...`).
+    ///
+    /// `None` means "no overlay is open" — `mc_close_overlay` should
+    /// fall back to the dashboard in that case. Set on every successful
+    /// `mc_open_overlay`, cleared on `mc_close_overlay` so a second
+    /// close doesn't re-navigate to a stale URL.
+    overlay_return_url: Mutex<Option<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -3843,6 +3853,281 @@ fn openclaw_back_to_dashboard(
     Ok(())
 }
 
+/// Tauri command: mc_open_overlay (Lesson 244, rc53.10).
+///
+/// Called by `depot/openclaw-patches/dist/control-ui/mc-chat-toolbar.js`
+/// when the user clicks 🔑 Secrets or 📎 Attach from inside the OpenClaw
+/// chat page. Navigates the main webview back to the bundled dashboard
+/// with a `#mcAutoOpen=<key>` URL hash, which `src/main.js` boot parses
+/// to land on the Terminal page with `autoOpenOverlay=key` in ctx, which
+/// `src/pages/terminal.js` then consumes to open the named overlay (and
+/// strips the hash so it doesn't reopen on re-mount).
+///
+/// Why this exists (Lesson 244):
+///
+/// rc53.9 shipped with `mc-chat-toolbar.js` using
+/// `window.location.href = 'tauri://localhost/index.html#mcAutoOpen=<key>'`
+/// — the same IPC-INDEPENDENT pattern as `mc-back-button.js`. The pattern
+/// works for the back button (Lesson 511) because mc-back-button is a
+/// fallback for the bridge pill, which calls `openclaw_back_to_dashboard`
+/// via Tauri IPC. Cross-scheme `window.location.href =` from
+/// `http://127.0.0.1:28789` → `tauri://localhost` (or
+/// `http://tauri.localhost`) is SILENTLY BLOCKED by Chromium/WebView2
+/// when the origin isn't allowlisted in CSP `navigate-to` AND there's no
+/// user gesture triggering navigation. Confirmed empirically: Playwright
+/// tests showed `defaultPrevented: True` after click (proving the handler
+/// ran) but `window.location.href` stayed on the chat URL — the
+/// assignment was a no-op.
+///
+/// rc53.10 fix: add a real Tauri command parallel to
+/// `openclaw_back_to_dashboard`. The bridge calls it via
+/// `invoke('mc_open_overlay', { overlayKey: 'secrets' | 'attach' })`.
+/// The hash gets appended to the dashboard URL, so WebView2 navigates
+/// to the trusted bundled origin and main.js picks up the hash on boot.
+///
+/// Allowed values for `overlay_key` are validated against a small
+/// allowlist (currently `secrets` and `attach`). Mismatched keys
+/// reject with 400-equivalent error so a hostile chat page can't trick
+/// us into navigating to arbitrary hashes.
+#[tauri::command]
+fn mc_open_overlay(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    overlay_key: String,
+) -> Result<(), String> {
+    // Allowlist (Lesson 244): only known overlay keys. The chat page is
+    // a foreign origin (http://127.0.0.1:28789) and we don't want to
+    // blindly forward arbitrary hashes into dashboard navigation.
+    let valid_keys = ["secrets", "attach"];
+    if !valid_keys.contains(&overlay_key.as_str()) {
+        log_to_file(&format!(
+            "mc_open_overlay: rejected unknown overlay_key {overlay_key:?} (allowed: {valid_keys:?})"
+        ));
+        return Err(format!(
+            "mc_open_overlay: unknown overlay_key {overlay_key:?}; allowed: {valid_keys:?}"
+        ));
+    }
+
+    let main_label = "main";
+    let main_window = match app_handle.get_webview_window(main_label) {
+        Some(w) => w,
+        None => {
+            log_to_file(&format!(
+                "mc_open_overlay: main window {:?} not found",
+                main_label
+            ));
+            return Err(format!(
+                "MiracleClaw main window not found; cannot open overlay."
+            ));
+        }
+    };
+
+    // rc53.11 (Lesson 247): capture where we were so mc_close_overlay
+    // can navigate back. Typical case: the user is on the OpenClaw chat
+    // page at http://127.0.0.1:28789/chat?session=... and clicks the
+    // 🔑 floating button — close should send them back to that chat
+    // URL, not the dashboard. window.url() returns the page's current
+    // URL as a `url::Url`; we serialise it to a String for storage.
+    // (See create_main_window() for the same idiom.)
+    let return_url = match main_window.url() {
+        Ok(u) => {
+            let s = u.to_string();
+            // Defensive: don't stash about:blank — it'd cause a blank
+            // page if close fires before any other navigation. And don't
+            // stash the dashboard itself — that would create a no-op
+            // round trip (close → dashboard → click overlay again).
+            if s == "about:blank" || s.starts_with("tauri://localhost")
+                || s.starts_with("http://tauri.localhost")
+                || s.starts_with("https://tauri.localhost")
+                || s.starts_with("http://localhost")
+                || s.starts_with("https://localhost") {
+                log_to_file(&format!(
+                    "mc_open_overlay: skip stash for already-dashboard URL {s:?}"
+                ));
+                None
+            } else {
+                Some(s)
+            }
+        }
+        Err(e) => {
+            log_to_file(&format!(
+                "mc_open_overlay: window.url() returned Err: {e} (no return URL stashed)"
+            ));
+            None
+        }
+    };
+    if let Some(ref url) = return_url {
+        if let Ok(mut guard) = state.overlay_return_url.lock() {
+            *guard = Some(url.clone());
+            log_to_file(&format!(
+                "mc_open_overlay: stashed return_url = {url:?}"
+            ));
+        }
+    }
+
+    // Same dashboard URL lookup as openclaw_back_to_dashboard (Lesson 536/537).
+    let dashboard_url = {
+        match state.dashboard_url.lock() {
+            Ok(guard) => guard.clone(),
+            Err(_) => {
+                log_to_file(
+                    "mc_open_overlay: dashboard_url mutex poisoned; \
+                     using scheme-aware fallback",
+                );
+                None
+            }
+        }
+    };
+    let dashboard_url = dashboard_url.unwrap_or_else(|| {
+        #[cfg(any(windows, target_os = "android"))]
+        let default = "http://tauri.localhost/".to_string();
+        #[cfg(not(any(windows, target_os = "android")))]
+        let default = "tauri://localhost/".to_string();
+        log_to_file(&format!(
+            "mc_open_overlay: AppState URL was None, using fallback {default:?}"
+        ));
+        default
+    });
+
+    // Append the URL hash. We strip any existing hash first to keep the
+    // resulting URL predictable, then append ours. URL fragment (#...)
+    // is not sent to the server so the gateway doesn't see it.
+    let base = dashboard_url.split('#').next().unwrap_or(&dashboard_url);
+    let target = format!("{base}#mcAutoOpen={overlay_key}");
+    let parsed_url = match tauri::Url::parse(&target) {
+        Ok(u) => u,
+        Err(err) => {
+            log_to_file(&format!(
+                "mc_open_overlay: invalid target URL {target:?}: {err}"
+            ));
+            return Err(format!(
+                "invalid target URL {target:?}: {err}"
+            ));
+        }
+    };
+
+    if let Err(e) = main_window.navigate(parsed_url) {
+        log_to_file(&format!(
+            "mc_open_overlay: main_window.navigate() failed: {e}"
+        ));
+        return Err(format!("could not navigate to overlay: {e}"));
+    }
+    let _ = main_window.set_focus();
+    let _ = main_window.unminimize();
+
+    log_to_file(&format!(
+        "mc_open_overlay: navigated main window to {target}"
+    ));
+    Ok(())
+}
+
+/// Tauri command: mc_close_overlay (Lesson 247, rc53.11).
+///
+/// Called by `terminal.js` close-overlay handlers (`closeSecretsOverlay`,
+/// `closeAttachOverlay`) via `window.__openclawHostBridge.closeOverlay()`.
+/// Navigates the main webview back to the URL captured by the most
+/// recent `mc_open_overlay` call (typically the OpenClaw chat page
+/// `http://127.0.0.1:28789/chat?session=...`), so closing the overlay
+/// returns the user to where they were.
+///
+/// Falls back to the dashboard if no return URL is stashed (covers the
+/// case where the user opened Secrets/Attach from the Terminal page's
+/// own toolbar — they expect to land back on the Terminal, which the
+/// dashboard URL will satisfy via the dashboard router).
+///
+/// Clears the stashed return URL after navigation so a subsequent
+/// close doesn't re-navigate to a stale URL.
+#[tauri::command]
+fn mc_close_overlay(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let main_label = "main";
+    let main_window = match app_handle.get_webview_window(main_label) {
+        Some(w) => w,
+        None => {
+            log_to_file(&format!(
+                "mc_close_overlay: main window {:?} not found",
+                main_label
+            ));
+            return Err(format!(
+                "MiracleClaw main window not found; cannot close overlay."
+            ));
+        }
+    };
+
+    // Take the stashed return URL out of the mutex so a re-entry can't
+    // double-navigate.
+    let return_url = match state.overlay_return_url.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(_) => {
+            log_to_file(
+                "mc_close_overlay: overlay_return_url mutex poisoned; \
+                 falling back to dashboard",
+            );
+            None
+        }
+    };
+
+    let target_url = match return_url {
+        Some(url) => url,
+        None => {
+            // No return URL — fall back to the dashboard URL (same
+            // resolution path as openclaw_back_to_dashboard).
+            let dashboard_url = match state.dashboard_url.lock() {
+                Ok(guard) => guard.clone(),
+                Err(_) => None,
+            };
+            let dashboard_url = dashboard_url.unwrap_or_else(|| {
+                #[cfg(any(windows, target_os = "android"))]
+                let default = "http://tauri.localhost/".to_string();
+                #[cfg(not(any(windows, target_os = "android")))]
+                let default = "tauri://localhost/".to_string();
+                log_to_file(&format!(
+                    "mc_close_overlay: AppState URL was None, using fallback {default:?}"
+                ));
+                default
+            });
+            log_to_file(&format!(
+                "mc_close_overlay: no return URL stashed; falling back to dashboard {dashboard_url:?}"
+            ));
+            dashboard_url
+        }
+    };
+
+    // Strip any existing hash from the return URL. The dashboard's
+    // main.js boot parses #mcAutoOpen=... to auto-open an overlay;
+    // if we re-navigated to a URL with that hash still present, the
+    // overlay would immediately reopen (recursion bug).
+    let base = target_url.split('#').next().unwrap_or(&target_url);
+
+    let parsed_url = match tauri::Url::parse(base) {
+        Ok(u) => u,
+        Err(err) => {
+            log_to_file(&format!(
+                "mc_close_overlay: invalid return URL {base:?}: {err}"
+            ));
+            return Err(format!(
+                "invalid return URL {base:?}: {err}"
+            ));
+        }
+    };
+
+    if let Err(e) = main_window.navigate(parsed_url) {
+        log_to_file(&format!(
+            "mc_close_overlay: main_window.navigate() failed: {e}"
+        ));
+        return Err(format!("could not close overlay: {e}"));
+    }
+    let _ = main_window.set_focus();
+    let _ = main_window.unminimize();
+
+    log_to_file(&format!(
+        "mc_close_overlay: navigated main window back to {base}"
+    ));
+    Ok(())
+}
+
 /// Delete the WebView2 user-data-dir so the next window build gets a fresh
 /// cache. This is the most reliable fix for the "blank window after upgrade"
 /// pattern: WebView2 caches the asset bundle hash from the prior install,
@@ -5871,6 +6156,8 @@ pub fn run() {
             start_gateway_after_login,
             openclaw_open_window,
             openclaw_back_to_dashboard,
+            mc_open_overlay,
+            mc_close_overlay,
             open_register_url,
             // v1.0.7: tier + nudge surface
             mc_get_tier,

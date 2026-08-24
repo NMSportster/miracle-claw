@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "bridge-capability",
-  "description": "Miracle Claw bridge capability — grants chat UI at 127.0.0.1:28789 access to invoke ONE custom Tauri command: openclaw_back_to_dashboard. The permission manifest is declared in src-tauri/permissions/ (Lesson 513 rc19). Activated only on the http://127.0.0.1:28789 origin via the `remote` URL pattern. Deliberately scoped to `core:default` + this single command — NO shell:allow-execute or filesystem permissions. The main.json capability (local-only) retains those dangerous permissions and remains the only path to invoke them from the dashboard (tauri://localhost/index.html).",
+  "description": "Miracle Claw bridge capability — grants chat UI at 127.0.0.1:28789 access to invoke THREE custom Tauri commands: openclaw_back_to_dashboard, mc_open_overlay (Lesson 244), and mc_close_overlay (Lesson 247). The permission manifest is declared in src-tauri/permissions/ (Lesson 513 rc19). Activated only on the http://127.0.0.1:28789 origin via the `remote` URL pattern. Deliberately scoped to `core:default` + these commands — NO shell:allow-execute or filesystem permissions. The main.json capability (local-only) retains those dangerous permissions and remains the only path to invoke them from the dashboard (tauri://localhost/index.html).",
   "local": false,
   "windows": ["main"],
   "remote": {
@@ -9,6 +9,8 @@
   },
   "permissions": [
     "core:default",
-    "allow-back-to-dashboard"
+    "allow-back-to-dashboard",
+    "allow-mc-open-overlay",
+    "allow-mc-close-overlay"
   ]
 }
