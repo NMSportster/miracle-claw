@@ -243,10 +243,15 @@ export const dashboardPage = {
       }
       if (onOpenNotebook) {
         document.getElementById("notebook-tile").addEventListener("click", () => onOpenNotebook());
-        // rc53.8 (feature/extras-hub): dashboard tile for the Extras
-        // hub page.
+      }
+      // rc53.8 (feature/extras-hub): dashboard tile for the Extras
+      // hub page. Wired on its own — do NOT nest under onOpenNotebook
+      // (rc53.11 bugfix: this used to be inside that block, so the
+      // Extras handler silently died if onOpenNotebook was ever
+      // missing).
+      if (onOpenExtras) {
         const extrasTile = document.getElementById("extras-tile");
-        if (extrasTile && typeof onOpenExtras === "function") {
+        if (extrasTile) {
           extrasTile.addEventListener("click", () => onOpenExtras());
         }
       }

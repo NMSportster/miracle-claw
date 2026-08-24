@@ -88,6 +88,10 @@ installNavigation({
       (extras) => terminalCtx(extras || {}),
     ],
     [
+      "extras",
+      () => extrasCtx(),
+    ],
+    [
       "login",
       (extras) => ({
         endpoint: (extras && extras.endpoint) || "https://maicserver.com",
@@ -233,6 +237,28 @@ function terminalCtx(opts = {}) {
     // dashboard launches OpenClaw directly into the TUI. Falls back to the
     // user-saved default (localStorage) when not provided.
     defaultShell: opts.defaultShell || undefined,
+  };
+}
+
+// rc53.8 (feature/extras-hub): ctx for the Extras hub page. Mirrors
+// the other top-level page ctxs (back-to-dashboard, onNeedsLogin) and
+// also wires the per-card "Run in Terminal" handoff.
+//
+// Why this was missed in rc53.8: the page was registered
+// (register('extras', extrasPage)) and the dashboard button was
+// wired to onOpenExtras -> navigate('extras'), but the navigation
+// builders map below didn't get an "extras" entry. So clicks landed
+// in navigate() which bailed with `no builder for page 'extras'` and
+// the dashboard didn't change. Symptom: button does nothing.
+function extrasCtx() {
+  return {
+    onBackToDashboard: () => navigate("dashboard"),
+    onNeedsLogin: mountLogin,
+    // Mirrors pageCtx(). Extras cards call this with the command
+    // name + shell so terminal.js can pre-fill the prompt.
+    onOpenTerminalWithCommand: (command, shell) =>
+      navigate("terminal", { defaultShell: shell, initialCommand: command }),
+    onOpenTerminal: () => navigate("terminal"),
   };
 }
 
