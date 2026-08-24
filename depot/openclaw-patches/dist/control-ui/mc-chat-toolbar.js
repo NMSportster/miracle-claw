@@ -114,18 +114,54 @@
       btn.addEventListener('click', function (ev) {
         ev.preventDefault();
         ev.stopPropagation();
-        // Plain DOM navigation with URL hash payload. The hash is
-        // consumed by main.js boot (URL hash → navigate to terminal
-        // with extras) and then by terminal.js mount (open overlay
-        // + strip hash). WebView2 follows cross-scheme navigation
-        // natively — no IPC dependency, no invoke chain.
-        try {
-          window.location.href =
-            'tauri://localhost/index.html#mcAutoOpen=' + encodeURIComponent(overlayKey);
-        } catch (e) {
-          btn.textContent = 'navigation failed';
-          btn.style.background = 'rgba(120, 30, 30, 0.95)';
-          btn.style.borderColor = 'rgba(255, 80, 80, 0.6)';
+        // Lesson 244 (rc53.10): cross-scheme window.location.href nav
+        // from http://127.0.0.1:28789 → tauri://localhost (or
+        // http://tauri.localhost on Windows) is silently blocked by
+        // Chromium/WebView2 even with a user gesture. Confirmed in
+        // Playwright: click handler runs (defaultPrevented: True) but
+        // the href assignment is a no-op. The mc-back-button.js pattern
+        // works only because the BACK button has a bridge pill fallback
+        // (Tauri IPC) that's its primary path; URL nav is just a
+        // last-resort.
+        //
+        // For the chat toolbar, the right primary is Tauri IPC:
+        //   window.__openclawHostBridge.invoke('mc_open_overlay', { overlayKey: <key> })
+        // The Rust mc_open_overlay command (src-tauri/src/lib.rs) handles
+        // dashboard URL capture, hash append, and WebView2 navigation
+        // (same pattern as openclaw_back_to_dashboard).
+        //
+        // Bridge may not be present (e.g. running in plain Chromium
+        // during dev/test), so fall back to the URL hash approach IF
+        // we're not already on the Tauri origin — that path doesn't
+        // work in WebView2 from the chat origin either, but it keeps
+        // the tool working in dev.
+        var bridge = window.__openclawHostBridge;
+        if (bridge && typeof bridge.invoke === 'function') {
+          bridge.invoke('mc_open_overlay', { overlayKey: overlayKey })
+            .catch(function (err) {
+              // Bridge IPC failed — fall back to URL nav (best effort).
+              try {
+                window.location.href =
+                  'tauri://localhost/index.html#mcAutoOpen=' + encodeURIComponent(overlayKey);
+              } catch (e) {
+                btn.textContent = 'navigation failed';
+                btn.style.background = 'rgba(120, 30, 30, 0.95)';
+                btn.style.borderColor = 'rgba(255, 80, 80, 0.6)';
+                btn.title = String((err && err.message) || err || 'unknown');
+              }
+            });
+        } else {
+          // No bridge (dev/test) — try URL nav anyway. It may no-op in
+          // WebView2 but the toolbar still mounts and the click is at
+          // least visually responsive.
+          try {
+            window.location.href =
+              'tauri://localhost/index.html#mcAutoOpen=' + encodeURIComponent(overlayKey);
+          } catch (e) {
+            btn.textContent = 'navigation failed';
+            btn.style.background = 'rgba(120, 30, 30, 0.95)';
+            btn.style.borderColor = 'rgba(255, 80, 80, 0.6)';
+          }
         }
       });
 
