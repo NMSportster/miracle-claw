@@ -50,6 +50,10 @@ import "@xterm/xterm/css/xterm.css";
 // overlay when the toolbar button is clicked. Re-uses the existing
 // page factory — no duplicate UI code.
 import { secretsPage } from "./secrets.js";
+// rc53.7 (feature/attach-toolbar): same overlay pattern for the
+// attach-zone. We reuse the dashboard's wireAttachZone subcomponent
+// so dropping files behaves identically to the dashboard zone.
+import { wireAttachZone } from "./dashboard.js";
 
 // Default shell for the Terminal tile. Historically `mc-openclaw` so the
 // Terminal button launched the OpenClaw TUI by default. Dashboard v1.0.9-rc45
@@ -276,8 +280,13 @@ export const terminalPage = {
             Kill session
           </button>
           <span class="terminal-toolbar-spacer"></span>
+          <button type="button" id="terminal-attach-btn" class="icon-link"
+                  title="Drop files to attach to your next chat message"
+                  aria-label="Open attach zone">
+            📎 Attach
+          </button>
           <button type="button" id="terminal-secrets-btn" class="icon-link"
-                  title="Manage secrets vault (rc53.5 v0 — plaintext)"
+                  title="Manage secrets vault (rc53.6 — Once / PerSession / Vault)"
                   aria-label="Open secrets vault">
             🔑 Secrets
           </button>
@@ -471,6 +480,93 @@ export const terminalPage = {
       if (e.key === "Escape") closeSecretsOverlay();
     });
     document.getElementById("terminal-secrets-btn").addEventListener("click", openSecretsOverlay);
+
+    // rc53.7 (feature/attach-toolbar): mount the dashboard's attach
+    // zone inside an overlay when the toolbar 📎 button is clicked.
+    // Same overlay pattern as secrets — pause terminal polling while
+    // open so the overlay doesn't render behind a moving terminal.
+    const attachOverlay = document.createElement("div");
+    attachOverlay.className = "attach-overlay";
+    attachOverlay.id = "terminal-attach-overlay";
+    attachOverlay.setAttribute("hidden", "");
+    attachOverlay.innerHTML = `
+      <div class="attach-overlay-header">
+        <span class="attach-overlay-title">📎 Attach files to next chat message</span>
+        <button class="icon-link" id="terminal-attach-close"
+                title="Close attach zone" aria-label="Close attach zone">✕</button>
+      </div>
+      <div class="attach-overlay-body" id="terminal-attach-body">
+        <div class="attach-zone" id="attach-zone" tabindex="0" role="button"
+             aria-label="Drop files here to attach them to your next chat message">
+          <div class="attach-zone-empty" id="attach-zone-empty">
+            <div class="attach-zone-icon">📎</div>
+            <div class="attach-zone-msg">
+              <strong>Drop files here</strong> to attach them to your next chat message.
+              <div class="muted small">
+                Up to 100 MB per file. PDFs, images, code, documents — anything you can drag.
+              </div>
+            </div>
+          </div>
+          <div class="attach-queue" id="attach-queue" hidden></div>
+          <div class="attach-actions" id="attach-actions" hidden>
+            <input type="text" class="attach-message" id="attach-message"
+                   placeholder="Optional: a note for the model (e.g. 'summarize this')" />
+            <button type="button" class="primary" id="attach-send">Send to chat →</button>
+            <button type="button" class="link-button" id="attach-clear">Clear queue</button>
+          </div>
+          <div class="attach-zone-help muted small" id="attach-zone-help">
+            <details>
+              <summary>How does this work?</summary>
+              <ol>
+                <li>Drop one or more files above. They copy into MC's workspace.</li>
+                <li>Click <strong>Send to chat</strong>. The OpenClaw chat window opens and the file paths land in your clipboard.</li>
+                <li>Click into the chat input and press <strong>Ctrl+V</strong>. The model sees the file paths and reads them with its file tool.</li>
+              </ol>
+              <p class="muted small">MC can't paste directly into the chat window, so the clipboard is the bridge. One keystroke after each Send.</p>
+            </details>
+          </div>
+          <div class="attach-status muted small" id="attach-status"></div>
+        </div>
+      </div>
+    `;
+    root.appendChild(attachOverlay);
+    const attachBody = document.getElementById("terminal-attach-body");
+    const attachCloseBtn = document.getElementById("terminal-attach-close");
+
+    let attachOpen = false;
+    let attachZoneWired = false;
+    function openAttachOverlay() {
+      // Pause terminal polling while overlay is up (same as secrets).
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      attachOpen = true;
+      attachOverlay.removeAttribute("hidden");
+      // Wire the zone lazily — wireAttachZone registers document-level
+      // drag listeners, so we only want them live while the overlay
+      // is mounted. The next open() reuses the existing wiring if
+      // the zone is still in the DOM.
+      if (!attachZoneWired) {
+        wireAttachZone(attachOverlay);
+        attachZoneWired = true;
+      }
+    }
+    function closeAttachOverlay() {
+      if (!attachOpen) return;
+      attachOpen = false;
+      attachOverlay.setAttribute("hidden", "");
+      // Resume polling.
+      if (!ended && sessionId && !pollTimer) {
+        pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS);
+      }
+    }
+    attachCloseBtn.addEventListener("click", closeAttachOverlay);
+    // Esc closes the overlay when it's open.
+    attachOverlay.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeAttachOverlay();
+    });
+    document.getElementById("terminal-attach-btn").addEventListener("click", openAttachOverlay);
 
     // Fullscreen toggle: adds `terminal-fullscreen-mode` class to the page
     // root. CSS enlarges the output area. ResizeObserver triggers

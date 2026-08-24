@@ -290,9 +290,14 @@ export const dashboardPage = {
 
 // --- helpers below are not part of the page API ---
 
+// Re-export the attach zone + helpers so terminal.js (and other pages)
+// can render the same drop-to-chat zone as an overlay without re-creating
+// the component. See pages/terminal.js:attachOverlayPage.
+//
 // feature/drag-drop: attachment staging zone. The zone is a self-contained
 // subcomponent on the dashboard — it manages its own queue state, drag
 // listeners, and the "Send to chat" handoff. Wire once per dashboard mount.
+export { wireAttachZone, iconFor, formatBytes };
 function wireAttachZone(root) {
   const zone = root.querySelector("#attach-zone");
   if (!zone) return;

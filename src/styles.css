@@ -1996,6 +1996,50 @@ kbd {
   padding: 24px;
 }
 
+/* rc53.7 — attach overlay (terminal toolbar 📎 button) */
+.attach-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Lesson 229: any element with display: flex needs the [hidden] override
+   so the overlay actually disappears instead of just rendering empty. */
+.attach-overlay[hidden] {
+  display: none !important;
+}
+
+.attach-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+  flex-shrink: 0;
+}
+
+.attach-overlay-title {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.attach-overlay-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 24px;
+}
+
+.attach-overlay-body .attach-zone {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
 /* rc53.6 — friendly secrets page styles */
 .secrets-page {
   display: flex;
