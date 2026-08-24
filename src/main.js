@@ -27,6 +27,12 @@ import { secretsPage } from "./pages/secrets.js";
 // with a "Run in Terminal" action per card. Also exposes a palette
 // action per command for keyboard-driven access.
 import { extrasPage, extrasPaletteActions } from "./pages/extras.js";
+// Lesson 564 (2026-08-24 17:30 MDT, David): in-app Plans & Pricing
+// page. Lives at its own route; the dashboard shows only a tiny
+// "Plans & Pricing ↗" button that navigates here. This page renders
+// the same 6 plans as the web /pricing page, fetched live from MAIC,
+// and each paid-plan CTA opens Stripe Checkout in the OS browser.
+import { pricingPage } from "./pages/pricing.js";
 // rc53 (feature/secrets-vault): debug page for v0 verification.
 // Not registered in the main page map; mounted via window.__mc_openSecretsDebug.
 import { secretsDebugPage } from "./secrets/debug_page.js";
@@ -55,6 +61,9 @@ register("secrets", secretsPage);
 // rc53.8 (feature/extras-hub): Extras hub — mlg-* companion CLIs.
 // Reachable via dashboard tile or Cmd-K palette.
 register("extras", extrasPage);
+// Lesson 564: in-app Plans & Pricing page. Reachable via the small
+// "Plans & Pricing ↗" button on the dashboard, or via Cmd-K palette.
+register("pricing", pricingPage);
 // rc53 (feature/secrets-vault): debug page registration. Mounted
 // only via window.__mc_openSecretsDebug() (dev escape hatch).
 register("secrets-debug", secretsDebugPage);
@@ -90,6 +99,10 @@ installNavigation({
     [
       "extras",
       () => extrasCtx(),
+    ],
+    [
+      "pricing",
+      () => pricingCtx(),
     ],
     [
       "login",
@@ -195,6 +208,10 @@ function pageCtx() {
     onOpenFiles: () => navigate("files"),
     onOpenNotebook: () => navigate("notebook"),
     onOpenExtras: () => navigate("extras"),
+    // Lesson 564: dashboard's "Plans & Pricing ↗" button routes
+    // here so the in-app pricing page renders the 6 plans + Stripe
+    // CTAs (not a 6-card grid jammed into the dashboard).
+    onOpenPricing: () => navigate("pricing"),
     // rc53.8 (feature/extras-hub): hand off to Terminal with a
     // pre-filled command + the right shell for the OS. cmd on
     // Windows, bash on Linux/macOS — both can resolve mlg-* from
@@ -259,6 +276,17 @@ function extrasCtx() {
     onOpenTerminalWithCommand: (command, shell) =>
       navigate("terminal", { defaultShell: shell, initialCommand: command }),
     onOpenTerminal: () => navigate("terminal"),
+  };
+}
+
+// Lesson 564 (2026-08-24 17:30 MDT, David): minimal ctx for the
+// in-app Pricing page. Just back-to-dashboard + onNeedsLogin. The
+// page handles Stripe checkout itself via `mc_open_checkout_url`;
+// no ctx extras needed.
+function pricingCtx() {
+  return {
+    onBackToDashboard: () => navigate("dashboard"),
+    onNeedsLogin: mountLogin,
   };
 }
 

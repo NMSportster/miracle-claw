@@ -103,12 +103,12 @@ export const secretsPage = {
 
             <div class="secrets-field">
               <span>Type</span>
-              <div class="secrets-kinds" role="group" aria-label="Secret type">
-                <label class="kind-chip"><input type="checkbox" name="kind" value="username" /> <span>Username</span></label>
-                <label class="kind-chip"><input type="checkbox" name="kind" value="password" /> <span>Password</span></label>
-                <label class="kind-chip"><input type="checkbox" name="kind" value="key" checked /> <span>Key</span></label>
-                <label class="kind-chip"><input type="checkbox" name="kind" value="token" /> <span>Token</span></label>
-                <label class="kind-chip"><input type="checkbox" name="kind" value="url" /> <span>URL</span></label>
+              <div class="secrets-kinds" role="group" aria-label="Secret type (row 1)">
+                <label class="kind-chip"><input type="checkbox" name="kind-1" value="username" /> <span>Username</span></label>
+                <label class="kind-chip"><input type="checkbox" name="kind-1" value="password" /> <span>Password</span></label>
+                <label class="kind-chip"><input type="checkbox" name="kind-1" value="key" checked /> <span>Key</span></label>
+                <label class="kind-chip"><input type="checkbox" name="kind-1" value="token" /> <span>Token</span></label>
+                <label class="kind-chip"><input type="checkbox" name="kind-1" value="url" /> <span>URL</span></label>
               </div>
             </div>
 
@@ -116,6 +116,25 @@ export const secretsPage = {
               <span>Value</span>
               <textarea id="sec-value" rows="3" placeholder="paste the secret here (multi-line OK)" autocomplete="off" spellcheck="false"></textarea>
             </label>
+
+            <details class="secrets-row-2">
+              <summary>Add a second value (optional — e.g. username + password pair)</summary>
+              <div class="secrets-field">
+                <span>Type</span>
+                <div class="secrets-kinds" role="group" aria-label="Secret type (row 2)">
+                  <label class="kind-chip"><input type="checkbox" name="kind-2" value="username" /> <span>Username</span></label>
+                  <label class="kind-chip"><input type="checkbox" name="kind-2" value="password" checked /> <span>Password</span></label>
+                  <label class="kind-chip"><input type="checkbox" name="kind-2" value="key" /> <span>Key</span></label>
+                  <label class="kind-chip"><input type="checkbox" name="kind-2" value="token" /> <span>Token</span></label>
+                  <label class="kind-chip"><input type="checkbox" name="kind-2" value="url" /> <span>URL</span></label>
+                </div>
+              </div>
+
+              <label class="secrets-field">
+                <span>Value (row 2)</span>
+                <textarea id="sec-value-2" rows="3" placeholder="leave empty to skip row 2" autocomplete="off" spellcheck="false"></textarea>
+              </label>
+            </details>
 
             <div class="secrets-field">
               <span>How long should we keep it?</span>
@@ -197,11 +216,19 @@ export const secretsPage = {
 
     const labelInput = document.getElementById("sec-label");
     const valueInput = document.getElementById("sec-value");
+    const valueInput2 = document.getElementById("sec-value-2");
     const setButton = document.getElementById("sec-set");
     const setStatus = document.getElementById("sec-set-status");
 
-    function getSelectedKind() {
-      const checked = document.querySelector('input[name="kind"]:checked');
+    // Lesson 564 (2026-08-24 17:32 MDT, David): row 1 + optional row 2
+    // for paired entries (e.g. username + password for one service).
+    // Row 1 keeps the original kind name `kind-1`; row 2 uses `kind-2`.
+    // The frontend auto-suffixes the row-2 label with `_<kind>` so
+    // both atoms get distinct canonical names (STRIPE_USERNAME /
+    // STRIPE_PASSWORD) without needing a new backend API.
+    function getSelectedKind(rowNum) {
+      const name = rowNum === 2 ? "kind-2" : "kind-1";
+      const checked = document.querySelector(`input[name="${name}"]:checked`);
       return checked ? checked.value : "generic";
     }
     function getSelectedLifetime() {
@@ -211,24 +238,46 @@ export const secretsPage = {
 
     async function doSet() {
       const label = labelInput.value.trim();
-      const value = valueInput.value;
-      const kind = getSelectedKind();
+      const value1 = valueInput.value;
+      const value2 = valueInput2 ? valueInput2.value : "";
+      const kind1 = getSelectedKind(1);
+      const kind2 = getSelectedKind(2);
       const lifetime = getSelectedLifetime();
       setStatus.textContent = "";
-      if (!value) {
-        setStatus.textContent = "❌ Value is required";
+      if (!value1 && !value2) {
+        setStatus.textContent = "❌ At least one row must have a value";
         return;
       }
       setButton.disabled = true;
       const origText = setButton.textContent;
       setButton.textContent = "Saving…";
+      const stored = []; // collect FriendlySetResult for status display
       try {
-        const r = await invoke("mc_secret_set_friendly", {
-          label, value, lifetime, kind,
-        });
-        const lifetimeMeta = LIFETIME_META[r.lifetime] || { label: r.lifetime };
-        setStatus.innerHTML = `✅ Stored as <code>${escapeHtml(r.name)}</code> <span class="lifetime-pill" style="background:${lifetimeMeta.color}">${escapeHtml(lifetimeMeta.label)}</span> <span class="muted">(${r.value_len} chars)</span>`;
+        if (value1) {
+          const r = await invoke("mc_secret_set_friendly", {
+            label, value: value1, lifetime, kind: kind1,
+          });
+          stored.push(r);
+        }
+        if (value2) {
+          // Auto-suffix row 2's label with the kind so the two entries
+          // don't collide on the canonical name. Strip kind text up
+          // case so the shell var reads naturally: STRIPE_PASSWORD.
+          const kindSuffix = String(kind2 || "value").toUpperCase();
+          const label2 = `${label}_${kindSuffix}`;
+          const r = await invoke("mc_secret_set_friendly", {
+            label: label2, value: value2, lifetime, kind: kind2,
+          });
+          stored.push(r);
+        }
+        const lifetimeMeta = LIFETIME_META[stored[0].lifetime] || { label: stored[0].lifetime };
+        const namesList = stored
+          .map((r) => `<code>${escapeHtml(r.name)}</code>`)
+          .join(", ");
+        const lts = stored.length > 1 ? "each" : "";
+        setStatus.innerHTML = `✅ Stored ${lts} as ${namesList} <span class="lifetime-pill" style="background:${lifetimeMeta.color}">${escapeHtml(lifetimeMeta.label)}</span> <span class="muted">(${stored.reduce((a, r) => a + r.value_len, 0)} chars total)</span>`;
         valueInput.value = "";
+        if (valueInput2) valueInput2.value = "";
         labelInput.value = "";
         await refreshList();
       } catch (e) {
@@ -239,12 +288,19 @@ export const secretsPage = {
       }
     }
     setButton.addEventListener("click", doSet);
-    // Ctrl+Enter in the value textarea submits
+    // Ctrl+Enter in either value textarea submits
     valueInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         doSet();
       }
     });
+    if (valueInput2) {
+      valueInput2.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+          doSet();
+        }
+      });
+    }
 
     document.getElementById("sec-refresh").addEventListener("click", refreshList);
     document.getElementById("sec-clear-session").addEventListener("click", async () => {

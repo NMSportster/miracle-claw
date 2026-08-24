@@ -387,63 +387,112 @@ code {
 }
 .usage-cta:hover { background: #6c7dff; }
 
-/* Lesson 561 Plans card. Sits between the usage bar and the tiles
-   grid. Compact horizontal grid on wide screens, single-column stack
-   on narrow. Highlighted plan (Pro) gets a brand-purple border + a
-   "Most popular" chip that floats above the card. The "Current plan"
-   plan gets a faint green tint + a non-interactive CTA. */
-.plans-card {
-  background: var(--card-bg);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 16px 16px 20px;
-  margin-bottom: 24px;
+/* Lesson 564 (2026-08-24 17:28 MDT, David): replaced the in-app
+   6-card pricing grid (Lesson 561) with a single tiny button below
+   the usage bar. The button just opens /pricing in the OS browser,
+   where the real pricing UI lives. The previous plans-card CSS is
+   removed; nothing else references it. */
+.pricing-link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: -16px 0 24px 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: #5b6cff;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.pricing-link-btn:hover { text-decoration: underline; }
+.pricing-link-btn[disabled] { opacity: 0.6; cursor: default; }
+.pricing-link-arrow {
+  font-size: 11px;
+  margin-left: 2px;
 }
 
-.plans-card-header {
+/* Lesson 564 (2026-08-24 17:30 MDT, David): the dedicated Plans &
+   Pricing page that the dashboard's tiny button navigates to. Page
+   layout mirrors other top-level pages (secrets/extras): header with
+   back button, intro paragraph, responsive plan grid, footer. The
+   plan card styling itself is mostly the Lesson 561 markup with
+   re-additions for the standalone page (footer, intro, header). */
+.pricing-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 24px 48px;
+}
+
+.pricing-header {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 12px;
+  align-items: center;
   gap: 12px;
+  margin-bottom: 8px;
 }
 
-.plans-card-title {
-  font-size: 15px;
+.pricing-title {
+  font-size: 22px;
   font-weight: 700;
   margin: 0;
-  color: var(--fg);
+  flex: 1;
 }
 
-.plans-card-link {
-  font-size: 12px;
+.pricing-badge {
+  font-size: 11px;
+}
+
+.pricing-intro {
+  margin: 12px 0 24px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 32px;
+}
+
+.pricing-empty {
+  padding: 32px 16px;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.pricing-empty p {
+  margin: 4px 0;
+}
+
+.pricing-footer {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.pricing-footer a {
   color: #5b6cff;
   text-decoration: none;
-  font-weight: 500;
 }
-.plans-card-link:hover { text-decoration: underline; }
+.pricing-footer a:hover { text-decoration: underline; }
 
-.plans-card-empty {
-  margin: 8px 0 0;
-  font-size: 13px;
-}
-
-.plan-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 10px;
-}
-
+/* Plan cards (Lesson 561 reuse, adapted for the standalone page).
+   Same visual rules as the in-app version: Pro gets the purple
+   border + "Most popular" chip; current plan gets the green tint +
+   "Your plan" badge. */
 .plan-card {
   position: relative;
   background: var(--card-bg-2);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 12px 12px;
+  border-radius: 12px;
+  padding: 18px 16px 16px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
+  overflow: visible;
 }
 
 .plan-card.featured {
@@ -452,7 +501,7 @@ code {
 }
 .plan-card.current {
   border-color: rgba(123, 224, 163, 0.45);
-  background: rgba(123, 224, 163, 0.04);
+  background: rgba(123, 224, 163, 0.05);
 }
 
 .plan-badge {
@@ -471,24 +520,35 @@ code {
   white-space: nowrap;
 }
 
+.plan-badge-current {
+  background: rgba(123, 224, 163, 0.85);
+  color: #0f172a;
+}
+
 .plan-name {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--fg);
   letter-spacing: 0.2px;
 }
 
 .plan-price {
-  font-size: 24px;
+  font-size: 28px;
   font-weight: 800;
   color: var(--fg);
   line-height: 1.1;
 }
 .plan-price-suffix {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--muted);
   margin-left: 2px;
+}
+
+.plan-tagline {
+  margin: -2px 0 4px;
+  font-size: 12px;
+  min-height: 14px;
 }
 
 .plan-features {
@@ -497,7 +557,7 @@ code {
   margin: 4px 0 0;
   font-size: 12px;
   color: var(--muted);
-  line-height: 1.6;
+  line-height: 1.7;
   flex: 1;
 }
 .plan-features li strong {
@@ -506,13 +566,13 @@ code {
 }
 
 .plan-cta {
-  margin-top: 10px;
-  padding: 8px 12px;
+  margin-top: 12px;
+  padding: 9px 12px;
   background: #5b6cff;
   color: #fff;
   border: 0;
   border-radius: 6px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   font-family: inherit;
@@ -530,7 +590,7 @@ code {
   cursor: default;
 }
 .plan-cta[disabled] {
-  background: rgba(123, 224, 163, 0.16);
+  background: rgba(123, 224, 163, 0.14);
   color: var(--muted);
   cursor: default;
   transform: none;
@@ -2339,6 +2399,48 @@ kbd {
   min-height: 64px;
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 13px;
+}
+
+/* Lesson 564 (2026-08-24 17:32 MDT, David): optional second row
+   for paired entries (e.g. username + password for one service).
+   Wrapped in <details> so the form stays compact when only one
+   value is needed. The user clicks the summary to expand the
+   second type-chips + value textarea. */
+.secrets-row-2 {
+  margin: 4px 0 16px;
+  padding: 10px 12px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: rgba(91, 108, 255, 0.03);
+}
+.secrets-row-2 > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5b6cff;
+  user-select: none;
+  list-style: none;
+}
+.secrets-row-2 > summary::before {
+  content: "▸ ";
+  display: inline-block;
+  margin-right: 4px;
+  transition: transform 120ms ease;
+}
+.secrets-row-2[open] > summary::before {
+  transform: rotate(90deg);
+}
+.secrets-row-2 > summary::-webkit-details-marker {
+  display: none;
+}
+.secrets-row-2[open] {
+  padding-top: 14px;
+}
+.secrets-row-2 .secrets-field {
+  margin-top: 10px;
+}
+.secrets-row-2 .secrets-field:first-of-type {
+  margin-top: 14px;
 }
 
 /* Type chips */
