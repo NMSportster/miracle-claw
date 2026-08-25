@@ -1657,6 +1657,195 @@ code {
   pointer-events: auto;
 }
 
+/* Lesson 572: Settings → Modules card grid (mirrors memory-file
+   style for consistency). Card dims, action buttons, status pill. */
+.modules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.module-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.module-card[data-installed="false"] {
+  opacity: 0.85;
+}
+.module-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.module-card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.module-card-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+}
+.module-card-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+.module-card-subtitle {
+  margin-top: 2px;
+}
+.module-status {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+.module-status.is-installed {
+  background: rgba(76, 175, 80, 0.15);
+  color: #6fcf7;
+}
+.module-status.is-available {
+  background: rgba(255, 255, 255, 0.08);
+  color: #aaa;
+}
+.module-card-desc {
+  margin: 4px 0 10px;
+}
+.module-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+.module-card-meta code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.module-card-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+.module-card-actions .link-button {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.module-card-actions .link-button.danger {
+  color: #f88;
+}
+.module-card-actions .link-button.danger:hover {
+  background: rgba(244, 67, 54, 0.15);
+  border-color: #f88;
+}
+.module-card-actions .link-button:hover {
+  background: rgba(110, 158, 255, 0.15);
+  border-color: #6e9eff;
+}
+.modules-empty {
+  padding: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+/* Lesson 572: toast notification system (replaces alert()). Container
+   is appended to body; toasts stack bottom-right. */
+#mc-toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  pointer-events: none;
+  max-width: 380px;
+}
+.mc-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  animation: mc-toast-in 180ms ease-out;
+}
+.mc-toast.mc-toast-leaving {
+  animation: mc-toast-out 200ms ease-in forwards;
+}
+.mc-toast-info {
+  background: #1e1e2e;
+  color: #e4e4e7;
+  border-left: 3px solid #6e9eff;
+}
+.mc-toast-success {
+  background: #0f2316;
+  color: #d1f4d6;
+  border-left: 3px solid #4caf50;
+}
+.mc-toast-warn {
+  background: #2a1f0e;
+  color: #ffe2b0;
+  border-left: 3px solid #ff9800;
+}
+.mc-toast-error {
+  background: #2a0e0e;
+  color: #ffc8c8;
+  border-left: 3px solid #f44336;
+}
+.mc-toast-message {
+  flex: 1;
+  word-break: break-word;
+}
+.mc-toast-action {
+  background: transparent;
+  border: 1px solid currentColor;
+  color: inherit;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.85;
+}
+.mc-toast-action:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+}
+.mc-toast-dismiss {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  opacity: 0.5;
+  padding: 0 4px;
+}
+.mc-toast-dismiss:hover {
+  opacity: 1;
+}
+@keyframes mc-toast-in {
+  from { transform: translateX(110%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+@keyframes mc-toast-out {
+  from { transform: translateX(0);    opacity: 1; }
+  to   { transform: translateX(110%); opacity: 0; }
+}
+
 /* rc44: fullscreen-mode input row gets a slightly larger font and
    dark theme tint so it sits naturally against the #0b1020 terminal
    backdrop. Without this the input felt small and out of place. */

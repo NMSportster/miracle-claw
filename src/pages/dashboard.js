@@ -23,6 +23,7 @@ import { openPalette as openCmdKPalette } from "../cmd_k_palette.js";
 // dashboard FAB calls the voice module via the JS-side runtime.
 // Button starts greyed out (data-module-voice-installed="false").
 import { isModuleInstalled, invokeModule } from "../modules-runtime.js";
+import { toast } from "../toast.js";
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -339,7 +340,7 @@ export const dashboardPage = {
       if (voiceFab) {
         voiceFab.addEventListener("click", async () => {
           if (!isModuleInstalled("voice")) {
-            alert("Voice module not installed. Install via Settings → Modules.");
+            toast("Voice module not installed. Install via Settings → Modules.", { kind: "warn" });
             return;
           }
           voiceFab.disabled = true;
@@ -354,26 +355,29 @@ export const dashboardPage = {
             const text = (result && result.text) || "";
             if (text.trim()) {
               // Try to land the transcript in the dashboard's chat
-              // input if one exists. Falls back to alert + clipboard.
+              // input if one exists. Falls back to clipboard + toast.
               const chatInput =
                 document.querySelector("#dashboard-chat-input") ||
                 document.querySelector("textarea[name='message']");
               if (chatInput) {
                 chatInput.value = text.trim();
                 chatInput.focus();
+                toast(`Transcript: "${text.trim().slice(0, 60)}${text.trim().length > 60 ? "…" : ""}"`, { kind: "success" });
               } else {
                 try {
                   await writeText(text.trim());
-                } catch (_) {}
-                alert(`🎙 Copied to clipboard:\n\n${text.trim()}`);
+                  toast(`Copied to clipboard: "${text.trim().slice(0, 60)}${text.trim().length > 60 ? "…" : ""}"`, { kind: "info" });
+                } catch (e) {
+                  toast(`Transcript: "${text.trim()}"`, { kind: "info", sticky: true });
+                }
               }
             } else if (result && result.warning) {
-              alert(`🎙 ${result.warning}`);
+              toast(`🎙 ${result.warning}`, { kind: "warn" });
             } else {
-              alert("🎙 (no speech detected)");
+              toast("🎙 (no speech detected)", { kind: "info" });
             }
           } catch (e) {
-            alert(`🎙 transcription failed: ${e}`);
+            toast(`🎙 transcription failed: ${e}`, { kind: "error" });
           } finally {
             voiceFab.disabled = false;
             voiceFab.textContent = orig;

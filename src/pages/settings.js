@@ -20,6 +20,7 @@
 // the workspace or with a non-.md extension.
 
 import { invoke } from "@tauri-apps/api/core";
+import { toast } from "../toast.js";
 
 // ============================================================================
 // Helpers (used only by this page)
@@ -97,6 +98,7 @@ export const settingsPage = {
     // Async data loads
     loadUserInfo(this, root, ctx);
     loadMemoryFiles(this, root, ctx);
+    loadModules(this, root, ctx);
   },
 
   unmount() {
@@ -178,6 +180,125 @@ async function loadMemoryFiles(page, root, ctx) {
 }
 
 // ============================================================================
+// Modules (Lesson 572, 2026-08-25 00:50 MDT, David)
+// Lists installed modules + offers install/uninstall controls. Uses
+// the MC module framework commands: mc_module_list, mc_module_install_local,
+// mc_module_uninstall. v0.1.0 only supports local-path installs (dev
+// mode); remote downloads arrive in Lesson 573+.
+// ============================================================================
+
+async function loadModules(page, root, ctx) {
+  const slot = document.getElementById("modules-slot");
+  if (!slot) return;
+
+  try {
+    const modules = await invoke("mc_module_list");
+    slot.innerHTML = renderModulesList(modules);
+    wireModuleActions(page, root, ctx);
+  } catch (err) {
+    slot.innerHTML = renderError(`Could not list modules: ${escapeHtml(err)}`);
+  }
+}
+
+function renderModulesList(modules) {
+  if (!modules || modules.length === 0) {
+    return renderModulesEmpty();
+  }
+  return `
+    <div class="modules-list">
+      ${modules.map(renderModuleCard).join("")}
+    </div>
+  `;
+}
+
+function renderModuleCard(m) {
+  const installed = !!m.installed;
+  const commands = (m.commands || [])
+    .map((c) => `<code>${escapeHtml(c.tauri)}</code>`)
+    .join(", ");
+  const hooks = (m.ui_hooks || [])
+    .map((h) => `<code>${escapeHtml(h)}</code>`)
+    .join(", ");
+  return `
+    <div class="module-card" data-module-id="${escapeHtml(m.id)}" data-installed="${installed}">
+      <div class="module-card-header">
+        <div class="module-card-title">
+          ${m.publisher_icon ? `<img src="${escapeHtml(m.publisher_icon)}" alt="" class="module-card-icon" />` : ""}
+          <div>
+            <div class="module-card-name">${escapeHtml(m.name || m.id)}</div>
+            ${m.subtitle ? `<div class="module-card-subtitle muted small">${escapeHtml(m.subtitle)}</div>` : ""}
+          </div>
+        </div>
+        <div class="module-card-status">
+          <span class="module-status ${installed ? "is-installed" : "is-available"}">
+            ${installed ? "Installed" : "Available"}
+          </span>
+        </div>
+      </div>
+      ${m.description ? `<p class="module-card-desc muted small">${escapeHtml(m.description)}</p>` : ""}
+      <div class="module-card-meta">
+        <span class="muted small">Version</span>
+        <span class="mono">${escapeHtml(m.version || "—")}</span>
+        ${m.author ? `<span class="muted small">· by</span> <span class="mono">${escapeHtml(m.author)}</span>` : ""}
+      </div>
+      ${commands ? `<div class="module-card-meta"><span class="muted small">Commands</span> <span class="mono small">${commands}</span></div>` : ""}
+      ${hooks ? `<div class="module-card-meta"><span class="muted small">UI hooks</span> <span class="mono small">${hooks}</span></div>` : ""}
+      <div class="module-card-actions">
+        ${installed
+          ? `<button type="button" class="link-button danger" data-action="uninstall" data-module-id="${escapeHtml(m.id)}">Uninstall</button>`
+          : `<button type="button" class="link-button" data-action="install" data-module-id="${escapeHtml(m.id)}">Install…</button>`}
+      </div>
+    </div>
+  `;
+}
+
+function renderModulesEmpty() {
+  return `
+    <div class="modules-empty muted">
+      <p>No modules registered yet.</p>
+      <p class="small">
+        Modules live in <code>~/.local/share/miracle-claw/modules/</code>.
+        Set <code>MC_MODULE_LOCAL_PATH=/path/to/built/module</code> and restart
+        to install a module you've built yourself.
+      </p>
+    </div>
+  `;
+}
+
+function wireModuleActions(page, root, ctx) {
+  document.querySelectorAll(".module-card [data-action]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const action = btn.dataset.action;
+      const id = btn.dataset.moduleId;
+      btn.disabled = true;
+      try {
+        if (action === "install") {
+          const localPath = window.prompt(
+            `Install module "${id}" from local path?\n\n` +
+            `Path must contain installer.json and bin/ subdir.\n` +
+            `Tip: set MC_MODULE_LOCAL_PATH at launch and this dialog is skipped.`,
+            ""
+          );
+          if (!localPath) return;
+          await invoke("mc_module_install_local", { id, localPath });
+          toast(`Module "${id}" installed`, { kind: "success" });
+          await loadModules(page, root, ctx);
+        } else if (action === "uninstall") {
+          if (!window.confirm(`Uninstall module "${id}"?`)) return;
+          await invoke("mc_module_uninstall", { id });
+          toast(`Module "${id}" uninstalled`, { kind: "info" });
+          await loadModules(page, root, ctx);
+        }
+      } catch (err) {
+        toast(`Module ${action} failed: ${err}`, { kind: "error", duration: 8000 });
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+// ============================================================================
 // Renderers
 // ============================================================================
 
@@ -206,6 +327,16 @@ function renderSkeleton() {
       <section class="settings-section">
         <h2>About</h2>
         <div id="about-slot">${renderAbout()}</div>
+      </section>
+
+      <section class="settings-section">
+        <h2>Modules</h2>
+        <p class="muted small">
+          Optional add-ons that extend MiracleClaw. Each module runs in its own
+          sidecar process; installing one here activates its UI hooks (e.g. the
+          🎙 Voice button in the toolbar).
+        </p>
+        <div id="modules-slot" class="loading-slot">Loading modules…</div>
       </section>
 
       <section class="settings-section signout-section">

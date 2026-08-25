@@ -52,6 +52,7 @@ import "@xterm/xterm/css/xterm.css";
 // (data-module-voice-installed="false") and lights up when the
 // voice module installs.
 import { isModuleInstalled, invokeModule } from "../modules-runtime.js";
+import { toast } from "../toast.js";
 // rc53.5 (feature/secrets-vault): mount the secrets page inside an
 // overlay when the toolbar button is clicked. Re-uses the existing
 // page factory — no duplicate UI code.
@@ -542,7 +543,7 @@ export const terminalPage = {
     const voiceBtn = document.getElementById("terminal-voice-btn");
     voiceBtn.addEventListener("click", async () => {
       if (!isModuleInstalled("voice")) {
-        alert("Voice module not installed. Install via Settings → Modules.");
+        toast("Voice module not installed. Install via Settings → Modules.", { kind: "warn" });
         return;
       }
       voiceBtn.disabled = true;
@@ -562,16 +563,15 @@ export const terminalPage = {
           if (input) {
             input.value = text.trim();
             input.focus();
-          } else {
-            alert(`🎙 "${text.trim()}"`);
+            toast(`Transcript: "${text.trim().slice(0, 60)}${text.trim().length > 60 ? "…" : ""}"`, { kind: "success" });
           }
         } else if (result && result.warning) {
-          alert(`🎙 ${result.warning}`);
+          toast(`🎙 ${result.warning}`, { kind: "warn" });
         } else {
-          alert("🎙 (no speech detected)");
+          toast("🎙 (no speech detected)", { kind: "info" });
         }
       } catch (e) {
-        alert(`🎙 transcription failed: ${e}`);
+        toast(`🎙 transcription failed: ${e}`, { kind: "error" });
       } finally {
         voiceBtn.disabled = false;
         voiceBtn.textContent = "🎙 Voice";
