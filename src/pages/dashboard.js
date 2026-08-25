@@ -19,6 +19,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openPalette as openCmdKPalette } from "../cmd_k_palette.js";
+// Lesson 571 (2026-08-25 00:37 MDT, David): MC Module Framework —
+// dashboard FAB calls the voice module via the JS-side runtime.
+// Button starts greyed out (data-module-voice-installed="false").
+import { isModuleInstalled, invokeModule } from "../modules-runtime.js";
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -120,6 +124,14 @@ export const dashboardPage = {
           <header class="dashboard-header">
             <h1 class="logo">MiracleClaw</h1>
             <div class="dashboard-header-actions">
+              <button
+                type="button"
+                class="icon-link"
+                id="mc-voice-fab"
+                title="Voice input (requires Voice for MiracleClaw module)"
+                aria-label="Voice input"
+                data-module-voice-installed="false"
+              >🎙</button>
               <button
                 type="button"
                 class="icon-link cmd-k-hint"
@@ -315,6 +327,58 @@ export const dashboardPage = {
       const cmdKBtn = document.getElementById("cmd-k-open");
       if (cmdKBtn) {
         cmdKBtn.addEventListener("click", () => openCmdKPalette());
+      }
+
+      // Lesson 571: dashboard voice FAB. Same handler shape as the
+      // terminal toolbar voice button — capture + transcribe + drop
+      // result into the dashboard's chat input (or alert if no chat
+      // surface is mounted). v0.1.0 uses alert() as the result sink;
+      // Lesson 572 will route the transcript to the active chat
+      // surface via the host bridge.
+      const voiceFab = document.getElementById("mc-voice-fab");
+      if (voiceFab) {
+        voiceFab.addEventListener("click", async () => {
+          if (!isModuleInstalled("voice")) {
+            alert("Voice module not installed. Install via Settings → Modules.");
+            return;
+          }
+          voiceFab.disabled = true;
+          const orig = voiceFab.textContent;
+          voiceFab.textContent = "🎙…";
+          try {
+            const result = await invokeModule("mc_voice_transcribe", {
+              seconds: 30,
+              vad_enabled: true,
+              silence_ms: 1500,
+            });
+            const text = (result && result.text) || "";
+            if (text.trim()) {
+              // Try to land the transcript in the dashboard's chat
+              // input if one exists. Falls back to alert + clipboard.
+              const chatInput =
+                document.querySelector("#dashboard-chat-input") ||
+                document.querySelector("textarea[name='message']");
+              if (chatInput) {
+                chatInput.value = text.trim();
+                chatInput.focus();
+              } else {
+                try {
+                  await writeText(text.trim());
+                } catch (_) {}
+                alert(`🎙 Copied to clipboard:\n\n${text.trim()}`);
+              }
+            } else if (result && result.warning) {
+              alert(`🎙 ${result.warning}`);
+            } else {
+              alert("🎙 (no speech detected)");
+            }
+          } catch (e) {
+            alert(`🎙 transcription failed: ${e}`);
+          } finally {
+            voiceFab.disabled = false;
+            voiceFab.textContent = orig;
+          }
+        });
       }
 
       // Lesson 564 (2026-08-24 17:30 MDT, David): the in-app plans card

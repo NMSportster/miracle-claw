@@ -1618,6 +1618,45 @@ code {
   padding: 4px 8px;
 }
 
+/* Lesson 571: MC Module Framework — voice button gating. Starts
+   greyed out (data-module-voice-installed="false") and lights up
+   when the voice module installs (the runtime flips the attr to
+   "true" on the mc:module-installed event).
+
+   Fullscreen variant: when the terminal is in fullscreen mode, the
+   same button gets the `.terminal-fullscreen-mic` selector via the
+   `[data-module-voice-installed="true"]` style below; we use CSS to
+   ensure the icon stays visible against the dark fullscreen bg. */
+.icon-link[data-module-voice-installed="false"] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.icon-link[data-module-voice-installed="false"]:hover {
+  /* Hover state suppressed while disabled — no transform, no color shift */
+  background: transparent;
+  border-color: var(--border);
+}
+.icon-link[data-module-voice-installed="true"] {
+  opacity: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+/* Selector .terminal-fullscreen-mic is reserved for the dashboard
+   FAB or any standalone mic that appears in fullscreen views. The
+   selector currently has no DOM target; the CSS rule guarantees
+   when it does get added, it'll pick up the same gating. */
+.terminal-fullscreen-mic[data-module-voice-installed="false"] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.terminal-fullscreen-mic[data-module-voice-installed="true"] {
+  opacity: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
 /* rc44: fullscreen-mode input row gets a slightly larger font and
    dark theme tint so it sits naturally against the #0b1020 terminal
    backdrop. Without this the input felt small and out of place. */

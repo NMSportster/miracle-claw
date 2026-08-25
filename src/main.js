@@ -16,6 +16,11 @@
 
 import "./styles.css";
 import { register, mount as mountPage } from "./page_registry.js";
+// Lesson 571 (2026-08-25 00:37 MDT, David): MC Module Framework —
+// voice module wires its UI hooks (terminal toolbar, fullscreen
+// overlay, dashboard FAB) to the live `mc:module-installed` event
+// here. See modules-runtime.js for the activation logic.
+import { initModuleRuntime, isModuleInstalled, invokeModule } from "./modules-runtime.js";
 import { loginPage } from "./pages/login.js";
 import { dashboardPage } from "./pages/dashboard.js";
 import { settingsPage } from "./pages/settings.js";
@@ -132,6 +137,10 @@ initPalette({
 // --- Boot -----------------------------------------------------------------
 
 async function boot() {
+  // Lesson 571: wire the module runtime first so mc:module-installed
+  // events arriving during boot() aren't dropped on the floor.
+  await initModuleRuntime();
+
   let report;
   try {
     report = await invoke("first_run_report");

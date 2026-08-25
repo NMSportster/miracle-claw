@@ -46,6 +46,12 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+// Lesson 571 (2026-08-25 00:37 MDT, David): MC Module Framework —
+// terminal toolbar's voice button calls `mc_voice_transcribe` via
+// the JS-side module runtime. The button starts greyed out
+// (data-module-voice-installed="false") and lights up when the
+// voice module installs.
+import { isModuleInstalled, invokeModule } from "../modules-runtime.js";
 // rc53.5 (feature/secrets-vault): mount the secrets page inside an
 // overlay when the toolbar button is clicked. Re-uses the existing
 // page factory — no duplicate UI code.
@@ -313,6 +319,12 @@ export const terminalPage = {
                   aria-label="Open secrets vault">
             🔑 Secrets
           </button>
+          <button type="button" id="terminal-voice-btn" class="icon-link"
+                  title="Voice input (requires Voice for MiracleClaw module)"
+                  aria-label="Voice input"
+                  data-module-voice-installed="false">
+            🎙 Voice
+          </button>
         </div>
 
         <div
@@ -520,6 +532,51 @@ export const terminalPage = {
       if (e.key === "Escape") closeSecretsOverlay();
     });
     document.getElementById("terminal-secrets-btn").addEventListener("click", openSecretsOverlay);
+
+    // Lesson 571: voice button click. The button stays greyed out
+    // until the voice module installs (CSS uses
+    // data-module-voice-installed to gate pointer-events). When
+    // clicked, capture audio + transcribe + copy the result to the
+    // terminal input row. v0.1.0 uses alert() as the result sink;
+    // Lesson 572 will replace with a toast or inline status.
+    const voiceBtn = document.getElementById("terminal-voice-btn");
+    voiceBtn.addEventListener("click", async () => {
+      if (!isModuleInstalled("voice")) {
+        alert("Voice module not installed. Install via Settings → Modules.");
+        return;
+      }
+      voiceBtn.disabled = true;
+      voiceBtn.textContent = "🎙 Listening…";
+      try {
+        const result = await invokeModule("mc_voice_transcribe", {
+          seconds: 30,
+          vad_enabled: true,
+          silence_ms: 1500,
+        });
+        const text = (result && result.text) || "";
+        if (text.trim()) {
+          // Drop transcript into the terminal input row so the user
+          // can edit + press Enter. This matches the existing attach
+          // workflow — capture, edit, send.
+          const input = document.getElementById("terminal-input");
+          if (input) {
+            input.value = text.trim();
+            input.focus();
+          } else {
+            alert(`🎙 "${text.trim()}"`);
+          }
+        } else if (result && result.warning) {
+          alert(`🎙 ${result.warning}`);
+        } else {
+          alert("🎙 (no speech detected)");
+        }
+      } catch (e) {
+        alert(`🎙 transcription failed: ${e}`);
+      } finally {
+        voiceBtn.disabled = false;
+        voiceBtn.textContent = "🎙 Voice";
+      }
+    });
 
     // rc53.7 (feature/attach-toolbar): mount the dashboard's attach
     // zone inside an overlay when the toolbar 📎 button is clicked.
