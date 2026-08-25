@@ -1666,6 +1666,43 @@ code {
   pointer-events: auto;
 }
 
+/* Lesson 574b: FireCrawl module — same gating pattern as voice.
+   Catalog hook locations declared in the FireCrawl installer.json
+   are #firecrawl-card, #firecrawl-toggle, #firecrawl-status-pill.
+   They start with `data-module-firecrawl-installed="false"` (set by
+   modules-runtime at boot) and flip to "true" on mc:module-installed.
+   CSS below enables the toggle + dims the card when uninstalled.
+   Currently no DOM targets exist for these selectors — the rules
+   are forward-declared so adding a future firecrawl-status widget
+   (e.g. on dashboard or settings page) picks up the gating for
+   free, no extra wiring required. */
+#firecrawl-card[data-module-firecrawl-installed="false"] {
+  opacity: 0.55;
+  filter: saturate(0.5);
+}
+#firecrawl-card[data-module-firecrawl-installed="true"] {
+  opacity: 1;
+  filter: none;
+}
+#firecrawl-toggle[data-module-firecrawl-installed="false"] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+#firecrawl-toggle[data-module-firecrawl-installed="true"] {
+  opacity: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+#firecrawl-status-pill[data-module-firecrawl-installed="false"] {
+  background: var(--surface-2, #2a2a2a);
+  color: var(--muted, #888);
+}
+#firecrawl-status-pill[data-module-firecrawl-installed="true"] {
+  background: var(--accent, #4a9eff);
+  color: white;
+}
+
 /* Lesson 572: Settings → Modules card grid (mirrors memory-file
    style for consistency). Card dims, action buttons, status pill. */
 .modules-list {
