@@ -70,6 +70,7 @@
     "allow-mc-secret-clear-all-ephemerals",
     "allow-mc-module-list",
     "allow-mc-module-install-local",
+    "allow-mc-module-install-url",
     "allow-mc-module-uninstall",
     "allow-mc-module-call"
   ]

@@ -528,6 +528,16 @@ description = "Denies the mc_module_uninstall command."
 commands.deny = ["mc_module_uninstall"]
 
 [[permission]]
+identifier = "allow-mc-module-install-url"
+description = "Enables the mc_module_install_url command without any pre-configured scope."
+commands.allow = ["mc_module_install_url"]
+
+[[permission]]
+identifier = "deny-mc-module-install-url"
+description = "Denies the mc_module_install_url command."
+commands.deny = ["mc_module_install_url"]
+
+[[permission]]
 identifier = "allow-mc-module-call"
 description = "Enables the mc_module_call command — umbrella permission for dispatching to any installed module's sidecar."
 commands.allow = ["mc_module_call"]
