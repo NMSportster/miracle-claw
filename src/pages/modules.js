@@ -65,10 +65,10 @@ const MODULE_CATALOG = [
     name: "Voice for MiracleClaw",
     description: "Capture your voice and drop clean transcripts directly into any chat surface. Works on dashboard, terminal, fullscreen, and the OpenClaw overlay.",
     publisher: "Miracle Claw",
-    version: "0.1.0",
+    version: "0.1.3",
     status: "available",
     downloadUrl:
-      "https://github.com/MilagroCloud/miracle-claw-voice/releases/download/v0.1.3/miracle-claw-voice.tar.gz",
+      "https://milagrocloud.com/downloads/miracle-claw-voice-0.1.3.tar.gz",
     hookLocation: "dashboard",
     tags: ["voice", "input"],
   },
@@ -85,7 +85,7 @@ const MODULE_CATALOG = [
     version: "0.1.0",
     status: "available",
     downloadUrl:
-      "https://github.com/MilagroCloud/miracle-claw-firecrawl/releases/download/v0.1.0/miracle-claw-firecrawl.tar.gz",
+      "https://milagrocloud.com/downloads/miracle-claw-firecrawl-0.1.0.tar.gz",
     hookLocation: "settings",
     tags: ["web", "data"],
   },
@@ -96,7 +96,10 @@ const MODULE_CATALOG = [
     description: "Find prospects online based on your criteria — industry, region, role, company size. Enrich their profiles and draft personalized outreach.",
     publisher: "Miracle Claw",
     version: "0.1.0",
-    status: "coming_soon",
+    status: "available",
+    downloadUrl:
+      "https://milagrocloud.com/downloads/miracle-claw-leadgen-0.1.0.tar.gz",
+    hookLocation: "settings",
     tags: ["business", "leads"],
   },
   {
