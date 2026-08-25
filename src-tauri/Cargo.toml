@@ -1,6 +1,6 @@
 [package]
 name = "miracle-claw"
-version = "1.1.0-rc53.14"
+version = "1.1.0-rc53.17"
 description = "Miracle Claw — ADeal Auto Repair's desktop chat client for MAIC models"
 authors = ["ADeal Auto Repair"]
 edition = "2021"
@@ -82,6 +82,15 @@ base64 = "0.22"
 # Used by auto_relogin to zero out decrypted secrets before drop, so they don't
 # linger in process memory.
 zeroize = { version = "1", features = ["zeroize_derive"] }
+
+# v1.1.0-rc53.17 (Lesson 574c): wire install_from_url for URL-distributed modules.
+#  - reqwest: streaming HTTP client (rustls only — no OpenSSL, works on Linux + Windows MSVC)
+#  - tar + flate2: portable tarball extraction (handles .tar.gz shipped from GitHub releases)
+#  - uuid: per-install tmp dir suffix so concurrent installs never collide
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tar = "0.4"
+flate2 = "1"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 regex = "1.13.1"

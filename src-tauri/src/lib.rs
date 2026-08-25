@@ -6447,6 +6447,7 @@ pub fn run() {
             // local search) follow the same pattern.
             mc_module_list,
             mc_module_install_local,
+            mc_module_install_url,
             mc_module_uninstall,
             mc_module_call
         ])
@@ -6553,6 +6554,82 @@ fn mc_module_install_local(
             Ok(result)
         }
         Err(e) => Err(format!("install failed: {e}")),
+    }
+}
+
+// ---- mc_module_install_url -------------------------------------------------
+
+/// v1.1.0-rc53.17 (Lesson 574c): install a module from a remote URL
+/// (e.g. GitHub releases tarball). Mirrors `mc_module_install_local`
+/// but fetches the archive first via `reqwest` + `rustls` (no native
+/// OpenSSL, so this works on Linux AND Windows MSVC with the same
+/// build).
+///
+/// Flow:
+///  1. Fetch the `.tar.gz` from `url`
+///  2. Extract into a tmp dir under `modules_root/<id>.tmp-<uuid>/`
+///  3. Verify SHA256SUMS (if present in the archive)
+///  4. Atomic rename → `modules_root/<id>/`
+///  5. Register in the runtime registry
+///  6. Emit `mc:module-installed` so UI hooks flip dormant → active
+///
+/// Emits the same event as `mc_module_install_local` so existing
+/// listeners on the JS side pick it up without changes.
+#[tauri::command]
+fn mc_module_install_url(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: String,
+    url: String,
+) -> Result<crate::modules::installer::InstallResult, String> {
+    let modules_root = crate::modules::modules_root(
+        &app.path()
+            .app_data_dir()
+            .map_err(|e| format!("could not resolve app_data_dir: {e}"))?,
+    );
+    let registry = state.modules.lock().unwrap();
+
+    let source = crate::modules::installer::InstallSource {
+        id: id.clone(),
+        download_url: url.clone(),
+        sums_url: None,
+    };
+
+    // The installer body is async (for the reqwest call) but the
+    // Tauri command handler is sync — we block on it via the
+    // tokio runtime that tauri maintains. If that ever changes and
+    // we want the UI to stay responsive during large downloads,
+    // this is the spot to switch to a spawn.
+    let install_fut = crate::modules::installer::install_from_url(
+        &modules_root,
+        &registry,
+        source,
+    );
+    let result = tauri::async_runtime::block_on(install_fut);
+
+    match result {
+        Ok(result) => {
+            // Same UI hook activation event as install_local — the
+            // JS side has a single listener for both flows.
+            let _ = app.emit(
+                "mc:module-installed",
+                crate::modules::ui_hooks::ModuleInstalledEvent {
+                    id: result.manifest.id.clone(),
+                    name: result.manifest.name.clone(),
+                    version: result.manifest.version.clone(),
+                    hooks: result.manifest.ui_hooks.clone(),
+                },
+            );
+            eprintln!(
+                "[miracle-claw] module installed from URL: {} v{} ({}) ({} hooks activated)",
+                result.manifest.id,
+                result.manifest.version,
+                url,
+                result.manifest.ui_hooks.len()
+            );
+            Ok(result)
+        }
+        Err(e) => Err(format!("install from URL failed: {e}")),
     }
 }
 

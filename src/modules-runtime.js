@@ -129,6 +129,65 @@ export async function invokeModule(command, params = {}) {
 }
 
 /**
+ * Install a module from a remote URL (e.g. a GitHub release tarball).
+ *
+ * Wraps the `mc_module_install_url` Tauri command, which
+ * - downloads the .tar.gz via reqwest (rustls, no native OpenSSL)
+ * - extracts to `<modules_root>/<id>.tmp-<uuid>/`
+ * - verifies SHA256SUMS if present
+ * - atomically renames to `<modules_root>/<id>/`
+ * - registers in the runtime registry
+ * - emits `mc:module-installed` (handled by `initModuleRuntime`)
+ *
+ * The Tauri command returns an `InstallResult` JSON object; on success
+ * we surface the installed manifest's id/version so the caller can
+ * log or update UI.
+ *
+ * @param {string} id   module id (must match the archive's installer.json id)
+ * @param {string} url  full https:// URL to the .tar.gz archive
+ * @returns {Promise<{id: string, version: string, installDir: string, verifiedFiles: string[]}>}
+ * @throws  on network failure, HTTP non-2xx, bad tarball, checksum
+ *          mismatch, or manifest id mismatch
+ *
+ * v1.1.0-rc53.17 (Lesson 574c).
+ */
+export async function installModuleFromUrl(id, url) {
+  if (!id || typeof id !== "string") {
+    throw new Error("installModuleFromUrl: `id` is required");
+  }
+  if (!url || typeof url !== "string") {
+    throw new Error("installModuleFromUrl: `url` is required");
+  }
+  if (!/^https?:\/\//i.test(url)) {
+    throw new Error(
+      `installModuleFromUrl: url must be http(s), got "${url.slice(0, 64)}…"`
+    );
+  }
+  const t0 = performance.now();
+  try {
+    const result = await invoke("mc_module_install_url", { id, url });
+    const elapsed = (performance.now() - t0).toFixed(0);
+    console.log(
+      `[modules] install ${id} from URL ok in ${elapsed}ms (${result?.verifiedFiles?.length || 0} files verified)`,
+      result
+    );
+    return {
+      id: result?.manifest?.id || id,
+      version: result?.manifest?.version || "",
+      installDir: result?.installDir || "",
+      verifiedFiles: result?.verifiedFiles || [],
+    };
+  } catch (e) {
+    const elapsed = (performance.now() - t0).toFixed(0);
+    console.error(
+      `[modules] install ${id} from URL failed in ${elapsed}ms:`,
+      e
+    );
+    throw e;
+  }
+}
+
+/**
  * Flip `data-module-<id>-installed` attrs on every element matching
  * the manifest's `uiHooks` selectors. Live elements get `true`,
  * dormant ones get `false`.
