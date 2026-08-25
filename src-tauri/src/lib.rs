@@ -7587,7 +7587,10 @@ mod tests {
         // catalog state (defends against the rc18→rc19/20 upgrade gap
         // fixed in Lesson 520).
         let primary = cfg.pointer("/agents/defaults/model/primary").unwrap();
-        assert_eq!(primary, "maic/milagro-dev");
+        // Lesson 566: Free default switched to milagro-oc-deepseek (2s cloud).
+        // Was "maic/milagro-dev" which was claimed local 14B but actually routed
+        // to ollama-cloud minimax-m3:cloud with ~13s response latency.
+        assert_eq!(primary, "maic/milagro-oc-deepseek");
         // Free must NOT have fallbacks.
         assert!(cfg.pointer("/agents/defaults/model/fallbacks").is_none(),
                 "Free must not have a fallbacks array");
@@ -7721,9 +7724,10 @@ mod tests {
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         // Lesson 521: provider-prefixed.
+        // Lesson 566: Free default is now "milagro-oc-deepseek", was "milagro-dev".
         assert_eq!(
             cfg.pointer("/agents/defaults/model/primary").unwrap(),
-            "maic/milagro-dev"
+            "maic/milagro-oc-deepseek"
         );
         assert!(
             cfg.pointer("/agents/defaults/model/fallbacks").is_none(),

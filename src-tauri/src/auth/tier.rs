@@ -245,14 +245,24 @@ pub fn publish_tier_env(tier: Tier) {
 
 /// The default model id for a given tier (primary in `agents.defaults.model.primary`).
 ///
-/// Free: `milagro-dev` (14B local, fastest, no cloud dependency).
+/// Free: `milagro-oc-deepseek` (cloud DeepSeek — 2.09s avg per Lesson 566).
 /// Paid: `milagro-oc-kimi` (cloud cascade — best cost/quality for code+chat).
 ///
 /// This is also what `mc_get_default_model` returns to the dashboard
 /// so the chat panel's pre-selected model matches the tier routing.
+///
+/// Lesson 566 (2026-08-24 21:50 MDT): was `milagro-dev` but moved to
+/// `milagro-oc-deepseek` because (a) `milagro-dev` actually routes to
+/// `openai/minimax-m3:cloud` on Hetzner-prod (the "local 14B" config
+/// is documentation-only, the deployment is cloud-Ollama), (b) deepseek
+/// returned 199-token clean-stop responses in 2.05s during the 50K
+/// Free tier benchmark; (c) Free users can pick t1/t2/t3 explicitly
+/// from the picker but the t-series is currently broken under any
+/// request that triggers tool-call JSON parsing in the litellm cascade.
+/// Default to a known-good path; show t-series as opt-in.
 pub fn tier_default_model_id(tier: Tier) -> &'static str {
     match tier {
-        Tier::Free => "milagro-dev",
+        Tier::Free => "milagro-oc-deepseek",
         // Pro / ProPlus / Team / Enterprise all use the cloud Kimi default.
         // MAIC's plan_code → quota gate still applies server-side, so a
         // downgraded user on this default just gets a clean error rather
@@ -276,8 +286,12 @@ pub fn tier_default_model_id(tier: Tier) -> &'static str {
 ///      but never returns a network error.
 ///
 /// Returns an empty slice for Free (Free users don't get auto-fallback —
-/// the local 14B is already their only option, and adding fallbacks to
-/// cloud models would silently burn quota they're not entitled to).
+/// the cloud path is already their only option, and adding fallbacks to
+/// paid-tier models would silently burn quota they're not entitled to).
+/// Lesson 566 (2026-08-24): Free's primary was `milagro-dev` (claimed local
+/// 14B but actually routed to ollama-cloud `minimax-m3:cloud`); switched to
+/// `milagro-oc-deepseek` because cloud-deepseek returned 199 tokens in 2.05s
+/// vs milagro-dev's 600 tokens in 12.48s (benchmark at 21:30 MDT).
 pub fn tier_default_fallbacks(tier: Tier) -> &'static [&'static str] {
     match tier {
         Tier::Free => &[],
@@ -351,10 +365,13 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn free_default_is_local_14b() {
-        // Free users must default to the local model so the chat works
-        // even when their MAIC quota is exhausted / not provisioned.
-        assert_eq!(tier_default_model_id(Tier::Free), "milagro-dev");
+    fn free_default_is_cloud_deepseek() {
+        // Lesson 566 (2026-08-24 21:50 MDT): Free default switched to
+        // milagro-oc-deepseek (2s cloud) from milagro-dev (claimed local 14B
+        // but actually routed to ollama-cloud in 12.5s). Free users must get
+        // a known-fast path by default; the picker still lets them opt into
+        // t1/t2/t3 (which are currently unstable under tool-call JSON parse).
+        assert_eq!(tier_default_model_id(Tier::Free), "milagro-oc-deepseek");
         // Free has no fallbacks (no cloud access by entitlement).
         assert!(tier_default_fallbacks(Tier::Free).is_empty(),
                 "Free must not have cloud fallbacks (would silently burn quota)");
