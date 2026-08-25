@@ -2093,6 +2093,7 @@ dependencies = [
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-shell",
  "tempfile",
+ "thiserror 1.0.69",
  "ureq",
  "url",
  "urlpattern 0.6.0",

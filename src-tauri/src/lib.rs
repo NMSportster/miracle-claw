@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tauri::{Manager, RunEvent};
+use tauri::{Emitter, Manager, RunEvent};
 use tauri_plugin_shell::process::CommandEvent;
 
 mod launcher_info;
@@ -66,6 +66,11 @@ pub mod auth;
 // v1.0.7: 7 local tool schemas (paid tier only). Marked `pub` so the
 // `miracle-claw-tools` binary can `use` them via `crate::tools::...`.
 pub mod tools;
+
+// v1.1.0-rc53.15: Optional, downloadable module framework (Lesson 570).
+// Voice is the first module — future modules (OCR, TTS, local search)
+// follow the same pattern.
+pub mod modules;
 
 // ----------------------------------------------------------------------------
 // Constants
@@ -131,6 +136,15 @@ struct AppState {
     /// `mc_open_overlay`, cleared on `mc_close_overlay` so a second
     /// close doesn't re-navigate to a stale URL.
     overlay_return_url: Mutex<Option<String>>,
+    /// v1.1.0-rc53.15 (Lesson 570): runtime module registry.
+    /// Populated at startup by scanning `<app_data>/modules/*/installer.json`
+    /// and updated when modules are installed/uninstalled at runtime.
+    ///
+    /// `Registry` is itself `Arc<RwLock<HashMap>>` internally, so we
+    /// could even share it without a Mutex — but wrapping in Mutex
+    /// here for consistency with sibling fields and to make it easy
+    /// to swap the registry out atomically in the future.
+    modules: Mutex<crate::modules::registry::Registry>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -2834,6 +2848,31 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         // setup() continues so the user at least sees a launcher process.
     } else {
         log_to_file("setup(): main window created (rc13 Lesson 491)");
+    }
+
+    // v1.1.0-rc53.15 (Lesson 570): scan <app_data>/modules/ and populate
+    // the runtime registry. This MUST happen AFTER create_main_window so
+    // we can emit module-installed events to the frontend (for any
+    // modules that were already on disk before this run). For modules
+    // installed at runtime, the emit happens in mc_module_install_local.
+    let modules_root = match app_handle.path().app_data_dir() {
+        Ok(p) => crate::modules::modules_root(&p),
+        Err(e) => {
+            eprintln!("[miracle-claw] cannot resolve app_data_dir: {e} — modules disabled");
+            log_to_file(&format!(
+                "setup(): cannot resolve app_data_dir ({e}) — modules disabled"
+            ));
+            return Ok(());
+        }
+    };
+    let discovered = crate::modules::registry::Registry::discover(&modules_root);
+    eprintln!(
+        "[miracle-claw] modules: discovered {} from {}",
+        discovered.len(),
+        modules_root.display()
+    );
+    if let Some(state) = app_handle.try_state::<AppState>() {
+        *state.modules.lock().unwrap() = discovered;
     }
 
     Ok(())
@@ -6402,7 +6441,14 @@ pub fn run() {
             secrets_friendly::mc_secret_set_friendly,
             secrets_friendly::mc_secret_list_ephemerals,
             secrets_friendly::mc_secret_clear_session_ephemerals,
-            secrets_friendly::mc_secret_clear_all_ephemerals
+            secrets_friendly::mc_secret_clear_all_ephemerals,
+            // v1.1.0-rc53.15 (Lesson 570): MC Module Framework.
+            // Voice is the first module; future modules (OCR, TTS,
+            // local search) follow the same pattern.
+            mc_module_list,
+            mc_module_install_local,
+            mc_module_uninstall,
+            mc_module_call
         ])
         .setup(|app| {
             setup(app)?;
@@ -6422,6 +6468,161 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+// ----------------------------------------------------------------------------
+// Module Framework Tauri commands (Lesson 570, rc53.15)
+// ----------------------------------------------------------------------------
+//
+// These are the public surface of the module framework. They wire up:
+// - mc_module_list: frontend calls this to populate the Module Manager UI
+// - mc_module_install_local: dev-mode install from a local dir (no download)
+// - mc_module_uninstall: removes a module's files + unregisters it
+// - mc_module_call: generic dispatcher — routes to a module's sidecar
+//                   based on the Tauri command name. This is the only
+//                   way module commands get into MC. The JS side does
+//                   `invoke('mc_module_call', { command: 'mc_voice_transcribe', params: {...} })`
+//                   and the dispatcher resolves it.
+//
+// Per Lesson 219, every command needs:
+//   1. A stub here
+//   2. An entry in app_commands.toml (`identifier = "allow-mc-module-..."`)
+//   3. An entry in default.toml
+//   4. An entry in main.json (if Tauri needs it for capability manifest)
+//
+// These four entries are added below after the function bodies.
+
+// ---- mc_module_list --------------------------------------------------------
+
+/// Returns a JSON array describing every installed module. Called by the
+/// Module Manager UI on the Settings page (and on startup, to render
+/// UI hooks for already-installed modules).
+#[tauri::command]
+fn mc_module_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::modules::registry::ModuleInfo>, String> {
+    Ok(state.modules.lock().unwrap().list())
+}
+
+// ---- mc_module_install_local -----------------------------------------------
+
+/// Dev-mode install from a local directory. Does NOT download anything.
+/// Used by developers (and by the GitHub-releases flow once that's wired
+/// up in Lesson 572) to install a module without going through the
+/// downloader.
+///
+/// Emits `mc:module-installed` to the frontend so UI hooks flip from
+/// dormant → active without a page reload.
+#[tauri::command]
+fn mc_module_install_local(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+) -> Result<crate::modules::installer::InstallResult, String> {
+    let source_dir = std::path::PathBuf::from(&source_path);
+    let modules_root = crate::modules::modules_root(
+        &app.path()
+            .app_data_dir()
+            .map_err(|e| format!("could not resolve app_data_dir: {e}"))?,
+    );
+    let registry = state.modules.lock().unwrap();
+
+    match crate::modules::installer::install_from_local_dir(
+        &modules_root,
+        &registry,
+        &source_dir,
+    ) {
+        Ok(result) => {
+            // Emit UI hook activation event so dormant buttons light up
+            // without a page reload. Same pattern as Lesson 491.
+            let _ = app.emit(
+                "mc:module-installed",
+                crate::modules::ui_hooks::ModuleInstalledEvent {
+                    id: result.manifest.id.clone(),
+                    name: result.manifest.name.clone(),
+                    version: result.manifest.version.clone(),
+                    hooks: result.manifest.ui_hooks.clone(),
+                },
+            );
+            eprintln!(
+                "[miracle-claw] module installed: {} v{} ({} hooks activated)",
+                result.manifest.id,
+                result.manifest.version,
+                result.manifest.ui_hooks.len()
+            );
+            Ok(result)
+        }
+        Err(e) => Err(format!("install failed: {e}")),
+    }
+}
+
+// ---- mc_module_uninstall ---------------------------------------------------
+
+/// Remove a module by id. Clears its install dir + unregisters from the
+/// runtime registry. Emits `mc:module-uninstalled` so dormant UI hooks
+/// can flip back to disabled.
+#[tauri::command]
+fn mc_module_uninstall(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    // Look up the module's UI hooks BEFORE we remove it, so we can
+    // emit them in the uninstalled event.
+    let hooks: Vec<String> = state
+        .modules
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|m| m.manifest.ui_hooks.clone())
+        .unwrap_or_default();
+
+    let modules_root = crate::modules::modules_root(
+        &app.path()
+            .app_data_dir()
+            .map_err(|e| format!("could not resolve app_data_dir: {e}"))?,
+    );
+    let registry = state.modules.lock().unwrap();
+
+    match crate::modules::installer::uninstall(&modules_root, &registry, &id) {
+        Ok(()) => {
+            let _ = app.emit(
+                "mc:module-uninstalled",
+                crate::modules::ui_hooks::ModuleUninstalledEvent {
+                    id: id.clone(),
+                    hooks: hooks.clone(),
+                },
+            );
+            eprintln!(
+                "[miracle-claw] module uninstalled: {} ({} hooks dormant)",
+                id,
+                hooks.len()
+            );
+            Ok(())
+        }
+        Err(e) => Err(format!("uninstall failed: {e}")),
+    }
+}
+
+// ---- mc_module_call --------------------------------------------------------
+
+/// Generic dispatcher. The only Tauri command module commands actually
+/// use. Resolves `command` (e.g. `"mc_voice_transcribe"`) to its module's
+/// sidecar binary + action name and runs it with `params` as the JSON
+/// argument.
+///
+/// This indirection keeps the ACL surface tiny (one allow-list per
+/// command instead of N) and means adding a new module command requires
+/// ZERO changes to lib.rs — just an entry in the module's installer.json.
+#[tauri::command]
+fn mc_module_call(
+    state: tauri::State<'_, AppState>,
+    command: String,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let registry = state.modules.lock().unwrap();
+    crate::modules::dispatcher::dispatch(&registry, &command, params)
+        .map_err(|e| format!("{e}"))
 }
 
 // ----------------------------------------------------------------------------

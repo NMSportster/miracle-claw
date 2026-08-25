@@ -67,6 +67,10 @@
     "allow-mc-secret-set-friendly",
     "allow-mc-secret-list-ephemerals",
     "allow-mc-secret-clear-session-ephemerals",
-    "allow-mc-secret-clear-all-ephemerals"
+    "allow-mc-secret-clear-all-ephemerals",
+    "allow-mc-module-list",
+    "allow-mc-module-install-local",
+    "allow-mc-module-uninstall",
+    "allow-mc-module-call"
   ]
 }

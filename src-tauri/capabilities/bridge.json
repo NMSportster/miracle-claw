@@ -11,6 +11,10 @@
     "core:default",
     "allow-back-to-dashboard",
     "allow-mc-open-overlay",
-    "allow-mc-close-overlay"
+    "allow-mc-close-overlay",
+    "allow-mc-module-list",
+    "allow-mc-module-install-local",
+    "allow-mc-module-uninstall",
+    "allow-mc-module-call"
   ]
 }

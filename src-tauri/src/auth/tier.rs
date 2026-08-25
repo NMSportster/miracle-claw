@@ -322,6 +322,51 @@ pub fn tier_default_fallbacks(tier: Tier) -> &'static [&'static str] {
     }
 }
 
+/// Check whether the running MC base binary satisfies a module's
+/// `minMcVersion` constraint.
+///
+/// MC versions look like `"1.1.0-rc53.15"`. For v1 we compare the
+/// release-trailer integer (the `15` in `rc53.15`) — same scheme
+/// miracle-claw-tauri-rebuild uses. If parsing fails on either side,
+/// we FAIL OPEN (return Ok) so a module built against a future version
+/// string doesn't block installs of old MC. We log a warning instead.
+///
+/// Future: when MC goes 1.0.0 → 2.0.0, switch to semver crate.
+pub fn assert_version_compatible_with_module(
+    manifest: &crate::modules::manifest::ModuleManifest,
+) -> Result<(), String> {
+    let current = env!("CARGO_PKG_VERSION");
+    let required = &manifest.min_mc_version;
+
+    let current_n = parse_rc_trailer(current);
+    let required_n = parse_rc_trailer(required);
+
+    match (current_n, required_n) {
+        (Some(c), Some(r)) if c >= r => Ok(()),
+        (Some(c), Some(r)) => Err(format!(
+            "MC base is {} (rc{}), module requires rc{} or higher",
+            current, c, r
+        )),
+        _ => {
+            eprintln!(
+                "[modules] version check: could not parse current={} required={} — allowing install",
+                current, required
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Extract the integer trailer from a version like `"1.1.0-rc53.15"`.
+/// Returns `Some(15)` for that string. Returns None for any other shape.
+fn parse_rc_trailer(v: &str) -> Option<u64> {
+    // Format: <major>.<minor>.<patch>-rc<n>.<m>
+    // We want the trailing `.m` integer.
+    let after_rc = v.split("-rc").nth(1)?;
+    let after_dot = after_rc.split('.').nth(1)?;
+    after_dot.parse::<u64>().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

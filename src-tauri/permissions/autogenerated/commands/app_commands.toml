@@ -480,3 +480,59 @@ commands.allow = ["mc_secret_clear_all_ephemerals"]
 identifier = "deny-mc-secret-clear-all-ephemerals"
 description = "Denies the mc_secret_clear_all_ephemerals command."
 commands.deny = ["mc_secret_clear_all_ephemerals"]
+
+# ----------------------------------------------------------------------------
+# v1.1.0-rc53.15 (Lesson 570): MC Module Framework commands.
+# ----------------------------------------------------------------------------
+# These 4 commands are the public surface of the module framework. Voice
+# is the first module to use them; OCR/TTS/local-search will follow.
+#
+# Important: `allow-mc-module-call` is the umbrella permission that lets
+# the JS side dispatch to ANY module's commands via mc_module_call. Per-
+# module command ACLs aren't needed because:
+#   1. mc_module_call only routes to commands declared in a module's
+#      installer.json — the registry rejects unknown commands
+#   2. Modules can only execute sidecars that are already on disk under
+#      <app_data>/modules/<id>/bin/ — they can't inject arbitrary binaries
+#   3. The dispatcher returns a friendly error if a module isn't installed
+# ----------------------------------------------------------------------------
+
+[[permission]]
+identifier = "allow-mc-module-list"
+description = "Enables the mc_module_list command without any pre-configured scope."
+commands.allow = ["mc_module_list"]
+
+[[permission]]
+identifier = "deny-mc-module-list"
+description = "Denies the mc_module_list command."
+commands.deny = ["mc_module_list"]
+
+[[permission]]
+identifier = "allow-mc-module-install-local"
+description = "Enables the mc_module_install_local command without any pre-configured scope."
+commands.allow = ["mc_module_install_local"]
+
+[[permission]]
+identifier = "deny-mc-module-install-local"
+description = "Denies the mc_module_install_local command."
+commands.deny = ["mc_module_install_local"]
+
+[[permission]]
+identifier = "allow-mc-module-uninstall"
+description = "Enables the mc_module_uninstall command without any pre-configured scope."
+commands.allow = ["mc_module_uninstall"]
+
+[[permission]]
+identifier = "deny-mc-module-uninstall"
+description = "Denies the mc_module_uninstall command."
+commands.deny = ["mc_module_uninstall"]
+
+[[permission]]
+identifier = "allow-mc-module-call"
+description = "Enables the mc_module_call command — umbrella permission for dispatching to any installed module's sidecar."
+commands.allow = ["mc_module_call"]
+
+[[permission]]
+identifier = "deny-mc-module-call"
+description = "Denies the mc_module_call command."
+commands.deny = ["mc_module_call"]

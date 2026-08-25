@@ -66,5 +66,13 @@ permissions = [
   "allow-mc-secret-set-friendly",
   "allow-mc-secret-list-ephemerals",
   "allow-mc-secret-clear-session-ephemerals",
-  "allow-mc-secret-clear-all-ephemerals"
+  "allow-mc-secret-clear-all-ephemerals",
+  # v1.1.0-rc53.15 (Lesson 570): MC Module Framework. Voice is the
+  # first module; future modules (OCR, TTS, local search) follow the
+  # same pattern. mc-module-call is the umbrella permission that lets
+  # the JS side dispatch to any installed module's sidecar.
+  "allow-mc-module-list",
+  "allow-mc-module-install-local",
+  "allow-mc-module-uninstall",
+  "allow-mc-module-call"
 ]
