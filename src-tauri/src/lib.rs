@@ -558,13 +558,21 @@ fn merge_known_model_ids_into_provider(
         "milagro-oc-deepseek", "milagro-oc-kimi",
         "chat-glm", "chat-deepseek", "chat-qwen",
     ];
-    // Lesson 527: Free tier gets only the two smallest distilled
-    // m1 models. These are the chat-only fast tier — ~7B ternary,
-    // fast response, low TPM cost. Picking anything else would
-    // blow through the 50K TPM ceiling in a few messages.
+    // Lesson 527: Free tier gets only the distilled m1 models.
+    // These are the chat-only fast tier — 7B ternary, fast response,
+    // low TPM cost. Picking anything else would blow through the
+    // 50K TPM ceiling in a few messages.
+    // Lesson 565 (2026-08-24 18:41 MDT, David): add t3 to free tier.
+    // "m3 should also be on the free user tier — doesn't cost us
+    // anything and gives a better experience." t3 is the heaviest
+    // local 14B-distilled model (LORA on Qwen2.5-14B). It's MORE
+    // reliable than t1/t2 so it actually REDUCES the chance of
+    // falling back to cloud `minimax-m3:cloud` (the only real
+    // cost path). Net cost effect: negligible to slightly negative.
     const FREE_MODEL_IDS: &[&str] = &[
         "milagro-m1-t1",
         "milagro-m1-t2",
+        "milagro-m1-t3",
     ];
     let allowed: &[&str] = match tier {
         crate::auth::tier::Tier::Free => FREE_MODEL_IDS,
@@ -1063,10 +1071,15 @@ fn ensure_maic_provider_config_for_tier(
     // the full 17-model catalog. The `seeds` array drives the
     // first-install write path (when models list is empty); for
     // upgrades the `else` branch below does the same tier gating.
+    // Lesson 565 (2026-08-24 18:41 MDT, David): add m1-t3 to Free
+    // seeds (not just the upgrade merge path) so first-install Free
+    // users also get t3. Cost-neutral: local 14B-distilled, fewer
+    // cloud fallbacks.
     let seeds: &[(&str, &str)] = match tier {
         crate::auth::tier::Tier::Free => &[
             ("milagro-m1-t1",  "MAIC m1-t1 — 7B LoRA-distilled (fast)"),
             ("milagro-m1-t2",  "MAIC m1-t2 — 7B LoRA-distilled (mid)"),
+            ("milagro-m1-t3",  "MAIC m1-t3 — 14B LoRA-distilled (top of t-series)"),
         ],
         _ => &[
             ("milagro-dev",            "MAIC default (miracle-claw) — 14B local generalist"),
@@ -1074,7 +1087,7 @@ fn ensure_maic_provider_config_for_tier(
             ("milagro-m1",             "MAIC m1 — base"),
             ("milagro-m1-t1",          "MAIC m1-t1 — 7B LoRA-distilled (fast)"),
             ("milagro-m1-t2",          "MAIC m1-t2 — 7B LoRA-distilled (mid)"),
-            ("milagro-m1-t3",          "MAIC m1-t3 — 7B LoRA-distilled (top of t-series)"),
+            ("milagro-m1-t3",          "MAIC m1-t3 — 14B LoRA-distilled (top of t-series)"),
             ("milagro-chat",           "MAIC chat — small general baseline"),
             ("milagro-coder",          "MAIC coder — small-mid code baseline"),
             ("milagro-stock",          "MAIC stock — stock-specific small"),
@@ -1114,6 +1127,9 @@ fn ensure_maic_provider_config_for_tier(
         //
         // Lesson 527 (NEW 2026-08-21): tier-gated. Free gets only
         // m1-t1 + m1-t2 (chat-only fast tier). Paid gets all 17.
+        // Lesson 565 (2026-08-24 18:41 MDT, David): add m1-t3 to Free
+        // — heaviest local 14B-distilled, gives better experience,
+        // cost-neutral (local, fewer cloud fallbacks).
         // Match the gating in merge_known_model_ids_into_provider
         // (the existing-entry early-return path) so both code paths
         // produce the same model list for the same tier.
@@ -1121,6 +1137,7 @@ fn ensure_maic_provider_config_for_tier(
             crate::auth::tier::Tier::Free => &[
                 "milagro-m1-t1",
                 "milagro-m1-t2",
+                "milagro-m1-t3",
             ],
             _ => &[
                 "milagro-dev", "milagro-dev-coder", "milagro-m1",
@@ -7099,11 +7116,14 @@ mod tests {
     }
 
     #[test]
-    fn free_tier_sees_only_two_models() {
-        // Lesson 527: Free tier sees only m1-t1 + m1-t2 in the
-        // model picker. These are 7B distilled ternary models —
-        // chat-only fast tier. Picking anything else would blow
-        // through the 50K TPM ceiling in a few messages.
+    fn free_tier_sees_three_t_models() {
+        // Lesson 527: Free tier gets the t1 + t2 distilled m1 models.
+        // 2026-08-24 (Lesson 565, David): added t3 to free tier so
+        // free users get the heaviest local 14B-distilled model as
+        // their best option. Cost effect is neutral (t3 is local;
+        // picking it REDUCES cloud fallback risk vs. t1/t2).
+        // Free tier excludes the 14B `milagro-dev` (general-purpose)
+        // and the coder/dev-coder/oc-* cloud models.
         let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "any-key");
@@ -7112,13 +7132,14 @@ mod tests {
         let ids = read_model_ids();
         assert_eq!(
             ids.len(),
-            2,
-            "Free tier should see exactly 2 models (m1-t1, m1-t2); got {ids:?}"
+            3,
+            "Free tier should see exactly 3 models (m1-t1, m1-t2, m1-t3); got {ids:?}"
         );
         assert!(ids.contains(&"milagro-m1-t1".to_string()));
         assert!(ids.contains(&"milagro-m1-t2".to_string()));
-        // No 14B models allowed for Free.
-        for forbidden in ["milagro-dev", "milagro-dev-coder", "milagro-m1", "milagro-m1-t3"] {
+        assert!(ids.contains(&"milagro-m1-t3".to_string()));
+        // General-purpose 14B + coder + cloud models still excluded.
+        for forbidden in ["milagro-dev", "milagro-dev-coder", "milagro-m1"] {
             assert!(
                 !ids.contains(&forbidden.to_string()),
                 "Free tier must NOT see {forbidden}"
@@ -7159,8 +7180,8 @@ mod tests {
     fn downgrade_from_pro_to_free_removes_paid_models() {
         // Lesson 527: downgrade path. Pro user downgrades to Free
         // → their on-disk config must be re-stamped to only allow
-        // m1-t1 + m1-t2. Without this, the user would still see
-        // 14B models in the picker and could burn TPM.
+        // m1-t1 + m1-t2 + m1-t3 (the three local distilled m1
+        // models — Lesson 565 added t3 to Free tier 2026-08-24).
         let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "any-key");
@@ -7174,26 +7195,27 @@ mod tests {
         let ids = read_model_ids();
         assert_eq!(
             ids.len(),
-            2,
-            "After Pro→Free downgrade, only 2 models should remain; got {ids:?}"
+            3,
+            "After Pro→Free downgrade, only 3 models should remain (t1, t2, t3); got {ids:?}"
         );
         assert!(ids.contains(&"milagro-m1-t1".to_string()));
         assert!(ids.contains(&"milagro-m1-t2".to_string()));
+        assert!(ids.contains(&"milagro-m1-t3".to_string()));
     }
 
     #[test]
     fn upgrade_from_free_to_pro_adds_paid_models() {
         // Lesson 527: upgrade path. Free user upgrades to Pro →
         // their on-disk config must be re-stamped to include all
-        // 17 models. Without this, the user would see only 2
-        // models even after paying.
+        // 17 models. Without this, the user would see only 3
+        // models (Free: t1+t2+t3 since Lesson 565) even after paying.
         let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "any-key");
 
-        // First call as Free: writes 2 models.
+        // First call as Free: writes 3 models (t1, t2, t3 — Lesson 565).
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free).expect("ok");
-        assert_eq!(read_model_ids().len(), 2);
+        assert_eq!(read_model_ids().len(), 3);
 
         // Upgrade to Pro.
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro).expect("ok");
@@ -7771,14 +7793,13 @@ mod tests {
             .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
             .collect();
         // Lesson 527: ensure_maic_provider_config() defaults to Free
-        // tier (no context). Free gets only m1-t1 + m1-t2 — 2 models,
-        // not 17. The Lesson 520 test ran with the old assumption
-        // (default = all 17). New default for this code path is Free.
-        for id in ["milagro-m1-t1", "milagro-m1-t2"] {
+        // tier (no context). Free gets m1-t1 + m1-t2 + m1-t3
+        // (Lesson 565 added t3 for better free experience, 2026-08-24).
+        for id in ["milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3"] {
             assert!(ids.contains(id), "Free tier must include model {}", id);
         }
-        // Total = 2 unique ids for Free tier.
-        assert_eq!(models.len(), 2, "Free tier should see exactly 2 models (m1-t1, m1-t2)");
+        // Total = 3 unique ids for Free tier.
+        assert_eq!(models.len(), 3, "Free tier should see exactly 3 models (t1, t2, t3 per Lesson 565)");
     }
 
     #[test]
