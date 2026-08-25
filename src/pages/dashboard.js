@@ -60,6 +60,15 @@ function formatNumber(n) {
 // page itself can hand a user straight to Stripe when they click
 // "Choose <Plan>" there. We just stopped preloading that into the
 // dashboard.
+// Lesson 574 (2026-08-25 08:19 MDT, David): put Add-On Modules to the
+// right of Plans & Pricing on the same line, not stacked above. Cleaner.
+function renderLinkButtons() {
+  return `
+    <div class="dashboard-link-row">
+      ${renderPlansButton()}
+      ${renderModulesButton()}
+    </div>`;
+}
 function renderPlansButton() {
   return `
     <button type="button"
@@ -179,8 +188,7 @@ export const dashboardPage = {
               : ""}
           </div>
 
-          ${renderPlansButton()}
-          ${renderModulesButton()}
+          ${renderLinkButtons()}
 
           <div class="tiles">
             <button class="tile tile-primary" id="openclaw-windows-tile" type="button">
@@ -399,6 +407,43 @@ export const dashboardPage = {
           }
         });
       }
+
+      // Lesson 574 (2026-08-25 08:19 MDT, David): Files page "Add to
+      // Chat" pushes the file path into the dashboard chat input.
+      // Same lookup chain as voice — #dashboard-chat-input first,
+      // textarea[name='message'] as the generic fallback. If neither
+      // exists (Terminal page drives mc-openclaw via clipboard), stage
+      // the path to the clipboard instead — same bridge the existing
+      // attach-zone uses for files dropped into the chat-input-less
+      // OpenClaw window.
+      const filesHandler = async (ev) => {
+        const p = ev && ev.detail && ev.detail.path;
+        if (!p) return;
+        const chatInput =
+          document.querySelector("#dashboard-chat-input") ||
+          document.querySelector("textarea[name='message']");
+        if (chatInput) {
+          // Insert as a token the model can recognize. Same format
+          // voice uses for transcripts; keeps it on-brand simple.
+          const mention = `@file: ${p}`;
+          if (chatInput.value && !chatInput.value.endsWith(" ")) {
+            chatInput.value = chatInput.value.trimEnd() + "\n";
+          }
+          chatInput.value = chatInput.value + mention;
+          chatInput.focus();
+          toast(`Added file path to chat input`, { kind: "success" });
+        } else {
+          try {
+            await writeText(`@file: ${p}`);
+            toast(`Copied file path to clipboard — Ctrl+V into chat`, {
+              kind: "info",
+            });
+          } catch (e) {
+            toast(`File: ${p}`, { kind: "info", sticky: true });
+          }
+        }
+      };
+      document.addEventListener("mc:files:add-to-chat", filesHandler);
 
       // Lesson 564 (2026-08-24 17:30 MDT, David): the in-app plans card
       // is gone — the dashboard no longer renders pricing tiers inline

@@ -129,6 +129,15 @@ export const filesPage = {
     let roots = [];
     let busy = false;
 
+    // Lesson 574 (2026-08-25 08:19 MDT, David): preview-head sends
+    // the currently-previewed file to the chat input. Used in all 4
+    // preview-head render paths (image, binary, text, binary-detected).
+    const sendToChatBtnHtml = `
+      <button class="link-button" id="preview-send-to-chat"
+              title="Add this file's path to the active chat input">
+        Add to Chat
+      </button>`;
+
     root.innerHTML = `
       <div class="files-page">
         <header class="files-header">
@@ -199,6 +208,12 @@ export const filesPage = {
       for (const e of entries) {
         const icon = e.kind === "dir" ? "📁" : e.kind === "file" ? "📄" : "❔";
         const size = e.kind === "file" ? formatBytes(e.size) : "";
+        // Lesson 574 (2026-08-25 08:19 MDT, David): Add-to-Chat button so
+        // a user browsing files can drop them into the Terminal chat
+        // input. Dirs get no button (only files have chat context).
+        const addBtn = e.kind === "file"
+          ? `<button class="link-button entry-add" title="Add this file's path to the active chat input">Add to Chat</button>`
+          : "";
         rows.push(
           `<div class="entry" data-path="${escapeHtml(
             e.path
@@ -206,6 +221,7 @@ export const filesPage = {
              <span class="entry-icon">${icon}</span>
              <span class="entry-name">${escapeHtml(e.name)}</span>
              <span class="entry-size muted small">${escapeHtml(size)}</span>
+             ${addBtn}
            </div>`
         );
       }
@@ -215,6 +231,26 @@ export const filesPage = {
       }
       listEl.innerHTML = rows.join("");
       listEl.querySelectorAll(".entry").forEach((el) => {
+        // Lesson 574 (2026-08-25 08:19 MDT, David): per-row "Add to
+        // Chat" button emits a global event the chat input picks up.
+        // stopPropagation so the click doesn't also preview-load.
+        const addBtn = el.querySelector(".entry-add");
+        if (addBtn) {
+          addBtn.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            const filePath = el.dataset.path;
+            // Emit on the document so any page currently mounted (terminal
+            // chat input, dashboard chat input, OpenClaw overlay chat
+            // input) can listen and react. Path-only payload — chat
+            // input formats a clean mention like "@file:/path/to/foo.txt".
+            document.dispatchEvent(
+              new CustomEvent("mc:files:add-to-chat", {
+                detail: { path: filePath, source: "files-page" },
+              })
+            );
+            setStatus(`Added ${normalizeSlashes(filePath)} to chat input.`);
+          });
+        }
         el.addEventListener("click", () => {
           // Mark the new selection visually so the user can see which
           // file is currently being previewed — fixes the "I clicked
@@ -288,6 +324,7 @@ export const filesPage = {
               <div class="preview-meta muted small">
                 ${escapeHtml(result.mime)} · ${formatBytes(result.bytes)}
                 <button class="link-button" id="preview-open">Open in default app</button>
+                ${sendToChatBtnHtml}
               </div>
             </div>
             <div class="preview-image">
@@ -316,6 +353,7 @@ export const filesPage = {
                 Open it in your computer's default app to view it.
               </div>
               <button class="primary" id="preview-open">Open in default app</button>
+              ${sendToChatBtnHtml}
             </div>
           `;
           wireOpenButton(path);
@@ -355,6 +393,7 @@ export const filesPage = {
                   Open it in your computer's default app to view it.
                 </div>
                 <button class="primary" id="preview-open">Open in default app</button>
+                ${sendToChatBtnHtml}
               </div>
             `;
             wireOpenButton(path);
@@ -371,6 +410,7 @@ export const filesPage = {
                 <div class="preview-meta muted small">
                   ${formatBytes(result.bytes)} ${truncated}
                   <button class="link-button" id="preview-open">Open in default app</button>
+                  ${sendToChatBtnHtml}
                 </div>
               </div>
               <div class="preview-body">${renderTextWithLineNumbers(
@@ -401,6 +441,25 @@ export const filesPage = {
         } catch (err) {
           setStatus(`Could not open externally: ${err}`, "error");
         }
+      });
+      // Lesson 574: also wire the Add-to-Chat button if present in this
+      // preview-head (sender helper, mirrors the per-row Add to Chat).
+      wireSendToChatButton(path);
+    };
+
+    // Lesson 574 (2026-08-25 08:19 MDT, David): preview-head "Add to
+    // Chat" button. Emits mc:files:add-to-chat; recipient pages (terminal
+    // chat input, dashboard chat input) listen and format a clean mention.
+    const wireSendToChatButton = (path) => {
+      const btn = previewEl.querySelector("#preview-send-to-chat");
+      if (!btn) return;
+      btn.addEventListener("click", () => {
+        document.dispatchEvent(
+          new CustomEvent("mc:files:add-to-chat", {
+            detail: { path, source: "files-preview-head" },
+          })
+        );
+        setStatus(`Added ${normalizeSlashes(path)} to chat input.`);
       });
     };
 

@@ -34,7 +34,7 @@
 //   - On unmount, drop the listeners + flag so late events are ignored.
 
 import { invoke } from "@tauri-apps/api/core";
-import { isModuleInstalled } from "../modules-runtime.js";
+import { isModuleInstalled, installModuleFromUrl } from "../modules-runtime.js";
 import { toast } from "../toast.js";
 
 // ============================================================================
@@ -60,7 +60,7 @@ const MODULE_CATALOG = [
     icon: "🎙",
     name: "Voice for MiracleClaw",
     description: "Capture your voice and drop clean transcripts directly into any chat surface. Works on dashboard, terminal, fullscreen, and the OpenClaw overlay.",
-    publisher: "ADeal Auto Repair",
+    publisher: "Miracle Claw",
     version: "0.1.0",
     status: "available",
     tags: ["voice", "input"],
@@ -70,10 +70,17 @@ const MODULE_CATALOG = [
     id: "firecrawl",
     icon: "🔥",
     name: "FireCrawl for MiracleClaw",
-    description: "Scrape any URL into clean markdown, batch-crawl websites, or search the web. Gives MAIC real web context for any answer.",
-    publisher: "ADeal Auto Repair",
+    description:
+      "Scrape any URL into clean markdown, batch-crawl websites, or search the web. " +
+      "Localhost-only proxy bound to 127.0.0.1 with rate limiting and your API key " +
+      "stored in your OS keychain. Wire-protocol compatible with FireCrawl — bring " +
+      "your own fc- key.",
+    publisher: "Miracle Claw",
     version: "0.1.0",
-    status: "coming_soon",
+    status: "available",
+    downloadUrl:
+      "https://github.com/MilagroCloud/miracle-claw-firecrawl/releases/download/v0.1.0/miracle-claw-firecrawl.tar.gz",
+    hookLocation: "settings",
     tags: ["web", "data"],
   },
   {
@@ -81,7 +88,7 @@ const MODULE_CATALOG = [
     icon: "🎯",
     name: "Lead Generator for MiracleClaw",
     description: "Find prospects online based on your criteria — industry, region, role, company size. Enrich their profiles and draft personalized outreach.",
-    publisher: "ADeal Auto Repair",
+    publisher: "Miracle Claw",
     version: "0.1.0",
     status: "coming_soon",
     tags: ["business", "leads"],
@@ -91,7 +98,7 @@ const MODULE_CATALOG = [
     icon: "🌐",
     name: "Translation for MiracleClaw",
     description: "Translate text or web pages between 100+ languages. Drop-in tool for MAIC chat.",
-    publisher: "ADeal Auto Repair",
+    publisher: "Miracle Claw",
     version: "0.1.0",
     status: "coming_soon",
     tags: ["language"],
@@ -101,7 +108,7 @@ const MODULE_CATALOG = [
     icon: "📕",
     name: "PDF & Document Parser",
     description: "Upload PDF, DOCX, or PPTX files. Extract clean text, tables, and document structure.",
-    publisher: "ADeal Auto Repair",
+    publisher: "Miracle Claw",
     version: "0.1.0",
     status: "coming_soon",
     tags: ["files", "docs"],
@@ -111,7 +118,7 @@ const MODULE_CATALOG = [
     icon: "🎥",
     name: "YouTube Transcript",
     description: "Paste a YouTube URL to get the full transcript, a summary, and chapter breakdowns.",
-    publisher: "ADeal Auto Repair",
+    publisher: "Miracle Claw",
     version: "0.1.0",
     status: "coming_soon",
     tags: ["video", "transcript"],
@@ -121,7 +128,7 @@ const MODULE_CATALOG = [
     icon: "📧",
     name: "Email Writer",
     description: "Guided cold outreach, follow-ups, and reply drafting. Tone and channel are configurable.",
-    publisher: "ADeal Auto Repair",
+    publisher: "Miracle Claw",
     version: "0.1.0",
     status: "coming_soon",
     tags: ["writing", "business"],
@@ -131,7 +138,7 @@ const MODULE_CATALOG = [
     icon: "🔗",
     name: "CRM Sync",
     description: "Push enriched contacts and lead status to HubSpot, Pipedrive, Notion, and other CRMs.",
-    publisher: "ADeal Auto Repair",
+    publisher: "Miracle Claw",
     version: "0.1.0",
     status: "coming_soon",
     tags: ["business", "integration"],
@@ -141,7 +148,7 @@ const MODULE_CATALOG = [
     icon: "🔍",
     name: "Local File Search",
     description: "Index and semantically search your local files. Find anything you've worked on without leaving MC.",
-    publisher: "ADeal Auto Repair",
+    publisher: "Miracle Claw",
     version: "0.1.0",
     status: "coming_soon",
     tags: ["files", "search"],
@@ -151,7 +158,7 @@ const MODULE_CATALOG = [
     icon: "🔊",
     name: "Text-to-Speech",
     description: "Read MAIC's responses aloud in chat. Multiple voices, configurable speed.",
-    publisher: "ADeal Auto Repair",
+    publisher: "Miracle Claw",
     version: "0.1.0",
     status: "coming_soon",
     tags: ["voice", "output"],
@@ -161,7 +168,7 @@ const MODULE_CATALOG = [
     icon: "📸",
     name: "Local OCR",
     description: "Extract text from any image. Runs locally with Tesseract — your images never leave the machine.",
-    publisher: "ADeal Auto Repair",
+    publisher: "Miracle Claw",
     version: "0.1.0",
     status: "coming_soon",
     tags: ["vision", "files"],
@@ -171,7 +178,7 @@ const MODULE_CATALOG = [
     icon: "📅",
     name: "Calendar Assistant",
     description: "Connect Google or Outlook calendar. Schedule meetings, set reminders, query availability in natural language.",
-    publisher: "ADeal Auto Repair",
+    publisher: "Miracle Claw",
     version: "0.1.0",
     status: "coming_soon",
     tags: ["productivity"],
@@ -181,7 +188,7 @@ const MODULE_CATALOG = [
     icon: "🐙",
     name: "GitHub Helper",
     description: "Read issues, summarize PRs, search code across your repositories. Works with public and private repos.",
-    publisher: "ADeal Auto Repair",
+    publisher: "Miracle Claw",
     version: "0.1.0",
     status: "coming_soon",
     tags: ["developer", "code"],
@@ -191,7 +198,7 @@ const MODULE_CATALOG = [
     icon: "🗄",
     name: "SQL Buddy",
     description: "Connect to Postgres, MySQL, or SQLite. Ask questions about your data in plain English.",
-    publisher: "ADeal Auto Repair",
+    publisher: "Miracle Claw",
     version: "0.1.0",
     status: "coming_soon",
     tags: ["developer", "data"],
@@ -201,7 +208,7 @@ const MODULE_CATALOG = [
     icon: "🧪",
     name: "A/B Test Designer",
     description: "Design experiments, calculate sample sizes, and analyze results without leaving chat.",
-    publisher: "ADeal Auto Repair",
+    publisher: "Miracle Claw",
     version: "0.1.0",
     status: "coming_soon",
     tags: ["business", "analytics"],
@@ -436,33 +443,46 @@ function wireCardButtons(grid, ctx) {
 }
 
 /**
- * Install flow. Mirrors Settings → Modules: prompt for a local path
- * (dev mode), call `mc_module_install_local`, toast on success, and
- * re-render the grid once the install event fires.
- *
- * v0.1.0 only supports local-path installs — remote downloads arrive
- * later. The dialog is the same one in settings.js so the two flows
- * stay consistent.
+ * Install flow. v0.1.0 supports local-path installs AND URL installs
+ * (Lesson 574c). If the catalog entry has a `downloadUrl`, we offer
+ * both: URL is preferred (one-click), local path is the dev/fallback
+ * path. After successful install we toast and let the
+ * `mc:module-installed` event re-render the grid.
  */
 async function handleInstall(btn, id, ctx) {
   btn.disabled = true;
   const oldLabel = btn.textContent;
   btn.textContent = "Installing…";
+
+  const entry = MODULE_CATALOG.find((m) => m.id === id);
+  const downloadUrl = entry?.downloadUrl;
+
   try {
-    const localPath = window.prompt(
-      `Install module "${id}" from local path?\n\n` +
-      `Path must contain installer.json and bin/ subdir.\n` +
-      `Tip: set MC_MODULE_LOCAL_PATH at launch and this dialog is skipped.`,
-      ""
-    );
-    if (!localPath) {
-      btn.disabled = false;
-      btn.textContent = oldLabel;
-      return;
+    if (downloadUrl) {
+      // URL install — one-click. Uses mc_module_install_url (Lesson 574c).
+      // Backend downloads, extracts, SHA256-verifies, atomic-renames, registers.
+      btn.textContent = "Downloading…";
+      await installModuleFromUrl(id, downloadUrl);
+      toast(`Module "${id}" installed from ${new URL(downloadUrl).hostname}`, {
+        kind: "success",
+      });
+      // mc:module-installed event listener on this page will re-render the grid.
+    } else {
+      // Fallback: local-path install (dev mode / offline power users).
+      const localPath = window.prompt(
+        `Install module "${id}" from local path?\n\n` +
+        `Path must contain installer.json and bin/ subdir.\n` +
+        `Tip: set MC_MODULE_LOCAL_PATH at launch and this dialog is skipped.`,
+        ""
+      );
+      if (!localPath) {
+        btn.disabled = false;
+        btn.textContent = oldLabel;
+        return;
+      }
+      await invoke("mc_module_install_local", { id, localPath });
+      toast(`Module "${id}" installed`, { kind: "success" });
     }
-    await invoke("mc_module_install_local", { id, localPath });
-    toast(`Module "${id}" installed`, { kind: "success" });
-    // The mc:module-installed event listener on this page will re-render.
   } catch (err) {
     toast(`Module "${id}" install failed: ${err}`, { kind: "error", duration: 8000 });
     btn.disabled = false;

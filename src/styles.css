@@ -5,9 +5,8 @@
  * No framework, no JSX, no React. Plain HTML+CSS to keep the asset tiny
  * and easy to audit.
  *
- * Brand-agnostic defaults work for both ADeal Auto Repair green and the
- * generic Tauri default. Final theming happens in v1.0.x+ once the
- * installer redesign adds ADeal-branded icons.
+/* Brand-agnostic defaults. Final theming happens in v1.0.x+ once the
+ * installer redesign adds branded icons.
  */
 
 :root {
@@ -396,7 +395,7 @@ code {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin: -16px 0 24px 0;
+  margin: 0;
   padding: 0;
   background: transparent;
   border: 0;
@@ -411,6 +410,16 @@ code {
 .pricing-link-arrow {
   font-size: 11px;
   margin-left: 2px;
+}
+
+/* Lesson 574 (2026-08-25 08:19 MDT, David): flex row so Plans + Modules
+   sit next to each other on the same line instead of stacking. */
+.dashboard-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: -8px 0 20px 0;
 }
 
 /* Lesson 564 (2026-08-24 17:30 MDT, David): the dedicated Plans &
@@ -1657,6 +1666,43 @@ code {
   pointer-events: auto;
 }
 
+/* Lesson 574b: FireCrawl module — same gating pattern as voice.
+   Catalog hook locations declared in the FireCrawl installer.json
+   are #firecrawl-card, #firecrawl-toggle, #firecrawl-status-pill.
+   They start with `data-module-firecrawl-installed="false"` (set by
+   modules-runtime at boot) and flip to "true" on mc:module-installed.
+   CSS below enables the toggle + dims the card when uninstalled.
+   Currently no DOM targets exist for these selectors — the rules
+   are forward-declared so adding a future firecrawl-status widget
+   (e.g. on dashboard or settings page) picks up the gating for
+   free, no extra wiring required. */
+#firecrawl-card[data-module-firecrawl-installed="false"] {
+  opacity: 0.55;
+  filter: saturate(0.5);
+}
+#firecrawl-card[data-module-firecrawl-installed="true"] {
+  opacity: 1;
+  filter: none;
+}
+#firecrawl-toggle[data-module-firecrawl-installed="false"] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+#firecrawl-toggle[data-module-firecrawl-installed="true"] {
+  opacity: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+#firecrawl-status-pill[data-module-firecrawl-installed="false"] {
+  background: var(--surface-2, #2a2a2a);
+  color: var(--muted, #888);
+}
+#firecrawl-status-pill[data-module-firecrawl-installed="true"] {
+  background: var(--accent, #4a9eff);
+  color: white;
+}
+
 /* Lesson 572: Settings → Modules card grid (mirrors memory-file
    style for consistency). Card dims, action buttons, status pill. */
 .modules-list {
@@ -2022,6 +2068,21 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Lesson 574 (2026-08-25 08:19 MDT, David): per-row Add-to-Chat button.
+   Only files render it; dirs get no button. */
+.entry-add {
+  flex-shrink: 0;
+  font-size: 11px;
+  opacity: 0.7;
+  transition: opacity 120ms;
+}
+.entry-add:hover { opacity: 1; }
+.entry-add:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 1px;
+  border-radius: 3px;
 }
 
 .entry-size {
@@ -2960,7 +3021,7 @@ kbd {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin: -16px 0 24px 8px;
+  margin: 0;
   padding: 0;
   background: transparent;
   border: 0;
