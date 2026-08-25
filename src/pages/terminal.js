@@ -46,6 +46,21 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+// Lesson 571 (2026-08-25 00:37 MDT, David): MC Module Framework —
+// terminal toolbar's voice button calls `mc_voice_transcribe` via
+// the JS-side module runtime. The button starts greyed out
+// (data-module-voice-installed="false") and lights up when the
+// voice module installs.
+import { isModuleInstalled, invokeModule } from "../modules-runtime.js";
+import { toast } from "../toast.js";
+// rc53.5 (feature/secrets-vault): mount the secrets page inside an
+// overlay when the toolbar button is clicked. Re-uses the existing
+// page factory — no duplicate UI code.
+import { secretsPage } from "./secrets.js";
+// rc53.7 (feature/attach-toolbar): same overlay pattern for the
+// attach-zone. We reuse the dashboard's wireAttachZone subcomponent
+// so dropping files behaves identically to the dashboard zone.
+import { wireAttachZone } from "./dashboard.js";
 
 // Default shell for the Terminal tile. Historically `mc-openclaw` so the
 // Terminal button launched the OpenClaw TUI by default. Dashboard v1.0.9-rc45
@@ -114,7 +129,7 @@ export const terminalPage = {
   requiresAuth: true,
 
   mount(root, ctx = {}) {
-    const { onBackToDashboard, defaultShell: ctxDefaultShell } = ctx;
+    const { onBackToDashboard, defaultShell: ctxDefaultShell, initialCommand: ctxInitialCommand, autoOpenOverlay: ctxAutoOpenOverlay } = ctx;
 
     const os = detectOS();
     const osOptions = shellOptionsForOS(os);
@@ -166,6 +181,29 @@ export const terminalPage = {
         lastSeq = 0;
         appendSystem(`Started ${shell} session (id ${sessionId.slice(0, 8)}…)`);
         setStatus("alive", shell);
+        // rc53.8 (feature/extras-hub): if the caller passed an initial
+        // command (e.g. extras hub launches us with "mlg-doctor"), wait
+        // briefly for the shell to settle and then write + enter it.
+        // The 350ms delay gives cmd.exe / bash time to print its first
+        // prompt before we send input — otherwise some shells swallow
+        // the first command line.
+        if (ctxInitialCommand && sessionId) {
+          setTimeout(async () => {
+            try {
+              term.write(`\r\n\x1b[36m> ${ctxInitialCommand}\x1b[0m\r\n`);
+              await invoke("mc_terminal_write", {
+                id: sessionId,
+                input: ctxInitialCommand + "\n",
+              });
+              // Show the command in the visible input too so the user
+              // can edit it (and so the input isn't blank if the
+              // shell prompt hasn't drawn yet).
+              if (input) input.value = "";
+            } catch (err) {
+              appendSystem(`initial command failed: ${escapeHtml(err)}`);
+            }
+          }, 350);
+        }
       } catch (err) {
         appendSystem(`Failed to start ${shell}: ${escapeHtml(err)}`);
         setStatus("dead", shell, `start failed: ${err}`);
@@ -270,6 +308,23 @@ export const terminalPage = {
           <button type="button" id="terminal-kill" class="link-button"
                   title="Forcefully end the running shell">
             Kill session
+          </button>
+          <span class="terminal-toolbar-spacer"></span>
+          <button type="button" id="terminal-attach-btn" class="icon-link"
+                  title="Drop files to attach to your next chat message"
+                  aria-label="Open attach zone">
+            📎 Attach
+          </button>
+          <button type="button" id="terminal-secrets-btn" class="icon-link"
+                  title="Manage secrets vault (rc53.6 — Once / PerSession / Vault)"
+                  aria-label="Open secrets vault">
+            🔑 Secrets
+          </button>
+          <button type="button" id="terminal-voice-btn" class="icon-link"
+                  title="Voice input (requires Voice for MiracleClaw module)"
+                  aria-label="Voice input"
+                  data-module-voice-installed="false">
+            🎙 Voice
           </button>
         </div>
 
@@ -408,6 +463,268 @@ export const terminalPage = {
       if (onBackToDashboard) onBackToDashboard();
     });
 
+    // rc53.5 (feature/secrets-vault): toolbar 🔑 Secrets button.
+    // Opens the secrets page as a fullscreen overlay on top of the
+    // terminal. The overlay has its own z-index and Escape closes it.
+    // If the user has unsaved typed input, we keep it warm but pause
+    // polling while the overlay is up so the terminal doesn't scroll
+    // underneath.
+    const secretsOverlay = document.createElement("div");
+    secretsOverlay.className = "secrets-overlay";
+    secretsOverlay.id = "terminal-secrets-overlay";
+    secretsOverlay.setAttribute("hidden", "");
+    secretsOverlay.innerHTML = `
+      <div class="secrets-overlay-header">
+        <button class="icon-link" id="terminal-secrets-close"
+                title="Close secrets" aria-label="Close secrets">✕</button>
+      </div>
+      <div class="secrets-overlay-body" id="terminal-secrets-body"></div>
+    `;
+    root.appendChild(secretsOverlay);
+    const secretsBody = document.getElementById("terminal-secrets-body");
+    const secretsCloseBtn = document.getElementById("terminal-secrets-close");
+
+    let secretsOpen = false;
+    function openSecretsOverlay() {
+      // Pause terminal polling so the overlay doesn't render behind
+      // a moving terminal. Resume on close.
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      secretsOpen = true;
+      secretsOverlay.removeAttribute("hidden");
+      // Mount the secrets page into the overlay body. onBack = close.
+      secretsPage.mount(secretsBody, {
+        onBackToDashboard: closeSecretsOverlay,
+      });
+    }
+    function closeSecretsOverlay() {
+      if (!secretsOpen) return;
+      secretsOpen = false;
+      secretsPage.unmount();
+      secretsBody.innerHTML = "";
+      secretsOverlay.setAttribute("hidden", "");
+      // Resume polling.
+      if (!ended && sessionId && !pollTimer) {
+        pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS);
+      }
+      // rc53.11 (Lesson 247): if the user opened this overlay from the
+      // OpenClaw chat window (via the floating 🔑 button in mc-chat-
+      // toolbar), the close handler should also navigate them BACK to
+      // the chat URL — not leave them stranded on the dashboard. The
+      // Rust mc_close_overlay command captures the URL we came from
+      // (stashed by mc_open_overlay) and navigates back.
+      //
+      // Fall back to plain DOM close if the bridge isn't present
+      // (e.g. dev/test environments) — the overlay still hides
+      // locally, the user just stays on whatever page they were on.
+      try {
+        const bridge = window.__openclawHostBridge;
+        if (bridge && typeof bridge.closeOverlay === 'function') {
+          bridge.closeOverlay();
+          return;
+        }
+      } catch (_) { /* fall through */ }
+    }
+    secretsCloseBtn.addEventListener("click", closeSecretsOverlay);
+    // Esc closes the overlay when it's open.
+    secretsOverlay.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeSecretsOverlay();
+    });
+    document.getElementById("terminal-secrets-btn").addEventListener("click", openSecretsOverlay);
+
+    // Lesson 571: voice button click. The button stays greyed out
+    // until the voice module installs (CSS uses
+    // data-module-voice-installed to gate pointer-events). When
+    // clicked, capture audio + transcribe + copy the result to the
+    // terminal input row. v0.1.0 uses alert() as the result sink;
+    // Lesson 572 will replace with a toast or inline status.
+    const voiceBtn = document.getElementById("terminal-voice-btn");
+    voiceBtn.addEventListener("click", async () => {
+      if (!isModuleInstalled("voice")) {
+        toast("Voice module not installed. Install via Settings → Modules.", { kind: "warn" });
+        return;
+      }
+      voiceBtn.disabled = true;
+      voiceBtn.textContent = "🎙 Listening…";
+      try {
+        const result = await invokeModule("mc_voice_transcribe", {
+          seconds: 30,
+          vad_enabled: true,
+          silence_ms: 1500,
+        });
+        const text = (result && result.text) || "";
+        if (text.trim()) {
+          // Drop transcript into the terminal input row so the user
+          // can edit + press Enter. This matches the existing attach
+          // workflow — capture, edit, send.
+          const input = document.getElementById("terminal-input");
+          if (input) {
+            input.value = text.trim();
+            input.focus();
+            toast(`Transcript: "${text.trim().slice(0, 60)}${text.trim().length > 60 ? "…" : ""}"`, { kind: "success" });
+          }
+        } else if (result && result.warning) {
+          toast(`🎙 ${result.warning}`, { kind: "warn" });
+        } else {
+          toast("🎙 (no speech detected)", { kind: "info" });
+        }
+      } catch (e) {
+        toast(`🎙 transcription failed: ${e}`, { kind: "error" });
+      } finally {
+        voiceBtn.disabled = false;
+        voiceBtn.textContent = "🎙 Voice";
+      }
+    });
+
+    // rc53.7 (feature/attach-toolbar): mount the dashboard's attach
+    // zone inside an overlay when the toolbar 📎 button is clicked.
+    // Same overlay pattern as secrets — pause terminal polling while
+    // open so the overlay doesn't render behind a moving terminal.
+    const attachOverlay = document.createElement("div");
+    attachOverlay.className = "attach-overlay";
+    attachOverlay.id = "terminal-attach-overlay";
+    attachOverlay.setAttribute("hidden", "");
+    attachOverlay.innerHTML = `
+      <div class="attach-overlay-header">
+        <span class="attach-overlay-title">📎 Attach files to next chat message</span>
+        <button class="icon-link" id="terminal-attach-close"
+                title="Close attach zone" aria-label="Close attach zone">✕</button>
+      </div>
+      <div class="attach-overlay-body" id="terminal-attach-body">
+        <div class="attach-zone" id="attach-zone" tabindex="0" role="button"
+             aria-label="Drop files here to attach them to your next chat message">
+          <div class="attach-zone-empty" id="attach-zone-empty">
+            <div class="attach-zone-icon">📎</div>
+            <div class="attach-zone-msg">
+              <strong>Drop files here</strong> to attach them to your next chat message.
+              <div class="muted small">
+                Up to 100 MB per file. PDFs, images, code, documents — anything you can drag.
+              </div>
+            </div>
+          </div>
+          <div class="attach-queue" id="attach-queue" hidden></div>
+          <div class="attach-actions" id="attach-actions" hidden>
+            <input type="text" class="attach-message" id="attach-message"
+                   placeholder="Optional: a note for the model (e.g. 'summarize this')" />
+            <button type="button" class="primary" id="attach-send">Send to chat →</button>
+            <button type="button" class="link-button" id="attach-clear">Clear queue</button>
+          </div>
+          <div class="attach-zone-help muted small" id="attach-zone-help">
+            <details>
+              <summary>How does this work?</summary>
+              <ol>
+                <li>Drop one or more files above. They copy into MC's workspace.</li>
+                <li>Click <strong>Send to chat</strong>. The OpenClaw chat window opens and the file paths land in your clipboard.</li>
+                <li>Click into the chat input and press <strong>Ctrl+V</strong>. The model sees the file paths and reads them with its file tool.</li>
+              </ol>
+              <p class="muted small">MC can't paste directly into the chat window, so the clipboard is the bridge. One keystroke after each Send.</p>
+            </details>
+          </div>
+          <div class="attach-status muted small" id="attach-status"></div>
+        </div>
+      </div>
+    `;
+    root.appendChild(attachOverlay);
+    const attachBody = document.getElementById("terminal-attach-body");
+    const attachCloseBtn = document.getElementById("terminal-attach-close");
+
+    let attachOpen = false;
+    let attachZoneWired = false;
+    function openAttachOverlay() {
+      // Pause terminal polling while overlay is up (same as secrets).
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      attachOpen = true;
+      attachOverlay.removeAttribute("hidden");
+      // Wire the zone lazily — wireAttachZone registers document-level
+      // drag listeners, so we only want them live while the overlay
+      // is mounted. The next open() reuses the existing wiring if
+      // the zone is still in the DOM.
+      if (!attachZoneWired) {
+        wireAttachZone(attachOverlay);
+        attachZoneWired = true;
+      }
+    }
+    function closeAttachOverlay() {
+      if (!attachOpen) return;
+      attachOpen = false;
+      attachOverlay.setAttribute("hidden", "");
+      // Resume polling.
+      if (!ended && sessionId && !pollTimer) {
+        pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS);
+      }
+      // rc53.11 (Lesson 247): same close-and-return logic as secrets —
+      // if opened from the OpenClaw chat window, navigate back to the
+      // chat URL rather than stranding the user on the dashboard.
+      try {
+        const bridge = window.__openclawHostBridge;
+        if (bridge && typeof bridge.closeOverlay === 'function') {
+          bridge.closeOverlay();
+          return;
+        }
+      } catch (_) { /* fall through */ }
+    }
+    attachCloseBtn.addEventListener("click", closeAttachOverlay);
+    // Esc closes the overlay when it's open.
+    attachOverlay.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeAttachOverlay();
+    });
+    document.getElementById("terminal-attach-btn").addEventListener("click", openAttachOverlay);
+
+    // rc53.9 (Lesson 243): auto-open one of the overlays on mount if
+    // requested. Three sources, in priority order:
+    //   1. ctx.autoOpenOverlay (caller passed extras via navigate())
+    //   2. URL hash #mcAutoOpen=secrets|attach (cross-origin path —
+    //      the OpenClaw chat MC-PATCH toolbar navigates to
+    //      tauri://localhost/index.html#mcAutoOpen=secrets because
+    //      localStorage IS NOT shared across origins, but URL hashes
+    //      make it through the cross-scheme WebView2 navigation).
+    //   3. localStorage mc.terminal.autoOpenOverlay (same-origin
+    //      fallback, e.g. future internal shortcuts).
+    //
+    // The flag is cleared after consumption so re-mounts (user
+    // navigates Terminal → Dashboard → Terminal) don't re-open.
+    let desiredAutoOpen = ctxAutoOpenOverlay;
+    if (!desiredAutoOpen) {
+      try {
+        const hashMatch = (window.location.hash || "").match(
+          /mcAutoOpen=(secrets|attach)/
+        );
+        if (hashMatch) desiredAutoOpen = hashMatch[1];
+      } catch { /* ignore */ }
+    }
+    if (!desiredAutoOpen) {
+      desiredAutoOpen = safeLocalGet("mc.terminal.autoOpenOverlay");
+    }
+    if (desiredAutoOpen === "secrets" || desiredAutoOpen === "attach") {
+      // Clear all three sources so re-mounts don't re-open the overlay.
+      try { safeLocalSet("mc.terminal.autoOpenOverlay", ""); } catch { /* ignore */ }
+      try {
+        if (window.location.hash && /mcAutoOpen=/.test(window.location.hash)) {
+          // Strip just the mcAutoOpen param, leave the rest of the hash alone.
+          const newHash = window.location.hash.replace(
+            /[#&]?(mcAutoOpen=(secrets|attach))/,
+            ""
+          );
+          history.replaceState(
+            null,
+            "",
+            window.location.pathname + window.location.search + newHash
+          );
+        }
+      } catch { /* ignore — hash strip is best-effort */ }
+      // Defer one tick so listeners + DOM are fully settled (overlay
+      // divs need to be appended first).
+      setTimeout(() => {
+        if (desiredAutoOpen === "secrets") openSecretsOverlay();
+        else openAttachOverlay();
+      }, 0);
+    }
+
     // Fullscreen toggle: adds `terminal-fullscreen-mode` class to the page
     // root. CSS enlarges the output area. ResizeObserver triggers
     // fitAddon.fit() automatically; we also do an explicit fit on
@@ -492,6 +809,8 @@ export const terminalPage = {
     // Keep handlers around for unmount.
     root._terminalCleanup = async () => {
       ended = true;
+      // Close the secrets overlay if it's open (rc53.5)
+      if (secretsOpen) closeSecretsOverlay();
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;

@@ -16,12 +16,20 @@ permissions = [
   "allow-mc-list-tools",
   "allow-mc-refresh-tier",
   "allow-mc-apply-tier-change",
+  # rc53.12 (Lesson 561): in-app upgrade flow on the dashboard
+  # Plans card. Free users see live pricing pulled from MAIC;
+  # clicking a plan opens Stripe Checkout in the OS default browser.
+  "allow-mc-get-quota",
+  "allow-mc-list-plans",
+  "allow-mc-open-checkout-url",
   # v1.0.9-rc35: Settings page commands
   "allow-mc-get-user-info",
   "allow-mc-list-memory-files",
   "allow-mc-read-memory-file",
   "allow-mc-write-memory-file",
   "allow-mc-open-data-folder",
+  "allow-mc-open-overlay",
+  "allow-mc-close-overlay",
   # v1.0.9-rc36: Terminal tab commands
   "allow-mc-terminal-start",
   "allow-mc-terminal-poll",
@@ -35,5 +43,36 @@ permissions = [
   # v1.0.0-prep: image preview + open-in-default-app handoff for
   # binaries (PDF, Office, archives). Newbie-facing UX.
   "allow-mc-ui-read-image",
-  "allow-mc-ui-open-externally"
+  "allow-mc-ui-open-externally",
+  # v1.1.0-prep (feature/drag-drop): drag-and-drop attachment staging
+  # for the dashboard drop zone + send-to-chat handoff.
+  "allow-mc-stage-attachment",
+  "allow-mc-list-attachments",
+  "allow-mc-remove-attachment",
+  "allow-mc-clear-attachments",
+  "allow-mc-send-attachments-to-chat",
+  # rc53 (feature/secrets-vault): local encrypted secrets vault.
+  # v0 plaintext JSON; crypto in rc54. Threat model locked in
+  # notes/SECRETS-VAULT.md. Plaintext never crosses the network.
+  "allow-mc-secret-set",
+  "allow-mc-secret-delete",
+  "allow-mc-secret-list",
+  "allow-mc-secret-expand",
+  "allow-mc-secret-debug-dump",
+  # rc53.6 (feature/secrets-vault): friendly setter + in-memory pool
+  # (Once / PerSession / Vault lifetimes). Single Mutex<HashMap<...>>
+  # with a Lifetime enum; canonicalize_label() turns user-typed labels
+  # into shell-var names. See src/secrets_friendly.rs.
+  "allow-mc-secret-set-friendly",
+  "allow-mc-secret-list-ephemerals",
+  "allow-mc-secret-clear-session-ephemerals",
+  "allow-mc-secret-clear-all-ephemerals",
+  # v1.1.0-rc53.15 (Lesson 570): MC Module Framework. Voice is the
+  # first module; future modules (OCR, TTS, local search) follow the
+  # same pattern. mc-module-call is the umbrella permission that lets
+  # the JS side dispatch to any installed module's sidecar.
+  "allow-mc-module-list",
+  "allow-mc-module-install-local",
+  "allow-mc-module-uninstall",
+  "allow-mc-module-call"
 ]

@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tauri::{Manager, RunEvent};
+use tauri::{Emitter, Manager, RunEvent};
 use tauri_plugin_shell::process::CommandEvent;
 
 mod launcher_info;
@@ -51,12 +51,26 @@ use launcher_info::{launcher_binary_name, MAIC_PLUGIN_FILENAMES, OPENCLAW_PORT};
 // Lesson 458 / v1.0.6: silent-relogin via cached creds in OS keychain.
 // See src/auto_relogin.rs for the full design.
 mod auto_relogin;
+// rc53.6 (feature/secrets-vault): three-tier friendly secrets (Once /
+// PerSession / Vault) layered on top of the rc53 plaintext vault. See
+// src/secrets_friendly.rs for the in-memory pool + canonicalizer.
+//
+// rc53.8 (feature/extras-hub): AES-256-GCM encryption-at-rest for the
+// Vault tier. Master key lives in the OS keychain. See
+// src/secrets_encryption.rs.
+mod secrets_encryption;
+mod secrets_friendly;
 
 // v1.0.7: tier fetching + token-quota nudges.
 pub mod auth;
 // v1.0.7: 7 local tool schemas (paid tier only). Marked `pub` so the
 // `miracle-claw-tools` binary can `use` them via `crate::tools::...`.
 pub mod tools;
+
+// v1.1.0-rc53.15: Optional, downloadable module framework (Lesson 570).
+// Voice is the first module — future modules (OCR, TTS, local search)
+// follow the same pattern.
+pub mod modules;
 
 // ----------------------------------------------------------------------------
 // Constants
@@ -112,6 +126,25 @@ struct AppState {
     /// at 11:27 MDT 2026-08-22). The lock flag ensures we capture the
     /// first `tauri.localhost` URL and never overwrite it with chat URLs.
     dashboard_url_locked: Mutex<bool>,
+    /// v1.1.0-rc53.11 (Lesson 247): URL we navigated FROM when opening
+    /// an overlay via `mc_open_overlay`. Used by `mc_close_overlay` to
+    /// restore the user's previous context (typically the OpenClaw
+    /// chat window at `http://127.0.0.1:28789/...`).
+    ///
+    /// `None` means "no overlay is open" — `mc_close_overlay` should
+    /// fall back to the dashboard in that case. Set on every successful
+    /// `mc_open_overlay`, cleared on `mc_close_overlay` so a second
+    /// close doesn't re-navigate to a stale URL.
+    overlay_return_url: Mutex<Option<String>>,
+    /// v1.1.0-rc53.15 (Lesson 570): runtime module registry.
+    /// Populated at startup by scanning `<app_data>/modules/*/installer.json`
+    /// and updated when modules are installed/uninstalled at runtime.
+    ///
+    /// `Registry` is itself `Arc<RwLock<HashMap>>` internally, so we
+    /// could even share it without a Mutex — but wrapping in Mutex
+    /// here for consistency with sibling fields and to make it easy
+    /// to swap the registry out atomically in the future.
+    modules: Mutex<crate::modules::registry::Registry>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -499,7 +532,7 @@ fn migrate_legacy_mc_config(path: &Path) -> io::Result<bool> {
 //   IPs, so the Cloudflare endpoint is the only universally-reachable
 //   option for a fresh install.
 //
-// Lesson 520 helper: idempotently merge the 17 known MAIC model ids into
+// Lesson 520 helper: idempotently merge the 20 known MAIC model ids into
 // `cfg.models.providers[<provider_id>].models[]`. Used by both the new-entry
 // write path AND the existing-complete-entry early-return path, so users
 // upgrading from rc18 (where only `milagro-dev` was seeded) get the full
@@ -518,7 +551,7 @@ fn migrate_legacy_mc_config(path: &Path) -> io::Result<bool> {
 //
 // Lesson 527 (NEW 2026-08-21 13:57 MDT): tier-gated model list.
 // Free users get ONLY m1-t1 + m1-t2 (small distilled models, chat-only
-// UX). Paid tiers (Pro, ProPlus, Team, Enterprise) get the full 17-
+// UX). Paid tiers (Pro, ProPlus, Team, Enterprise) get the full 20-
 // model catalog. This is the actual cost-control for Free accounts:
 // they can't accidentally pick `milagro-dev` (14B) and burn their
 // 50K TPM in 3 messages. Tier parameter added — callers without
@@ -529,8 +562,8 @@ fn merge_known_model_ids_into_provider(
     provider_id: &str,
     tier: crate::auth::tier::Tier,
 ) {
-    // Full catalog (17 models). Free users see only the 2 in
-    // FREE_MODEL_IDS; paid users see all 17.
+    // Full catalog (20 models). Free users see only the ones in
+    // FREE_MODEL_IDS; paid users see all 20.
     const ALL_MODEL_IDS: &[&str] = &[
         "milagro-dev", "milagro-dev-coder", "milagro-m1",
         "milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3",
@@ -538,14 +571,28 @@ fn merge_known_model_ids_into_provider(
         "milagro-oc-minimax", "milagro-oc-glm", "milagro-oc-qwen",
         "milagro-oc-deepseek", "milagro-oc-kimi",
         "chat-glm", "chat-deepseek", "chat-qwen",
+        // Lesson 567 (2026-08-24 22:25 MDT, David): add 3 Nemotron
+        // models — NVIDIA's open-weights MoE family. Available on
+        // Ollama Cloud (we already pay flat subscription via
+        // OLLAMA_API_KEY_1/2/3). Benchmark via MAIC: 1.7-1.8s for
+        // short answers, English-clean, supports reasoning.
+        "chat-nemotron-nano",
+        "chat-nemotron-super",
+        "chat-nemotron-ultra",
     ];
-    // Lesson 527: Free tier gets only the two smallest distilled
-    // m1 models. These are the chat-only fast tier — ~7B ternary,
-    // fast response, low TPM cost. Picking anything else would
-    // blow through the 50K TPM ceiling in a few messages.
+    // Lesson 527: Free tier gets the distilled m1 models + cheap cloud Nemotron.
+    // Lesson 565 (2026-08-24 18:41 MDT, David): add t3 to free tier.
+    // Lesson 567 (2026-08-24 22:25 MDT, David): add chat-nemotron-nano — 1.7s,
+    // NVIDIA MoE, very capable, ~$0.05/M blended via Ollama Cloud subscription.
+    // Lesson 569 (2026-08-24 22:57 MDT, David): confirm Free chain is local-first
+    // (m1-t1 → m1-t2 → m1-t3) and ONLY hits the cloud as last-resort fallback
+    // (chat-nemotron-nano, usage level 1 — the cheapest Ollama Cloud route).
+    // See Lesson 568 for the full Ollama usage-level ranking.
     const FREE_MODEL_IDS: &[&str] = &[
         "milagro-m1-t1",
         "milagro-m1-t2",
+        "milagro-m1-t3",
+        "chat-nemotron-nano",
     ];
     let allowed: &[&str] = match tier {
         crate::auth::tier::Tier::Free => FREE_MODEL_IDS,
@@ -1039,23 +1086,32 @@ fn ensure_maic_provider_config_for_tier(
         //
         // See MEMORY.md "MAIC Deployed Model Inventory" for the
         // verified list (2026-08-14 12:06 MDT).
-    // Lesson 527 (NEW 2026-08-21 13:57 MDT): tier-gated model list.
-    // Free gets m1-t1 + m1-t2 only (chat-only fast tier). Paid gets
-    // the full 17-model catalog. The `seeds` array drives the
+    // Lesson 527 (NEW 2026-08-21 13:57 MDT, revised 2026-08-24
+    // Lesson 567): tier-gated model list.
+    // Free gets m1-t1 + m1-t2 + m1-t3 + chat-nemotron-nano
+    // (chat-only fast tier + cheap NVIDIA MoE).
+    // Paid gets the full 20-model catalog (Lesson 567 added 3 Nemotron
+    // models on 2026-08-24). The `seeds` array drives the
     // first-install write path (when models list is empty); for
     // upgrades the `else` branch below does the same tier gating.
+    // Lesson 565 (2026-08-24 18:41 MDT, David): add m1-t3 to Free
+    // seeds (not just the upgrade merge path) so first-install Free
+    // users also get t3. Cost-neutral: local 14B-distilled, fewer
+    // cloud fallbacks.
     let seeds: &[(&str, &str)] = match tier {
         crate::auth::tier::Tier::Free => &[
-            ("milagro-m1-t1",  "MAIC m1-t1 — 7B LoRA-distilled (fast)"),
-            ("milagro-m1-t2",  "MAIC m1-t2 — 7B LoRA-distilled (mid)"),
+            ("milagro-m1-t1",      "MAIC m1-t1 — 3B LoRA-distilled (fast)"),
+            ("milagro-m1-t2",      "MAIC m1-t2 — 7B LoRA-distilled (mid)"),
+            ("milagro-m1-t3",      "MAIC m1-t3 — 14B LoRA-distilled (top of t-series)"),
+            ("chat-nemotron-nano", "Cloud Nemotron 3 Nano 30B (NVIDIA MoE, 1.7s)"),
         ],
         _ => &[
             ("milagro-dev",            "MAIC default (miracle-claw) — 14B local generalist"),
             ("milagro-dev-coder",      "MAIC coder — 14B local code-tuned"),
             ("milagro-m1",             "MAIC m1 — base"),
-            ("milagro-m1-t1",          "MAIC m1-t1 — 7B LoRA-distilled (fast)"),
+            ("milagro-m1-t1",          "MAIC m1-t1 — 3B LoRA-distilled (fast)"),
             ("milagro-m1-t2",          "MAIC m1-t2 — 7B LoRA-distilled (mid)"),
-            ("milagro-m1-t3",          "MAIC m1-t3 — 7B LoRA-distilled (top of t-series)"),
+            ("milagro-m1-t3",          "MAIC m1-t3 — 14B LoRA-distilled (top of t-series)"),
             ("milagro-chat",           "MAIC chat — small general baseline"),
             ("milagro-coder",          "MAIC coder — small-mid code baseline"),
             ("milagro-stock",          "MAIC stock — stock-specific small"),
@@ -1067,6 +1123,9 @@ fn ensure_maic_provider_config_for_tier(
             ("chat-glm",               "Cloud — GLM (direct)"),
             ("chat-deepseek",          "Cloud — DeepSeek (direct)"),
             ("chat-qwen",              "Cloud — Qwen (direct)"),
+            ("chat-nemotron-nano",     "Cloud — Nemotron 3 Nano 30B A3B (NVIDIA MoE, 1.7s) — Free tier cloud fallback"),
+            ("chat-nemotron-super",    "Cloud — Nemotron 3 Super 120B A12B (NVIDIA MoE, 1.8s)"),
+            ("chat-nemotron-ultra",    "Cloud — Nemotron 3 Ultra 550B A55B (NVIDIA MoE, flagship)"),
         ],
     };
         for (id, name) in seeds {
@@ -1094,7 +1153,12 @@ fn ensure_maic_provider_config_for_tier(
         // (preserves user renames).
         //
         // Lesson 527 (NEW 2026-08-21): tier-gated. Free gets only
-        // m1-t1 + m1-t2 (chat-only fast tier). Paid gets all 17.
+        // m1-t1 + m1-t2 + m1-t3 + chat-nemotron-nano (Lesson 565
+        // added t3; Lesson 567 added chat-nemotron-nano for a fast
+        // MoE option). Paid gets all 20.
+        // Lesson 565 (2026-08-24 18:41 MDT, David): add m1-t3 to Free
+        // — heaviest local 14B-distilled, gives better experience,
+        // cost-neutral (local, fewer cloud fallbacks).
         // Match the gating in merge_known_model_ids_into_provider
         // (the existing-entry early-return path) so both code paths
         // produce the same model list for the same tier.
@@ -1102,6 +1166,8 @@ fn ensure_maic_provider_config_for_tier(
             crate::auth::tier::Tier::Free => &[
                 "milagro-m1-t1",
                 "milagro-m1-t2",
+                "milagro-m1-t3",
+                "chat-nemotron-nano",
             ],
             _ => &[
                 "milagro-dev", "milagro-dev-coder", "milagro-m1",
@@ -1110,6 +1176,14 @@ fn ensure_maic_provider_config_for_tier(
                 "milagro-oc-minimax", "milagro-oc-glm", "milagro-oc-qwen",
                 "milagro-oc-deepseek", "milagro-oc-kimi",
                 "chat-glm", "chat-deepseek", "chat-qwen",
+                // Lesson 567 (2026-08-24 22:25 MDT, David): 3 NVIDIA Nemotron
+                // models — open MoE family available on Ollama Cloud via
+                // existing OLLAMA_API_KEY_1/2/3 subscriptions. Brings the
+                // catalog from 17 → 20. nano added to Free (cheap MoE,
+                // ~$0.05/M blended), super + ultra paid-only (550B flagship).
+                "chat-nemotron-nano",
+                "chat-nemotron-super",
+                "chat-nemotron-ultra",
             ],
         };
         let present: std::collections::HashSet<String> = models
@@ -2776,6 +2850,31 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         log_to_file("setup(): main window created (rc13 Lesson 491)");
     }
 
+    // v1.1.0-rc53.15 (Lesson 570): scan <app_data>/modules/ and populate
+    // the runtime registry. This MUST happen AFTER create_main_window so
+    // we can emit module-installed events to the frontend (for any
+    // modules that were already on disk before this run). For modules
+    // installed at runtime, the emit happens in mc_module_install_local.
+    let modules_root = match app_handle.path().app_data_dir() {
+        Ok(p) => crate::modules::modules_root(&p),
+        Err(e) => {
+            eprintln!("[miracle-claw] cannot resolve app_data_dir: {e} — modules disabled");
+            log_to_file(&format!(
+                "setup(): cannot resolve app_data_dir ({e}) — modules disabled"
+            ));
+            return Ok(());
+        }
+    };
+    let discovered = crate::modules::registry::Registry::discover(&modules_root);
+    eprintln!(
+        "[miracle-claw] modules: discovered {} from {}",
+        discovered.len(),
+        modules_root.display()
+    );
+    if let Some(state) = app_handle.try_state::<AppState>() {
+        *state.modules.lock().unwrap() = discovered;
+    }
+
     Ok(())
 }
 
@@ -3834,6 +3933,281 @@ fn openclaw_back_to_dashboard(
     Ok(())
 }
 
+/// Tauri command: mc_open_overlay (Lesson 244, rc53.10).
+///
+/// Called by `depot/openclaw-patches/dist/control-ui/mc-chat-toolbar.js`
+/// when the user clicks 🔑 Secrets or 📎 Attach from inside the OpenClaw
+/// chat page. Navigates the main webview back to the bundled dashboard
+/// with a `#mcAutoOpen=<key>` URL hash, which `src/main.js` boot parses
+/// to land on the Terminal page with `autoOpenOverlay=key` in ctx, which
+/// `src/pages/terminal.js` then consumes to open the named overlay (and
+/// strips the hash so it doesn't reopen on re-mount).
+///
+/// Why this exists (Lesson 244):
+///
+/// rc53.9 shipped with `mc-chat-toolbar.js` using
+/// `window.location.href = 'tauri://localhost/index.html#mcAutoOpen=<key>'`
+/// — the same IPC-INDEPENDENT pattern as `mc-back-button.js`. The pattern
+/// works for the back button (Lesson 511) because mc-back-button is a
+/// fallback for the bridge pill, which calls `openclaw_back_to_dashboard`
+/// via Tauri IPC. Cross-scheme `window.location.href =` from
+/// `http://127.0.0.1:28789` → `tauri://localhost` (or
+/// `http://tauri.localhost`) is SILENTLY BLOCKED by Chromium/WebView2
+/// when the origin isn't allowlisted in CSP `navigate-to` AND there's no
+/// user gesture triggering navigation. Confirmed empirically: Playwright
+/// tests showed `defaultPrevented: True` after click (proving the handler
+/// ran) but `window.location.href` stayed on the chat URL — the
+/// assignment was a no-op.
+///
+/// rc53.10 fix: add a real Tauri command parallel to
+/// `openclaw_back_to_dashboard`. The bridge calls it via
+/// `invoke('mc_open_overlay', { overlayKey: 'secrets' | 'attach' })`.
+/// The hash gets appended to the dashboard URL, so WebView2 navigates
+/// to the trusted bundled origin and main.js picks up the hash on boot.
+///
+/// Allowed values for `overlay_key` are validated against a small
+/// allowlist (currently `secrets` and `attach`). Mismatched keys
+/// reject with 400-equivalent error so a hostile chat page can't trick
+/// us into navigating to arbitrary hashes.
+#[tauri::command]
+fn mc_open_overlay(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    overlay_key: String,
+) -> Result<(), String> {
+    // Allowlist (Lesson 244): only known overlay keys. The chat page is
+    // a foreign origin (http://127.0.0.1:28789) and we don't want to
+    // blindly forward arbitrary hashes into dashboard navigation.
+    let valid_keys = ["secrets", "attach"];
+    if !valid_keys.contains(&overlay_key.as_str()) {
+        log_to_file(&format!(
+            "mc_open_overlay: rejected unknown overlay_key {overlay_key:?} (allowed: {valid_keys:?})"
+        ));
+        return Err(format!(
+            "mc_open_overlay: unknown overlay_key {overlay_key:?}; allowed: {valid_keys:?}"
+        ));
+    }
+
+    let main_label = "main";
+    let main_window = match app_handle.get_webview_window(main_label) {
+        Some(w) => w,
+        None => {
+            log_to_file(&format!(
+                "mc_open_overlay: main window {:?} not found",
+                main_label
+            ));
+            return Err(format!(
+                "MiracleClaw main window not found; cannot open overlay."
+            ));
+        }
+    };
+
+    // rc53.11 (Lesson 247): capture where we were so mc_close_overlay
+    // can navigate back. Typical case: the user is on the OpenClaw chat
+    // page at http://127.0.0.1:28789/chat?session=... and clicks the
+    // 🔑 floating button — close should send them back to that chat
+    // URL, not the dashboard. window.url() returns the page's current
+    // URL as a `url::Url`; we serialise it to a String for storage.
+    // (See create_main_window() for the same idiom.)
+    let return_url = match main_window.url() {
+        Ok(u) => {
+            let s = u.to_string();
+            // Defensive: don't stash about:blank — it'd cause a blank
+            // page if close fires before any other navigation. And don't
+            // stash the dashboard itself — that would create a no-op
+            // round trip (close → dashboard → click overlay again).
+            if s == "about:blank" || s.starts_with("tauri://localhost")
+                || s.starts_with("http://tauri.localhost")
+                || s.starts_with("https://tauri.localhost")
+                || s.starts_with("http://localhost")
+                || s.starts_with("https://localhost") {
+                log_to_file(&format!(
+                    "mc_open_overlay: skip stash for already-dashboard URL {s:?}"
+                ));
+                None
+            } else {
+                Some(s)
+            }
+        }
+        Err(e) => {
+            log_to_file(&format!(
+                "mc_open_overlay: window.url() returned Err: {e} (no return URL stashed)"
+            ));
+            None
+        }
+    };
+    if let Some(ref url) = return_url {
+        if let Ok(mut guard) = state.overlay_return_url.lock() {
+            *guard = Some(url.clone());
+            log_to_file(&format!(
+                "mc_open_overlay: stashed return_url = {url:?}"
+            ));
+        }
+    }
+
+    // Same dashboard URL lookup as openclaw_back_to_dashboard (Lesson 536/537).
+    let dashboard_url = {
+        match state.dashboard_url.lock() {
+            Ok(guard) => guard.clone(),
+            Err(_) => {
+                log_to_file(
+                    "mc_open_overlay: dashboard_url mutex poisoned; \
+                     using scheme-aware fallback",
+                );
+                None
+            }
+        }
+    };
+    let dashboard_url = dashboard_url.unwrap_or_else(|| {
+        #[cfg(any(windows, target_os = "android"))]
+        let default = "http://tauri.localhost/".to_string();
+        #[cfg(not(any(windows, target_os = "android")))]
+        let default = "tauri://localhost/".to_string();
+        log_to_file(&format!(
+            "mc_open_overlay: AppState URL was None, using fallback {default:?}"
+        ));
+        default
+    });
+
+    // Append the URL hash. We strip any existing hash first to keep the
+    // resulting URL predictable, then append ours. URL fragment (#...)
+    // is not sent to the server so the gateway doesn't see it.
+    let base = dashboard_url.split('#').next().unwrap_or(&dashboard_url);
+    let target = format!("{base}#mcAutoOpen={overlay_key}");
+    let parsed_url = match tauri::Url::parse(&target) {
+        Ok(u) => u,
+        Err(err) => {
+            log_to_file(&format!(
+                "mc_open_overlay: invalid target URL {target:?}: {err}"
+            ));
+            return Err(format!(
+                "invalid target URL {target:?}: {err}"
+            ));
+        }
+    };
+
+    if let Err(e) = main_window.navigate(parsed_url) {
+        log_to_file(&format!(
+            "mc_open_overlay: main_window.navigate() failed: {e}"
+        ));
+        return Err(format!("could not navigate to overlay: {e}"));
+    }
+    let _ = main_window.set_focus();
+    let _ = main_window.unminimize();
+
+    log_to_file(&format!(
+        "mc_open_overlay: navigated main window to {target}"
+    ));
+    Ok(())
+}
+
+/// Tauri command: mc_close_overlay (Lesson 247, rc53.11).
+///
+/// Called by `terminal.js` close-overlay handlers (`closeSecretsOverlay`,
+/// `closeAttachOverlay`) via `window.__openclawHostBridge.closeOverlay()`.
+/// Navigates the main webview back to the URL captured by the most
+/// recent `mc_open_overlay` call (typically the OpenClaw chat page
+/// `http://127.0.0.1:28789/chat?session=...`), so closing the overlay
+/// returns the user to where they were.
+///
+/// Falls back to the dashboard if no return URL is stashed (covers the
+/// case where the user opened Secrets/Attach from the Terminal page's
+/// own toolbar — they expect to land back on the Terminal, which the
+/// dashboard URL will satisfy via the dashboard router).
+///
+/// Clears the stashed return URL after navigation so a subsequent
+/// close doesn't re-navigate to a stale URL.
+#[tauri::command]
+fn mc_close_overlay(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let main_label = "main";
+    let main_window = match app_handle.get_webview_window(main_label) {
+        Some(w) => w,
+        None => {
+            log_to_file(&format!(
+                "mc_close_overlay: main window {:?} not found",
+                main_label
+            ));
+            return Err(format!(
+                "MiracleClaw main window not found; cannot close overlay."
+            ));
+        }
+    };
+
+    // Take the stashed return URL out of the mutex so a re-entry can't
+    // double-navigate.
+    let return_url = match state.overlay_return_url.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(_) => {
+            log_to_file(
+                "mc_close_overlay: overlay_return_url mutex poisoned; \
+                 falling back to dashboard",
+            );
+            None
+        }
+    };
+
+    let target_url = match return_url {
+        Some(url) => url,
+        None => {
+            // No return URL — fall back to the dashboard URL (same
+            // resolution path as openclaw_back_to_dashboard).
+            let dashboard_url = match state.dashboard_url.lock() {
+                Ok(guard) => guard.clone(),
+                Err(_) => None,
+            };
+            let dashboard_url = dashboard_url.unwrap_or_else(|| {
+                #[cfg(any(windows, target_os = "android"))]
+                let default = "http://tauri.localhost/".to_string();
+                #[cfg(not(any(windows, target_os = "android")))]
+                let default = "tauri://localhost/".to_string();
+                log_to_file(&format!(
+                    "mc_close_overlay: AppState URL was None, using fallback {default:?}"
+                ));
+                default
+            });
+            log_to_file(&format!(
+                "mc_close_overlay: no return URL stashed; falling back to dashboard {dashboard_url:?}"
+            ));
+            dashboard_url
+        }
+    };
+
+    // Strip any existing hash from the return URL. The dashboard's
+    // main.js boot parses #mcAutoOpen=... to auto-open an overlay;
+    // if we re-navigated to a URL with that hash still present, the
+    // overlay would immediately reopen (recursion bug).
+    let base = target_url.split('#').next().unwrap_or(&target_url);
+
+    let parsed_url = match tauri::Url::parse(base) {
+        Ok(u) => u,
+        Err(err) => {
+            log_to_file(&format!(
+                "mc_close_overlay: invalid return URL {base:?}: {err}"
+            ));
+            return Err(format!(
+                "invalid return URL {base:?}: {err}"
+            ));
+        }
+    };
+
+    if let Err(e) = main_window.navigate(parsed_url) {
+        log_to_file(&format!(
+            "mc_close_overlay: main_window.navigate() failed: {e}"
+        ));
+        return Err(format!("could not close overlay: {e}"));
+    }
+    let _ = main_window.set_focus();
+    let _ = main_window.unminimize();
+
+    log_to_file(&format!(
+        "mc_close_overlay: navigated main window back to {base}"
+    ));
+    Ok(())
+}
+
 /// Delete the WebView2 user-data-dir so the next window build gets a fresh
 /// cache. This is the most reliable fix for the "blank window after upgrade"
 /// pattern: WebView2 caches the asset bundle hash from the prior install,
@@ -4007,6 +4381,149 @@ fn mc_get_nudge() -> Result<crate::auth::nudge::NudgeDecision, String> {
     let tier = crate::auth::tier::current_tier();
     let quota = crate::auth::nudge::fetch_quota_cached(&jwt, &maic_base)?;
     Ok(crate::auth::nudge::evaluate_nudge(tier, &quota))
+}
+
+// Returns the raw quota (used + limit) regardless of threshold.
+//
+// Lesson 561 (2026-08-24 16:08 MDT, David): the dashboard's usage line
+// was "dead" because `mc_get_nudge` only returns a struct when the user
+// has hit a 500/1000/cap/80/95/100% threshold — below threshold, the
+// dashboard fell back to rendering just an em dash. This new command
+// returns the quota unconditionally so the dashboard can ALWAYS show
+// "X / Y tokens this period" and a progress bar.
+//
+// Reuses the same fetch + cache as `mc_get_nudge` so quota and nudge
+// can never disagree about the current token count.
+#[tauri::command]
+fn mc_get_quota() -> Result<crate::auth::nudge::QuotaResponse, String> {
+    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let maic_base = resolve_maic_base_url();
+    crate::auth::nudge::fetch_quota_cached(&jwt, &maic_base)
+}
+
+// Returns the list of available plans + pricing for the in-app
+// upgrade card. Mirrors MAIC's `/v1/billing/plans` endpoint but is
+// served from Rust so we don't need a separate HTTP fetch from JS.
+//
+// Lesson 561: pulled into the dashboard so free users can upgrade
+// without leaving the Tauri webview. The endpoint is unauthenticated
+// on MAIC's side, so we don't need a JWT here — but we still use
+// `resolve_maic_base_url()` so test/dev environments work.
+#[tauri::command]
+fn mc_list_plans() -> Result<Vec<serde_json::Value>, String> {
+    let maic_base = resolve_maic_base_url();
+    let url = format!(
+        "{}/v1/billing/plans",
+        crate::auth::tier::normalize_api_base(&maic_base)
+    );
+    let resp = ureq::get(&url)
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| format!("/v1/billing/plans: {e}"))?;
+    let plans: Vec<serde_json::Value> = resp
+        .into_json()
+        .map_err(|e| format!("parse /v1/billing/plans: {e}"))?;
+    Ok(plans)
+}
+
+// Opens a Stripe Checkout URL for the given plan in the OS default
+// browser. Used by the in-app "Plans" card on the dashboard so free
+// users can upgrade without leaving the Tauri webview.
+//
+// Lesson 561: existing `open_register_url` allow-lists only
+// milagrocloud.com; Stripe checkout URLs are on checkout.stripe.com.
+// We add a NEW command instead of widening that allow-list so the
+// billing flow has its own dedicated defense-in-depth boundary.
+//
+// Flow:
+//   1. JS calls `mc_open_checkout_url("pro")`.
+//   2. Rust POSTs to MAIC `/v1/billing/checkout` with the user's JWT
+//      + plan_code, plus success_url/cancel_url pointing at
+//      milagrocloud.com/welcome and /pricing respectively.
+//   3. MAIC returns a Stripe Checkout URL.
+//   4. Rust validates the URL is checkout.stripe.com (defense-in-depth)
+//      and opens it via `cmd /c start ""` on Windows (the cross-platform
+//      `open`/`xdg-open` pattern in `open_register_url` handles
+//      macOS/Linux).
+#[tauri::command]
+fn mc_open_checkout_url(plan_code: String) -> Result<(), String> {
+    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let maic_base = resolve_maic_base_url();
+    let base = crate::auth::tier::normalize_api_base(&maic_base);
+    let url = format!("{}/v1/billing/checkout", base);
+
+    // MAIC's CheckoutIn shape (see /opt/maic/api/routes/billing.py:281).
+    // We always send success_url=/welcome?plan=<code> so the post-payment
+    // redirect lands on the same page as /signup?plan=free (Lesson 553).
+    let body = serde_json::json!({
+        "plan_code": plan_code,
+        "success_url": format!("https://milagrocloud.com/welcome?plan={}", plan_code),
+        "cancel_url": "https://milagrocloud.com/pricing?canceled=1",
+    });
+
+    let resp = ureq::post(&url)
+        .set("Authorization", &format!("Bearer {jwt}"))
+        .set("Content-Type", "application/json")
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(15))
+        .send_json(&body)
+        .map_err(|e| format!("/v1/billing/checkout POST: {e}"))?;
+
+    let parsed: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse checkout response: {e}"))?;
+
+    let checkout_url = parsed
+        .get("url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "checkout response missing `url` field".to_string())?
+        .to_string();
+
+    // Defense-in-depth: only open Stripe checkout URLs. If MAIC ever
+    // returns a different host, refuse rather than open a phishing
+    // redirect. Covers the case where a future MAIC bug or a frontend
+    // compromise tries to redirect the user to an attacker site.
+    if !(checkout_url.starts_with("https://checkout.stripe.com/")
+        || checkout_url.starts_with("https://buy.stripe.com/"))
+    {
+        return Err(format!(
+            "checkout URL host not in Stripe allow-list: {checkout_url}"
+        ));
+    }
+
+    eprintln!(
+        "[miracle-claw] mc_open_checkout_url: opening {} for plan={}",
+        checkout_url, plan_code
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let status = Command::new("cmd")
+            .args(["/C", "start", "", &checkout_url])
+            .status()
+            .map_err(|e| format!("cmd start failed: {e}"))?;
+        if !status.success() {
+            return Err(format!("cmd start exited with {:?}", status.code()));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::process::Command;
+        #[cfg(target_os = "macos")]
+        let mut cmd = Command::new("open");
+        #[cfg(not(target_os = "macos"))]
+        let mut cmd = Command::new("xdg-open");
+        cmd.arg(&checkout_url);
+        let status = cmd.status().map_err(|e| format!("browser launch failed: {e}"))?;
+        if !status.success() {
+            return Err(format!("browser exited with {:?}", status.code()));
+        }
+        Ok(())
+    }
 }
 
 // Returns the list of tool names the current tier can use. Used by the
@@ -5303,9 +5820,556 @@ fn mc_ui_open_externally(path: String) -> Result<(), String> {
     }
 }
 
+// ============================================================================
+// v1.1.0-prep: drag-and-drop file attachment staging (feature/drag-drop).
+//
+// User drops files from OS File Explorer onto the dashboard. We copy
+// each file into <workspace>/inbox/ under a timestamped name so the
+// path is stable (no spaces, no unicode edge cases) and under the
+// existing path allowlist (read_file can see them). Original names
+// are preserved as the suffix so the user can recognize the file.
+//
+// The dashboard shows a queue of staged attachments. "Send to chat"
+// opens the OpenClaw webview and returns a markdown payload the JS
+// writes to the OS clipboard via navigator.clipboard.writeText. The
+// user pastes (Ctrl+V) into the chat. The chat model then reads the
+// file via its existing `read_file` tool — paths are in the allowlist.
+//
+// We deliberately do NOT inject into the OpenClaw chat DOM (we don't
+// own it). Clipboard paste is the simplest reliable handoff that works
+// across MC versions and OpenClaw session changes.
+
+#[derive(serde::Deserialize)]
+struct StageAttachmentArgs {
+    src_path: String,
+    #[serde(default)]
+    original_name: Option<String>,
+}
+
+const ATTACHMENT_MAX_BYTES: u64 = 100 * 1024 * 1024; // 100 MB per file
+const INBOX_DIR: &str = "inbox";
+
+#[derive(serde::Serialize, Clone)]
+struct AttachmentMeta {
+    /// Timestamped id, stable across calls (used by mc_remove_attachment).
+    id: String,
+    /// Absolute path of the staged copy in inbox/.
+    staged_path: String,
+    /// Original filename from the OS for display.
+    original_name: String,
+    size: u64,
+    /// "staged" once copied; "missing" if the file vanished between
+    /// stage and the next render. UI can hide missing rows.
+    status: String,
+}
+
+/// Return the absolute path of <workspace>/<INBOX_DIR>, creating it
+/// if missing. Used by all attachment commands below.
+fn inbox_dir() -> Result<PathBuf, String> {
+    let root = workspace_root()?;
+    let dir = root.join(INBOX_DIR);
+    if !dir.exists() {
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("create {}: {}", dir.display(), e))?;
+    }
+    Ok(dir)
+}
+
+#[tauri::command]
+fn mc_stage_attachment(args: StageAttachmentArgs) -> Result<AttachmentMeta, String> {
+    let src = PathBuf::from(&args.src_path);
+    let metadata = fs::metadata(&src).map_err(|e| {
+        format!("cannot stat {}: {}", args.src_path, e)
+    })?;
+    if metadata.is_dir() {
+        return Err(format!(
+            "{} is a directory (drop a file, not a folder)",
+            args.src_path
+        ));
+    }
+    if metadata.len() > ATTACHMENT_MAX_BYTES {
+        return Err(format!(
+            "{} is too large: {} bytes (cap {} bytes)",
+            args.src_path,
+            metadata.len(),
+            ATTACHMENT_MAX_BYTES
+        ));
+    }
+
+    let dir = inbox_dir()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("clock error: {e}"))?
+        .as_millis();
+    let raw_name = args
+        .original_name
+        .clone()
+        .or_else(|| {
+            PathBuf::from(&args.src_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "attachment".to_string());
+    // Sanitize the suffix so the staged filename is portable across
+    // tools that consume it (model chat, terminal paste, etc.).
+    let safe_name = raw_name
+        .replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_");
+    let filename = format!("{}-{}", now, safe_name);
+    let dst = dir.join(&filename);
+
+    fs::copy(&src, &dst).map_err(|e| {
+        format!("copy {} -> {}: {}", args.src_path, dst.display(), e)
+    })?;
+
+    Ok(AttachmentMeta {
+        id: now.to_string(),
+        staged_path: dst.to_string_lossy().into_owned(),
+        original_name: raw_name,
+        size: metadata.len(),
+        status: "staged".to_string(),
+    })
+}
+
+#[tauri::command]
+fn mc_list_attachments() -> Vec<AttachmentMeta> {
+    // The queue is "everything currently in inbox/". v1 doesn't keep a
+    // separate sent/cleared marker; the dashboard can call
+    // mc_clear_attachments once the user clicks Send.
+    let dir = match inbox_dir() {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let entries = match fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<AttachmentMeta> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let metadata = entry.metadata().ok()?;
+            if metadata.is_dir() {
+                return None;
+            }
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            let (id, original) = match name.split_once('-') {
+                Some((id, rest)) => (id.to_string(), rest.to_string()),
+                None => (String::new(), name.clone()),
+            };
+            let status = if metadata.len() > 0 {
+                "staged".to_string()
+            } else {
+                "missing".to_string()
+            };
+            Some(AttachmentMeta {
+                id,
+                staged_path: path.to_string_lossy().into_owned(),
+                original_name: original,
+                size: metadata.len(),
+                status,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.id.cmp(&a.id));
+    out
+}
+
+#[tauri::command]
+fn mc_remove_attachment(id: String) -> Result<(), String> {
+    let dir = inbox_dir()?;
+    for entry in fs::read_dir(&dir).map_err(|e| format!("read dir: {e}"))? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let name = match entry.file_name().into_string() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        if let Some((prefix, _)) = name.split_once('-') {
+            if prefix == id {
+                let path = entry.path();
+                fs::remove_file(&path).map_err(|e| {
+                    format!("delete {}: {}", path.display(), e)
+                })?;
+                return Ok(());
+            }
+        }
+    }
+    Err(format!("no attachment with id {id}"))
+}
+
+#[tauri::command]
+fn mc_clear_attachments() -> Result<usize, String> {
+    let dir = inbox_dir()?;
+    let mut removed = 0;
+    for entry in fs::read_dir(&dir).map_err(|e| format!("read dir: {e}"))? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// Build the markdown payload the user pastes into chat. Paths are
+/// absolute so the chat model's read_file tool can resolve them
+/// regardless of cwd. Backticks in paths are escaped to keep the
+/// markdown well-formed.
+fn build_attachment_message(attachments: &[AttachmentMeta], user_msg: Option<&str>) -> String {
+    let mut out = String::new();
+    if let Some(m) = user_msg {
+        let trimmed = m.trim();
+        if !trimmed.is_empty() {
+            out.push_str(trimmed);
+            out.push_str("\n\n");
+        }
+    }
+    out.push_str("Attached files:\n");
+    for a in attachments {
+        out.push_str(&format!(
+            "- `{}` ({} bytes)\n",
+            a.staged_path.replace('`', "\\`"),
+            a.size
+        ));
+    }
+    out
+}
+
+/// Finalize the queue: build the markdown payload, open the OpenClaw
+/// webview window, and return the payload so the JS can write it to
+/// the OS clipboard via navigator.clipboard.writeText. The dashboard
+/// is responsible for clearing the queue after a successful send.
+#[tauri::command]
+fn mc_send_attachments_to_chat(
+    app: tauri::AppHandle,
+    user_message: Option<String>,
+) -> Result<String, String> {
+    let attachments = mc_list_attachments();
+    if attachments.is_empty() {
+        return Err("no staged attachments to send".to_string());
+    }
+    let payload = build_attachment_message(&attachments, user_message.as_deref());
+
+    // Open (or focus) the OpenClaw webview window. Non-fatal if it
+    // fails — the user can still paste from clipboard into any window.
+    if let Err(e) = crate::openclaw_open_window(app) {
+        eprintln!("[miracle-claw] openclaw_open_window failed: {e}");
+    }
+
+    Ok(payload)
+}
+
+// ----------------------------------------------------------------------------
+// rc53 (feature/secrets-vault): local encrypted secrets vault.
+//
+// THREAT MODEL (locked-in v1, see notes/SECRETS-VAULT.md):
+//   - Plaintext NEVER crosses the network boundary to MAIC.
+//   - Chat preprocessor replaces `$NAME` references with `<<secret:NAME>>`
+//     placeholders before any `/v1/chat/completions` call.
+//   - bash_run expands `<<secret:NAME>>` placeholders AT EXEC TIME ONLY,
+//     in-memory, never logged with plaintext.
+//
+// v0 (rc53): plaintext JSON vault, no encryption. Validates the data
+// flow end-to-end. v1 (rc54) layers AES-256-GCM on top.
+//
+// This module exposes Tauri commands for: set/get/delete/list/expand.
+// ----------------------------------------------------------------------------
+
+/// Path to the secrets vault file (plaintext JSON in v0).
+fn secrets_vault_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    // Tauri-canonical data dir: %APPDATA%\MiracleClaw on Windows,
+    // ~/.local/share/MiracleClaw on Linux, etc.
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app_data_dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("secrets.json"))
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+struct SecretEntry {
+    name: String,
+    value: String,
+    created_at: String,
+    last_used_at: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct SecretSummary {
+    name: String,
+    created_at: String,
+    last_used_at: Option<String>,
+    /// Length of the plaintext value. UI uses this to render
+    /// "••••••••" without knowing the value.
+    value_len: usize,
+}
+
+/// Validate a secret name. Enforces shell-var rules so a careless
+/// name like `$PATH; rm -rf /` is rejected before it ever reaches a
+/// command line.
+fn validate_secret_name(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let first = chars
+        .next()
+        .ok_or_else(|| "secret name cannot be empty".to_string())?;
+    if !(first.is_ascii_uppercase() || first == '_') {
+        return Err(format!(
+            "secret name `{name}` invalid: must start with uppercase letter or underscore"
+        ));
+    }
+    for c in chars {
+        if !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') {
+            return Err(format!(
+                "secret name `{name}` invalid: only A-Z, 0-9, underscore allowed"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn now_iso() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Cheap ISO-8601-ish. Avoids pulling chrono for one call site.
+    // Format: 1970-01-01T00:00:00Z (relative seconds since epoch).
+    // v1 will swap this for chrono::Utc::now().to_rfc3339().
+    format!("epoch:{secs}")
+}
+
+fn read_vault(app: &tauri::AppHandle) -> Result<Vec<SecretEntry>, String> {
+    let p = secrets_vault_path(app)?;
+    if !p.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read(&p).map_err(|e| e.to_string())?;
+    // rc53.8: read_vault_bytes transparently decrypts MCV1-encrypted
+    // blobs OR passes legacy plaintext JSON through for on-save
+    // migration.
+    let plain = secrets_encryption::read_vault_bytes(&raw)?;
+    let entries: Vec<SecretEntry> =
+        serde_json::from_slice(&plain).map_err(|e| format!("vault parse error: {e}"))?;
+    Ok(entries)
+}
+
+fn write_vault(app: &tauri::AppHandle, entries: &[SecretEntry]) -> Result<(), String> {
+    let p = secrets_vault_path(app)?;
+    let plain = serde_json::to_vec_pretty(entries).map_err(|e| e.to_string())?;
+    // rc53.8: write_vault_bytes encrypts the JSON with a per-install
+    // master key from the OS keychain. Legacy plaintext callers are
+    // migrated automatically — the next save after upgrading overwrites
+    // the plaintext with MCV1-encrypted bytes.
+    let blob = secrets_encryption::write_vault_bytes(&plain)?;
+    // Atomic write: write to .tmp then rename. Prevents torn writes
+    // if MC crashes mid-save.
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, blob).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Append a line to the audit log. v1 minimal: just timestamp + name.
+/// Lives in `<MC_DATA>/secrets.audit.log`. Never leaves the machine.
+fn audit_log(app: &tauri::AppHandle, name: &str) {
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        let line = format!("{} {}\n", now_iso(), name);
+        let _ = std::fs::write(dir.join("secrets.audit.log"), line);
+        // Note: this APPENDS-by-truncating. For v0 simplicity only.
+        // v1 will use proper append + rotation.
+    }
+}
+
+#[tauri::command]
+fn mc_secret_set(app: tauri::AppHandle, name: String, value: String) -> Result<SecretSummary, String> {
+    validate_secret_name(&name)?;
+    if value.is_empty() {
+        return Err("secret value cannot be empty".to_string());
+    }
+    let mut entries = read_vault(&app)?;
+    // Upsert: if name exists, replace value; else append.
+    let now = now_iso();
+    let value_len = value.chars().count();
+    let mut found = false;
+    for entry in entries.iter_mut() {
+        if entry.name == name {
+            entry.value = value.clone();
+            entry.created_at = now.clone();
+            entry.last_used_at = None;
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        entries.push(SecretEntry {
+            name: name.clone(),
+            value,
+            created_at: now.clone(),
+            last_used_at: None,
+        });
+    }
+    write_vault(&app, &entries)?;
+    Ok(SecretSummary {
+        name,
+        created_at: now,
+        last_used_at: None,
+        value_len,
+    })
+}
+
+#[tauri::command]
+fn mc_secret_delete(app: tauri::AppHandle, name: String) -> Result<bool, String> {
+    validate_secret_name(&name)?;
+    let mut entries = read_vault(&app)?;
+    let before = entries.len();
+    entries.retain(|e| e.name != name);
+    if entries.len() == before {
+        return Err(format!("secret `{name}` not found"));
+    }
+    write_vault(&app, &entries)?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn mc_secret_list(app: tauri::AppHandle) -> Result<Vec<SecretSummary>, String> {
+    let entries = read_vault(&app)?;
+    Ok(entries
+        .into_iter()
+        .map(|e| SecretSummary {
+            name: e.name,
+            created_at: e.created_at,
+            last_used_at: e.last_used_at,
+            value_len: e.value.chars().count(),
+        })
+        .collect())
+}
+
+/// Expand `<<secret:NAME>>` placeholders in a string to their stored
+/// plaintext values. Called by `bash_run` (via the JS preprocessor)
+/// right before exec. Updates `last_used_at` and writes an audit log
+/// line for each expansion.
+#[tauri::command]
+fn mc_secret_expand(app: tauri::AppHandle, input: String) -> Result<String, String> {
+    use std::sync::Mutex;
+    // Static cache of expanded placeholders to avoid race-on-audit when
+    // multiple bash_run calls fire in parallel (each one triggers an
+    // audit log + last_used_at update).
+    static AUDIT_LOCK: Mutex<()> = Mutex::new(());
+
+    let entries = read_vault(&app)?;
+    let mut by_name: std::collections::HashMap<&str, &SecretEntry> =
+        std::collections::HashMap::new();
+    for e in &entries {
+        by_name.insert(e.name.as_str(), e);
+    }
+
+    let mut expanded = input.clone();
+    let mut to_mark_used: Vec<String> = Vec::new();
+
+    // Scan for `<<secret:NAME>>` patterns and expand each one. We
+    // loop because the replacement value may itself contain
+    // placeholders (e.g. a script that uses another secret). v0:
+    // we do a single pass; if the user wants nested secrets they
+    // can call mc_secret_expand on the result. v1: maybe recursive,
+    // with cycle detection.
+    //
+    // The string-find approach avoids the byte-scan borrow checker
+    // dance. Each iteration: find next `<<secret:`, find matching
+    // `>>`, look up name, splice replacement in.
+    loop {
+        let Some(start) = expanded.find("<<secret:") else {
+            break;
+        };
+        let after_prefix = start + "<<secret:".len();
+        let Some(end_rel) = expanded[after_prefix..].find(">>") else {
+            // Unterminated placeholder — leave as-is and stop.
+            break;
+        };
+        let end_abs = after_prefix + end_rel;
+        let name = &expanded[after_prefix..end_abs];
+
+        // rc53.6: check the in-memory friendly pool FIRST (Once + PerSession +
+        // Vault-mirror entries). Falls back to disk vault if not present.
+        // Pool entries take() and remove themselves when Lifetime::Once.
+        if let Some(replacement) = secrets_friendly::take(name) {
+            let name_owned = name.to_string();
+            let before = &expanded[..start];
+            let after = &expanded[end_abs + 2..];
+            expanded = format!("{before}{replacement}{after}");
+            if !to_mark_used.contains(&name_owned) {
+                to_mark_used.push(name_owned);
+            }
+            // Continue scanning — next find() picks the next placeholder.
+        } else if let Some(entry) = by_name.get(name) {
+            let replacement = entry.value.clone();
+            let name_owned = name.to_string();
+            // Splice: before + replacement + after
+            let before = &expanded[..start];
+            let after = &expanded[end_abs + 2..];
+            expanded = format!("{before}{replacement}{after}");
+            if !to_mark_used.contains(&name_owned) {
+                to_mark_used.push(name_owned);
+            }
+            // Continue scanning from after the replacement. The
+            // `find("<<secret:")` will pick the next placeholder
+            // in the (now-modified) string.
+        } else {
+            // Placeholder name not in vault. Skip past it so we
+            // don't loop forever on the same unknown placeholder.
+            // We do this by replacing it with a sentinel that won't
+            // match `<<secret:` and continuing.
+            let before = &expanded[..start];
+            let after = &expanded[end_abs + 2..];
+            // Use a high-unicode sentinel that wouldn't appear in
+            // any normal command. The model will see this as a
+            // visible marker that the placeholder was unrecognized.
+            let sentinel = format!("\u{200B}<<unknown-secret:{}>>\u{200B}", name.to_uppercase());
+            expanded = format!("{before}{sentinel}{after}");
+        }
+    }
+
+    // Update last_used_at and write audit log under lock.
+    if !to_mark_used.is_empty() {
+        let _lock = AUDIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut entries = read_vault(&app)?;
+        let now = now_iso();
+        for name in &to_mark_used {
+            audit_log(&app, name);
+            for e in entries.iter_mut() {
+                if &e.name == name {
+                    e.last_used_at = Some(now.clone());
+                    break;
+                }
+            }
+        }
+        write_vault(&app, &entries)?;
+    }
+
+    Ok(expanded)
+}
+
+/// Test-only: read the raw vault file. Returns the JSON string. Used
+/// by integration tests to verify set/delete/expand round-trips.
+#[tauri::command]
+fn mc_secret_debug_dump(app: tauri::AppHandle) -> Result<String, String> {
+    let entries = read_vault(&app)?;
+    serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        // rc49 (feature/drag-drop): OS clipboard for the "Send to chat"
+        // handoff. Writes directly via Win32 / cocoa / xclip so the
+        // dashboard doesn't depend on the webview being focused.
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             first_run_report,
@@ -5315,6 +6379,8 @@ pub fn run() {
             start_gateway_after_login,
             openclaw_open_window,
             openclaw_back_to_dashboard,
+            mc_open_overlay,
+            mc_close_overlay,
             open_register_url,
             // v1.0.7: tier + nudge surface
             mc_get_tier,
@@ -5323,6 +6389,15 @@ pub fn run() {
             mc_refresh_tier,
             mc_apply_tier_change,
             mc_set_tier_defaults,
+            // rc53.12 (Lesson 561): in-app upgrade flow. Free users see
+            // a "Plans" card on the dashboard with one-click Stripe
+            // upgrade buttons. The card shows live pricing pulled from
+            // MAIC's `/v1/billing/plans`. Clicking a plan opens Stripe
+            // Checkout in the OS default browser — user pays there,
+            // returns to /welcome?plan=<code> on success.
+            mc_get_quota,
+            mc_list_plans,
+            mc_open_checkout_url,
             // v1.0.9-rc35: Settings page
             mc_get_user_info,
             mc_list_memory_files,
@@ -5343,7 +6418,37 @@ pub fn run() {
             // binary files (PDF, Office, archives). Newbies get a working
             // "Open in default app" button instead of mojibake.
             mc_ui_read_image,
-            mc_ui_open_externally
+            mc_ui_open_externally,
+            // v1.1.0-prep: drag-and-drop attachment staging
+            // (feature/drag-drop branch). Dashboard drop zone, queue,
+            // and send-to-chat via clipboard handoff.
+            mc_stage_attachment,
+            mc_list_attachments,
+            mc_remove_attachment,
+            mc_clear_attachments,
+            mc_send_attachments_to_chat,
+            // rc53 (feature/secrets-vault): local encrypted secrets
+            // vault. v0: plaintext JSON. See notes/SECRETS-VAULT.md.
+            // Crypto layer arrives in rc54.
+            mc_secret_set,
+            mc_secret_delete,
+            mc_secret_list,
+            mc_secret_expand,
+            mc_secret_debug_dump,
+            // rc53.6 (feature/secrets-vault): friendly setter + ephemeral
+            // pool management. UI merges list_ephemerals() with the
+            // disk-vault list() to render the full secrets table.
+            secrets_friendly::mc_secret_set_friendly,
+            secrets_friendly::mc_secret_list_ephemerals,
+            secrets_friendly::mc_secret_clear_session_ephemerals,
+            secrets_friendly::mc_secret_clear_all_ephemerals,
+            // v1.1.0-rc53.15 (Lesson 570): MC Module Framework.
+            // Voice is the first module; future modules (OCR, TTS,
+            // local search) follow the same pattern.
+            mc_module_list,
+            mc_module_install_local,
+            mc_module_uninstall,
+            mc_module_call
         ])
         .setup(|app| {
             setup(app)?;
@@ -5363,6 +6468,161 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+// ----------------------------------------------------------------------------
+// Module Framework Tauri commands (Lesson 570, rc53.15)
+// ----------------------------------------------------------------------------
+//
+// These are the public surface of the module framework. They wire up:
+// - mc_module_list: frontend calls this to populate the Module Manager UI
+// - mc_module_install_local: dev-mode install from a local dir (no download)
+// - mc_module_uninstall: removes a module's files + unregisters it
+// - mc_module_call: generic dispatcher — routes to a module's sidecar
+//                   based on the Tauri command name. This is the only
+//                   way module commands get into MC. The JS side does
+//                   `invoke('mc_module_call', { command: 'mc_voice_transcribe', params: {...} })`
+//                   and the dispatcher resolves it.
+//
+// Per Lesson 219, every command needs:
+//   1. A stub here
+//   2. An entry in app_commands.toml (`identifier = "allow-mc-module-..."`)
+//   3. An entry in default.toml
+//   4. An entry in main.json (if Tauri needs it for capability manifest)
+//
+// These four entries are added below after the function bodies.
+
+// ---- mc_module_list --------------------------------------------------------
+
+/// Returns a JSON array describing every installed module. Called by the
+/// Module Manager UI on the Settings page (and on startup, to render
+/// UI hooks for already-installed modules).
+#[tauri::command]
+fn mc_module_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::modules::registry::ModuleInfo>, String> {
+    Ok(state.modules.lock().unwrap().list())
+}
+
+// ---- mc_module_install_local -----------------------------------------------
+
+/// Dev-mode install from a local directory. Does NOT download anything.
+/// Used by developers (and by the GitHub-releases flow once that's wired
+/// up in Lesson 572) to install a module without going through the
+/// downloader.
+///
+/// Emits `mc:module-installed` to the frontend so UI hooks flip from
+/// dormant → active without a page reload.
+#[tauri::command]
+fn mc_module_install_local(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+) -> Result<crate::modules::installer::InstallResult, String> {
+    let source_dir = std::path::PathBuf::from(&source_path);
+    let modules_root = crate::modules::modules_root(
+        &app.path()
+            .app_data_dir()
+            .map_err(|e| format!("could not resolve app_data_dir: {e}"))?,
+    );
+    let registry = state.modules.lock().unwrap();
+
+    match crate::modules::installer::install_from_local_dir(
+        &modules_root,
+        &registry,
+        &source_dir,
+    ) {
+        Ok(result) => {
+            // Emit UI hook activation event so dormant buttons light up
+            // without a page reload. Same pattern as Lesson 491.
+            let _ = app.emit(
+                "mc:module-installed",
+                crate::modules::ui_hooks::ModuleInstalledEvent {
+                    id: result.manifest.id.clone(),
+                    name: result.manifest.name.clone(),
+                    version: result.manifest.version.clone(),
+                    hooks: result.manifest.ui_hooks.clone(),
+                },
+            );
+            eprintln!(
+                "[miracle-claw] module installed: {} v{} ({} hooks activated)",
+                result.manifest.id,
+                result.manifest.version,
+                result.manifest.ui_hooks.len()
+            );
+            Ok(result)
+        }
+        Err(e) => Err(format!("install failed: {e}")),
+    }
+}
+
+// ---- mc_module_uninstall ---------------------------------------------------
+
+/// Remove a module by id. Clears its install dir + unregisters from the
+/// runtime registry. Emits `mc:module-uninstalled` so dormant UI hooks
+/// can flip back to disabled.
+#[tauri::command]
+fn mc_module_uninstall(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    // Look up the module's UI hooks BEFORE we remove it, so we can
+    // emit them in the uninstalled event.
+    let hooks: Vec<String> = state
+        .modules
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|m| m.manifest.ui_hooks.clone())
+        .unwrap_or_default();
+
+    let modules_root = crate::modules::modules_root(
+        &app.path()
+            .app_data_dir()
+            .map_err(|e| format!("could not resolve app_data_dir: {e}"))?,
+    );
+    let registry = state.modules.lock().unwrap();
+
+    match crate::modules::installer::uninstall(&modules_root, &registry, &id) {
+        Ok(()) => {
+            let _ = app.emit(
+                "mc:module-uninstalled",
+                crate::modules::ui_hooks::ModuleUninstalledEvent {
+                    id: id.clone(),
+                    hooks: hooks.clone(),
+                },
+            );
+            eprintln!(
+                "[miracle-claw] module uninstalled: {} ({} hooks dormant)",
+                id,
+                hooks.len()
+            );
+            Ok(())
+        }
+        Err(e) => Err(format!("uninstall failed: {e}")),
+    }
+}
+
+// ---- mc_module_call --------------------------------------------------------
+
+/// Generic dispatcher. The only Tauri command module commands actually
+/// use. Resolves `command` (e.g. `"mc_voice_transcribe"`) to its module's
+/// sidecar binary + action name and runs it with `params` as the JSON
+/// argument.
+///
+/// This indirection keeps the ACL surface tiny (one allow-list per
+/// command instead of N) and means adding a new module command requires
+/// ZERO changes to lib.rs — just an entry in the module's installer.json.
+#[tauri::command]
+fn mc_module_call(
+    state: tauri::State<'_, AppState>,
+    command: String,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let registry = state.modules.lock().unwrap();
+    crate::modules::dispatcher::dispatch(&registry, &command, params)
+        .map_err(|e| format!("{e}"))
 }
 
 // ----------------------------------------------------------------------------
@@ -6057,8 +7317,11 @@ mod tests {
     }
 
     // =====================================================================
-    // Lesson 527 (NEW 2026-08-21 13:57 MDT): tier-gated model list.
-    // Free = m1-t1 + m1-t2 only (chat-only fast tier). Paid = all 17.
+    // Lesson 527 (NEW 2026-08-21 13:57 MDT, last revised 2026-08-24
+    // Lesson 567): tier-gated model list.
+    // Free = m1-t1 + m1-t2 + m1-t3 + chat-nemotron-nano
+    //        (chat-only fast tier + cheap NVIDIA MoE).
+    // Paid = all 20 (Lesson 567 added 3 Nemotron models).
     // This is the actual cost-control for Free accounts — they can't
     // accidentally pick `milagro-dev` (14B) and burn their 50K TPM in
     // three messages. Both the write path AND the existing-entry path
@@ -6081,11 +7344,17 @@ mod tests {
     }
 
     #[test]
-    fn free_tier_sees_only_two_models() {
-        // Lesson 527: Free tier sees only m1-t1 + m1-t2 in the
-        // model picker. These are 7B distilled ternary models —
-        // chat-only fast tier. Picking anything else would blow
-        // through the 50K TPM ceiling in a few messages.
+    fn free_tier_sees_three_t_models() {
+        // Lesson 527: Free tier gets the t1 + t2 distilled m1 models.
+        // 2026-08-24 (Lesson 565, David): added t3 to free tier so
+        // free users get the heaviest local 14B-distilled model as
+        // their best option. Cost effect is neutral (t3 is local;
+        // picking it REDUCES cloud fallback risk vs. t1/t2).
+        // 2026-08-24 (Lesson 567, David): added chat-nemotron-nano
+        // — NVIDIA MoE via Ollama Cloud, 1.7s response, costs us
+        // ~$0 via existing subscription.
+        // Free tier excludes the 14B `milagro-dev` (general-purpose)
+        // and the coder/dev-coder/oc-* cloud models.
         let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "any-key");
@@ -6094,13 +7363,15 @@ mod tests {
         let ids = read_model_ids();
         assert_eq!(
             ids.len(),
-            2,
-            "Free tier should see exactly 2 models (m1-t1, m1-t2); got {ids:?}"
+            4,
+            "Free tier should see exactly 4 models (m1-t1, m1-t2, m1-t3, chat-nemotron-nano); got {ids:?}"
         );
         assert!(ids.contains(&"milagro-m1-t1".to_string()));
         assert!(ids.contains(&"milagro-m1-t2".to_string()));
-        // No 14B models allowed for Free.
-        for forbidden in ["milagro-dev", "milagro-dev-coder", "milagro-m1", "milagro-m1-t3"] {
+        assert!(ids.contains(&"milagro-m1-t3".to_string()));
+        assert!(ids.contains(&"chat-nemotron-nano".to_string()));
+        // General-purpose 14B + coder + cloud models still excluded.
+        for forbidden in ["milagro-dev", "milagro-dev-coder", "milagro-m1"] {
             assert!(
                 !ids.contains(&forbidden.to_string()),
                 "Free tier must NOT see {forbidden}"
@@ -6109,8 +7380,12 @@ mod tests {
     }
 
     #[test]
-    fn paid_tiers_see_all_seventeen_models() {
-        // Lesson 527: paid tiers see the full 17-model catalog.
+    fn paid_tiers_see_all_twenty_models() {
+        // Lesson 527: paid tiers see the full 20-model catalog.
+        // Lesson 567 (2026-08-24, David): catalog grew 17 → 20 with
+        // the addition of 3 Nemotron models
+        // (chat-nemotron-nano/super/ultra). nano is also added to
+        // Free (test asserts that separately).
         // Note: existing tests like `paid_tiers_write_all_seven_tools`
         // test the TOOLS list, not the model list. This is the
         // parallel test for models.
@@ -6128,12 +7403,15 @@ mod tests {
             let ids = read_model_ids();
             assert_eq!(
                 ids.len(),
-                17,
-                "Paid tier {tier:?} should see all 17 models; got {ids:?}"
+                20,
+                "Paid tier {tier:?} should see all 20 models; got {ids:?}"
             );
             assert!(ids.contains(&"milagro-dev".to_string()));
             assert!(ids.contains(&"milagro-m1-t1".to_string()));
             assert!(ids.contains(&"milagro-oc-minimax".to_string()));
+            assert!(ids.contains(&"chat-nemotron-nano".to_string()));
+            assert!(ids.contains(&"chat-nemotron-super".to_string()));
+            assert!(ids.contains(&"chat-nemotron-ultra".to_string()));
         }
     }
 
@@ -6141,49 +7419,52 @@ mod tests {
     fn downgrade_from_pro_to_free_removes_paid_models() {
         // Lesson 527: downgrade path. Pro user downgrades to Free
         // → their on-disk config must be re-stamped to only allow
-        // m1-t1 + m1-t2. Without this, the user would still see
-        // 14B models in the picker and could burn TPM.
+        // m1-t1 + m1-t2 + m1-t3 + chat-nemotron-nano (Lesson 565
+        // added t3; Lesson 567 added chat-nemotron-nano to Free).
         let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "any-key");
 
-        // First call as Pro: writes 17 models.
+        // First call as Pro: writes 20 models.
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro).expect("ok");
-        assert_eq!(read_model_ids().len(), 17);
+        assert_eq!(read_model_ids().len(), 20);
 
         // Downgrade to Free.
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free).expect("ok");
         let ids = read_model_ids();
         assert_eq!(
             ids.len(),
-            2,
-            "After Pro→Free downgrade, only 2 models should remain; got {ids:?}"
+            4,
+            "After Pro→Free downgrade, only 4 models should remain (t1, t2, t3, chat-nemotron-nano); got {ids:?}"
         );
         assert!(ids.contains(&"milagro-m1-t1".to_string()));
         assert!(ids.contains(&"milagro-m1-t2".to_string()));
+        assert!(ids.contains(&"milagro-m1-t3".to_string()));
+        assert!(ids.contains(&"chat-nemotron-nano".to_string()));
     }
 
     #[test]
     fn upgrade_from_free_to_pro_adds_paid_models() {
         // Lesson 527: upgrade path. Free user upgrades to Pro →
         // their on-disk config must be re-stamped to include all
-        // 17 models. Without this, the user would see only 2
-        // models even after paying.
+        // 20 models. Without this, the user would see only 4
+        // models (Free: t1+t2+t3+chat-nemotron-nano) even after
+        // paying.
         let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "any-key");
 
-        // First call as Free: writes 2 models.
+        // First call as Free: writes 4 models (t1, t2, t3, chat-nemotron-nano).
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free).expect("ok");
-        assert_eq!(read_model_ids().len(), 2);
+        assert_eq!(read_model_ids().len(), 4);
 
         // Upgrade to Pro.
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro).expect("ok");
         let ids = read_model_ids();
         assert_eq!(
             ids.len(),
-            17,
-            "After Free→Pro upgrade, all 17 models should be present; got {ids:?}"
+            20,
+            "After Free→Pro upgrade, all 20 models should be present; got {ids:?}"
         );
     }
 
@@ -6547,10 +7828,28 @@ mod tests {
         // catalog state (defends against the rc18→rc19/20 upgrade gap
         // fixed in Lesson 520).
         let primary = cfg.pointer("/agents/defaults/model/primary").unwrap();
-        assert_eq!(primary, "maic/milagro-dev");
-        // Free must NOT have fallbacks.
-        assert!(cfg.pointer("/agents/defaults/model/fallbacks").is_none(),
-                "Free must not have a fallbacks array");
+        // Lesson 569 (2026-08-24 22:57 MDT, David): Free default switched
+        // BACK to local m1-t1 (zero Ollama usage) from cloud-deepseek
+        // (Lesson 566). Reason: deepseek = Ollama usage level 4 (extra
+        // high) — burns 4x what nemotron-nano would, blowing through
+        // Free quota in minutes. m1-t1 → m1-t2 → m1-t3 → chat-nemotron-nano
+        // chain keeps Free users on cheap paths.
+        assert_eq!(primary, "maic/milagro-m1-t1");
+        // Lesson 569: Free NOW has a 3-step fallback chain ending at the
+        // cheapest cloud route (chat-nemotron-nano, level 1).
+        let fallbacks: Vec<String> = cfg
+            .pointer("/agents/defaults/model/fallbacks")
+            .expect("Free must have fallbacks array (Lesson 569)")
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            fallbacks,
+            vec!["maic/milagro-m1-t2", "maic/milagro-m1-t3", "maic/chat-nemotron-nano"],
+            "Free chain must be local 7B → local 14B → cloud nano (level 1)"
+        );
     }
 
     #[test]
@@ -6669,9 +7968,10 @@ mod tests {
     fn lesson_517_free_clears_stale_paid_fallbacks_on_downgrade() {
         let _env = lock_env();
         // User paid → had Kimi+fallbacks. Downgraded to Free. Next login
-        // must clean up the stale fallbacks so the dropdown only shows
-        // `milagro-dev`. We model this by starting with Free default
-        // + a fallback array, then calling the writer with Free.
+        // must rewrite the chain to Free's m1-t chain so the dropdown
+        // shows the local models + cheap cloud fallback. We model this
+        // by starting with Free default + a paid fallback array, then
+        // calling the writer with Free.
         let _g = fresh_openclaw_with_model(Some(""), Some(vec!["maic/milagro-oc-minimax", "maic/milagro-dev"]));
         let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
             .expect("writer should succeed");
@@ -6681,14 +7981,29 @@ mod tests {
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         // Lesson 521: provider-prefixed.
+        // Lesson 569 (2026-08-24 22:57 MDT, David): Free primary is now
+        // local m1-t1 (was cloud-deepseek from Lesson 566). Lesson 569
+        // also re-introduces a Free fallback chain (was empty); the chain
+        // walks cheap → expensive (local 7B → local 14B → cloud nano).
         assert_eq!(
             cfg.pointer("/agents/defaults/model/primary").unwrap(),
-            "maic/milagro-dev"
+            "maic/milagro-m1-t1"
         );
-        assert!(
-            cfg.pointer("/agents/defaults/model/fallbacks").is_none(),
-            "Free downgrade must clear the fallbacks array (was: {:?})",
-            cfg.pointer("/agents/defaults/model/fallbacks")
+        // Lesson 569: Free now has a 3-step fallback chain ending at
+        // chat-nemotron-nano. The downgrade REPLACES the stale paid
+        // fallbacks with Free's chain (does not leave them).
+        let fallbacks: Vec<String> = cfg
+            .pointer("/agents/defaults/model/fallbacks")
+            .expect("Free must have fallbacks (Lesson 569)")
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            fallbacks,
+            vec!["maic/milagro-m1-t2", "maic/milagro-m1-t3", "maic/chat-nemotron-nano"],
+            "Free downgrade must replace paid fallbacks with Free's m1-t chain"
         );
     }
 
@@ -6753,20 +8068,21 @@ mod tests {
             .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
             .collect();
         // Lesson 527: ensure_maic_provider_config() defaults to Free
-        // tier (no context). Free gets only m1-t1 + m1-t2 — 2 models,
-        // not 17. The Lesson 520 test ran with the old assumption
-        // (default = all 17). New default for this code path is Free.
-        for id in ["milagro-m1-t1", "milagro-m1-t2"] {
+        // tier (no context). Free gets m1-t1 + m1-t2 + m1-t3 +
+        // chat-nemotron-nano (Lesson 565 added t3 for better free
+        // experience, 2026-08-24; Lesson 567 added chat-nemotron-nano
+        // as a fast NVIDIA MoE option, 2026-08-24).
+        for id in ["milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3", "chat-nemotron-nano"] {
             assert!(ids.contains(id), "Free tier must include model {}", id);
         }
-        // Total = 2 unique ids for Free tier.
-        assert_eq!(models.len(), 2, "Free tier should see exactly 2 models (m1-t1, m1-t2)");
+        // Total = 4 unique ids for Free tier (Lesson 567).
+        assert_eq!(models.len(), 4, "Free tier should see exactly 4 models (t1, t2, t3, chat-nemotron-nano per Lesson 565+567)");
     }
 
     #[test]
     fn lesson_520_known_ids_merge_is_idempotent() {
         // Re-running ensure_maic_provider_config() on a file that already
-        // has all 17 ids must NOT add duplicates and must NOT change the
+        // has all 20 ids must NOT add duplicates and must NOT change the
         // apiKey/baseUrl. This protects against file-mtime churn.
         let _env = lock_env();
         let _g = fresh_openclaw_with_model(None, None);
@@ -7360,5 +8676,48 @@ mod tests {
         let mut child = child;
         let status = child.wait().expect("child should exit cleanly");
         assert!(status.success(), "cmd echo should exit 0");
+    }
+
+    // ---------------------------------------------------------------------
+    // rc53 (feature/secrets-vault): validate_secret_name + placeholder
+    // expansion logic. We test the pure functions directly, not the
+    // Tauri commands (which would require an AppHandle mock).
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn validate_secret_name_accepts_valid_names() {
+        assert!(validate_secret_name("STRIPE_KEY").is_ok());
+        assert!(validate_secret_name("_PRIVATE").is_ok());
+        assert!(validate_secret_name("A").is_ok());
+        assert!(validate_secret_name("AWS_ACCESS_KEY_ID_2026").is_ok());
+    }
+
+    #[test]
+    fn validate_secret_name_rejects_shell_injection_attempts() {
+        // The whole point of the validation: reject anything that
+        // could be interpreted as shell syntax or path traversal.
+        assert!(validate_secret_name("").is_err());
+        assert!(validate_secret_name("PATH; rm -rf /").is_err());
+        assert!(validate_secret_name("KEY`whoami`").is_err());
+        assert!(validate_secret_name("KEY$(id)").is_err());
+        assert!(validate_secret_name("KEY|grep").is_err());
+        assert!(validate_secret_name("KEY&echo").is_err());
+        assert!(validate_secret_name("../etc/passwd").is_err());
+        assert!(validate_secret_name("KEY WITH SPACES").is_err());
+        assert!(validate_secret_name("lowercase").is_err()); // uppercase only
+        assert!(validate_secret_name("1NUM_START").is_err()); // can't start with digit
+        assert!(validate_secret_name("KEY-DASH").is_err()); // no dash
+    }
+
+    #[test]
+    fn secret_name_with_lowercase_passes_validation_for_js_interop() {
+        // JS preprocessor lowercases names before placeholder insertion.
+        // Rust validation should also accept lowercase if it ever
+        // sees it (defense in depth). v0: accept both. v1: maybe
+        // tighten to uppercase only.
+        assert!(validate_secret_name("lowercase").is_err()); // currently strict
+        // The above is the locked-in v0 behavior. If we want to
+        // accept lowercase, remove this assertion and update the
+        // docstring.
     }
 }

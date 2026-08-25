@@ -266,6 +266,15 @@ code {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* Lesson 561: these variables were referenced via `var(--card-bg)`
+     and `var(--muted)` in child rules but never declared. They
+     silently fell through to nothing, leaving the usage-bar flat
+     (which is part of why it looked "dead"). Promote them to the
+     dashboard scope so existing rules + the new plans-card pick
+     them up. Falls back to the tokens on :root for everything else. */
+  --card-bg: var(--bg-card);
+  --card-bg-2: rgba(91, 108, 255, 0.06);
+  --muted: var(--fg-muted);
 }
 
 .dashboard-header {
@@ -341,6 +350,250 @@ code {
 
 .usage-text {
   font-variant-numeric: tabular-nums;
+}
+
+/* Lesson 561 (2026-08-24 16:08 MDT, David): the dashboard's usage
+   line used to be a one-liner that read "—" (em dash) when the user
+   was below any MAIC nudge threshold — looked broken. We now render
+   a thin progress bar under the text, plus an inline CTA button when
+   a soft/hard nudge fires. */
+.usage-progress {
+  margin-top: 8px;
+  height: 4px;
+  background: rgba(91, 108, 255, 0.12);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.usage-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #5b6cff 0%, #7d8bff 100%);
+  border-radius: 999px;
+  transition: width 240ms ease;
+}
+
+.usage-cta {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 6px 14px;
+  background: #5b6cff;
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.usage-cta:hover { background: #6c7dff; }
+
+/* Lesson 564 (2026-08-24 17:28 MDT, David): replaced the in-app
+   6-card pricing grid (Lesson 561) with a single tiny button below
+   the usage bar. The button just opens /pricing in the OS browser,
+   where the real pricing UI lives. The previous plans-card CSS is
+   removed; nothing else references it. */
+.pricing-link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: -16px 0 24px 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: #5b6cff;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.pricing-link-btn:hover { text-decoration: underline; }
+.pricing-link-btn[disabled] { opacity: 0.6; cursor: default; }
+.pricing-link-arrow {
+  font-size: 11px;
+  margin-left: 2px;
+}
+
+/* Lesson 564 (2026-08-24 17:30 MDT, David): the dedicated Plans &
+   Pricing page that the dashboard's tiny button navigates to. Page
+   layout mirrors other top-level pages (secrets/extras): header with
+   back button, intro paragraph, responsive plan grid, footer. The
+   plan card styling itself is mostly the Lesson 561 markup with
+   re-additions for the standalone page (footer, intro, header). */
+.pricing-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 24px 48px;
+}
+
+.pricing-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.pricing-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0;
+  flex: 1;
+}
+
+.pricing-badge {
+  font-size: 11px;
+}
+
+.pricing-intro {
+  margin: 12px 0 24px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 32px;
+}
+
+.pricing-empty {
+  padding: 32px 16px;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.pricing-empty p {
+  margin: 4px 0;
+}
+
+.pricing-footer {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.pricing-footer a {
+  color: #5b6cff;
+  text-decoration: none;
+}
+.pricing-footer a:hover { text-decoration: underline; }
+
+/* Plan cards (Lesson 561 reuse, adapted for the standalone page).
+   Same visual rules as the in-app version: Pro gets the purple
+   border + "Most popular" chip; current plan gets the green tint +
+   "Your plan" badge. */
+.plan-card {
+  position: relative;
+  background: var(--card-bg-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  overflow: visible;
+}
+
+.plan-card.featured {
+  border-color: #5b6cff;
+  box-shadow: 0 0 0 1px rgba(91, 108, 255, 0.3);
+}
+.plan-card.current {
+  border-color: rgba(123, 224, 163, 0.45);
+  background: rgba(123, 224, 163, 0.05);
+}
+
+.plan-badge {
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #5b6cff;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.plan-badge-current {
+  background: rgba(123, 224, 163, 0.85);
+  color: #0f172a;
+}
+
+.plan-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--fg);
+  letter-spacing: 0.2px;
+}
+
+.plan-price {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--fg);
+  line-height: 1.1;
+}
+.plan-price-suffix {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-left: 2px;
+}
+
+.plan-tagline {
+  margin: -2px 0 4px;
+  font-size: 12px;
+  min-height: 14px;
+}
+
+.plan-features {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.7;
+  flex: 1;
+}
+.plan-features li strong {
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.plan-cta {
+  margin-top: 12px;
+  padding: 9px 12px;
+  background: #5b6cff;
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  width: 100%;
+  transition: background 120ms ease, transform 120ms ease;
+}
+.plan-cta:hover:not([disabled]) { background: #6c7dff; transform: translateY(-1px); }
+.plan-cta.is-featured {
+  background: #5b6cff;
+  box-shadow: 0 2px 8px rgba(91, 108, 255, 0.25);
+}
+.plan-cta.is-current {
+  background: rgba(123, 224, 163, 0.18);
+  color: var(--fg);
+  cursor: default;
+}
+.plan-cta[disabled] {
+  background: rgba(123, 224, 163, 0.14);
+  color: var(--muted);
+  cursor: default;
+  transform: none;
 }
 
 .tiles {
@@ -454,6 +707,148 @@ code {
   margin-top: 32px;
   padding-top: 16px;
   border-top: 1px solid var(--border);
+}
+
+/* v1.1.0-prep (feature/drag-drop): attachment staging zone.
+   Lives below the tile grid on the dashboard. Subtle when idle,
+   lights up on dragover so users see where the drop target is. */
+.attach-zone {
+  margin-top: 24px;
+  padding: 20px;
+  border: 2px dashed var(--border, #3a3d41);
+  border-radius: 8px;
+  background: var(--surface-alt, #181b1f);
+  transition: border-color 120ms ease, background-color 120ms ease;
+  cursor: copy;
+  outline: none;
+}
+.attach-zone:focus-visible {
+  border-color: var(--link, #6ea8fe);
+}
+.attach-zone-hot {
+  border-color: var(--link, #6ea8fe);
+  background: rgba(110, 168, 254, 0.08);
+}
+.attach-zone-empty {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  text-align: left;
+}
+.attach-zone-icon {
+  font-size: 32px;
+  opacity: 0.7;
+  flex: 0 0 auto;
+}
+.attach-zone-msg {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.attach-zone-msg strong {
+  font-weight: 600;
+}
+.attach-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.attach-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.attach-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.attach-item-icon {
+  flex: 0 0 auto;
+  font-size: 18px;
+}
+.attach-item-name {
+  flex: 1 1 auto;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attach-item-size {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+.attach-item-remove {
+  flex: 0 0 auto;
+}
+.attach-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.attach-message {
+  flex: 1 1 auto;
+  /* rc49: bump contrast so the typed text is clearly readable against
+     the dashboard background. Earlier fallback colors (--surface /
+     --fg) didn't exist in our token set; the input was rendering as
+     near-illegible dark-on-dark. */
+  background: #0d0f12;
+  color: #f1f5f9;
+  border: 1px solid #475569;
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  caret-color: #60a5fa;
+}
+.attach-message::placeholder {
+  color: #94a3b8;
+}
+.attach-message:focus {
+  outline: none;
+  border-color: var(--link, #6ea8fe);
+  box-shadow: 0 0 0 1px var(--link, #6ea8fe);
+}
+.attach-actions button.primary {
+  flex: 0 0 auto;
+}
+.attach-actions button.link-button {
+  flex: 0 0 auto;
+}
+.attach-status {
+  min-height: 1.2em;
+  margin-top: 8px;
+}
+.attach-status[data-kind="error"] {
+  color: #f87171;
+}
+
+/* rc49: expandable "How does this work?" help for new users. The
+   default <details>/<summary> styling is fine on dark backgrounds
+   but the surrounding block needs a little breathing room. */
+.attach-zone-help {
+  margin-top: 10px;
+}
+.attach-zone-help summary {
+  cursor: pointer;
+  color: var(--link);
+  font-size: 12px;
+  padding: 2px 0;
+}
+.attach-zone-help summary:hover {
+  text-decoration: underline;
+}
+.attach-zone-help ol {
+  margin: 6px 0 6px 18px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.attach-zone-help p {
+  margin: 4px 0 0 0;
+  font-size: 11px;
 }
 
 .link-button {
@@ -600,6 +995,25 @@ code {
 .icon-link:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* Visible Ctrl+K chip in the dashboard header so users discover the
+   command palette shortcut. Without this, the shortcut is invisible
+   to anyone who didn't already know about it (rc52 feedback). */
+.icon-link.cmd-k-hint {
+  width: auto;
+  height: 32px;
+  padding: 0 10px;
+  gap: 4px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--fg-muted);
+  letter-spacing: 0.02em;
+}
+.icon-link.cmd-k-hint kbd {
+  font-family: inherit;
+  font-size: inherit;
+  /* Inline kbd (no extra chip styling) so the chip reads as one label */
 }
 
 /* --- 2. Settings page skeleton -------------------------------- */
@@ -1059,6 +1473,10 @@ code {
   flex-wrap: wrap;
 }
 
+.terminal-toolbar-spacer {
+  flex: 1 1 auto;
+}
+
 .terminal-shell-label {
   font-size: 13px;
   color: var(--fg-muted);
@@ -1175,12 +1593,257 @@ code {
   margin-bottom: 8px;
 }
 
-/* Toolbar hides in fullscreen; input row stays visible. (rc44 fix:
-   user reported no input area in fullscreen — fullscreen users DO
-   want to type. Toolbar can stay hidden because shell/restart are
-   pre-fullscreen choices.) */
+/* rc53.9 (Lesson 243): KEEP toolbar visible in fullscreen. The old
+   rc44 rule `display: none` predates rc53.5 where the toolbar gained
+   runtime-action buttons (🔑 Secrets, 📎 Attach). Those buttons need
+   to be reachable while the terminal is fullscreen — pre-fullscreen
+   choices assumption no longer holds. David explicitly asked for this
+   2026-08-23.
+
+   Make the toolbar compact in fullscreen: smaller padding, smaller
+   font, wrap onto a second line if it would otherwise force horizontal
+   scroll on a 1200px window. The shell-select dropdown, status badge,
+   and the two icon buttons all need to fit. */
 .terminal-page.terminal-fullscreen-mode .terminal-toolbar {
-  display: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.terminal-page.terminal-fullscreen-mode .terminal-toolbar .icon-link {
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+/* Lesson 571: MC Module Framework — voice button gating. Starts
+   greyed out (data-module-voice-installed="false") and lights up
+   when the voice module installs (the runtime flips the attr to
+   "true" on the mc:module-installed event).
+
+   Fullscreen variant: when the terminal is in fullscreen mode, the
+   same button gets the `.terminal-fullscreen-mic` selector via the
+   `[data-module-voice-installed="true"]` style below; we use CSS to
+   ensure the icon stays visible against the dark fullscreen bg. */
+.icon-link[data-module-voice-installed="false"] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.icon-link[data-module-voice-installed="false"]:hover {
+  /* Hover state suppressed while disabled — no transform, no color shift */
+  background: transparent;
+  border-color: var(--border);
+}
+.icon-link[data-module-voice-installed="true"] {
+  opacity: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+/* Selector .terminal-fullscreen-mic is reserved for the dashboard
+   FAB or any standalone mic that appears in fullscreen views. The
+   selector currently has no DOM target; the CSS rule guarantees
+   when it does get added, it'll pick up the same gating. */
+.terminal-fullscreen-mic[data-module-voice-installed="false"] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.terminal-fullscreen-mic[data-module-voice-installed="true"] {
+  opacity: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+/* Lesson 572: Settings → Modules card grid (mirrors memory-file
+   style for consistency). Card dims, action buttons, status pill. */
+.modules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.module-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.module-card[data-installed="false"] {
+  opacity: 0.85;
+}
+.module-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.module-card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.module-card-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+}
+.module-card-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+.module-card-subtitle {
+  margin-top: 2px;
+}
+.module-status {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+.module-status.is-installed {
+  background: rgba(76, 175, 80, 0.15);
+  color: #6fcf7;
+}
+.module-status.is-available {
+  background: rgba(255, 255, 255, 0.08);
+  color: #aaa;
+}
+.module-card-desc {
+  margin: 4px 0 10px;
+}
+.module-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+.module-card-meta code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.module-card-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+.module-card-actions .link-button {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.module-card-actions .link-button.danger {
+  color: #f88;
+}
+.module-card-actions .link-button.danger:hover {
+  background: rgba(244, 67, 54, 0.15);
+  border-color: #f88;
+}
+.module-card-actions .link-button:hover {
+  background: rgba(110, 158, 255, 0.15);
+  border-color: #6e9eff;
+}
+.modules-empty {
+  padding: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+/* Lesson 572: toast notification system (replaces alert()). Container
+   is appended to body; toasts stack bottom-right. */
+#mc-toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  pointer-events: none;
+  max-width: 380px;
+}
+.mc-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  animation: mc-toast-in 180ms ease-out;
+}
+.mc-toast.mc-toast-leaving {
+  animation: mc-toast-out 200ms ease-in forwards;
+}
+.mc-toast-info {
+  background: #1e1e2e;
+  color: #e4e4e7;
+  border-left: 3px solid #6e9eff;
+}
+.mc-toast-success {
+  background: #0f2316;
+  color: #d1f4d6;
+  border-left: 3px solid #4caf50;
+}
+.mc-toast-warn {
+  background: #2a1f0e;
+  color: #ffe2b0;
+  border-left: 3px solid #ff9800;
+}
+.mc-toast-error {
+  background: #2a0e0e;
+  color: #ffc8c8;
+  border-left: 3px solid #f44336;
+}
+.mc-toast-message {
+  flex: 1;
+  word-break: break-word;
+}
+.mc-toast-action {
+  background: transparent;
+  border: 1px solid currentColor;
+  color: inherit;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.85;
+}
+.mc-toast-action:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+}
+.mc-toast-dismiss {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  opacity: 0.5;
+  padding: 0 4px;
+}
+.mc-toast-dismiss:hover {
+  opacity: 1;
+}
+@keyframes mc-toast-in {
+  from { transform: translateX(110%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+@keyframes mc-toast-out {
+  from { transform: translateX(0);    opacity: 1; }
+  to   { transform: translateX(110%); opacity: 0; }
 }
 
 /* rc44: fullscreen-mode input row gets a slightly larger font and
@@ -1245,8 +1908,15 @@ code {
   flex-direction: column;
   gap: 12px;
   padding: 16px;
-  height: 100%;
+  /* Constrain to viewport so the file list scroll happens INSIDE
+     .files-list, not on the whole window. Subtract #root padding
+     (24px top + 24px bottom) from 100vh. Without this, a long file
+     list pushed the entire window taller than the screen and the
+     page itself scrolled — making it impossible to see the file
+     you just clicked without scrolling back up. Lesson 230. */
+  height: calc(100vh - 48px);
   min-height: 0;
+  overflow: hidden;
 }
 
 .files-header {
@@ -1293,6 +1963,11 @@ code {
 .files-body {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr);
+  /* The grid row must be minmax(0, 1fr) so it shrinks to fit the
+     parent flex container. Default 'auto' would let the row grow
+     to fit content, which made .files-list overflow the page.
+     Lesson 230 (rc52). */
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px;
   flex: 1;
   min-height: 0;
@@ -1318,6 +1993,18 @@ code {
 
 .entry:hover {
   background: var(--tile-hover);
+}
+
+/* rc49: visually mark the file that's currently in the preview pane.
+   Newer-newbie-friendly affordance — users were losing track of which
+   file they had clicked when the list was scrolled down. */
+.entry.selected {
+  background: rgba(110, 168, 254, 0.18);
+  border-left: 3px solid var(--link);
+  padding-left: 9px; /* compensate for the border so icons stay aligned */
+}
+.entry.selected .entry-name {
+  font-weight: 500;
 }
 
 .entry:last-child {
@@ -1606,3 +2293,887 @@ button.primary:disabled {
   cursor: not-allowed;
 }
 
+
+/* ============================================================================
+   rc49: Cmd-K command palette (src/cmd_k_palette.js).
+   Layout: full-screen dim overlay + centered narrow panel (60ch wide).
+   Sits on top of every page; closes on Esc or click-outside.
+   ============================================================================ */
+
+.cmd-k-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  z-index: 2000;
+  animation: fadeIn 0.12s ease;
+}
+/* Defense: [hidden] attribute should hide the overlay. The base
+   stylesheet above uses `display: flex`, which overrides the UA
+   stylesheet's `[hidden] { display: none }` rule. Re-assert it
+   explicitly so the palette stays invisible until Ctrl+K fires.
+   Without this, the overlay sits on top of EVERY page (including
+   login) and steals clicks from form inputs — the exact bug David
+   hit in rc49 + rc50. Lesson 229. */
+.cmd-k-overlay[hidden] {
+  display: none !important;
+}
+
+/* Same bug pattern applies to attach-queue / attach-actions /
+   attach-zone-empty — they all set `display: flex` which would
+   otherwise override [hidden]'s display:none. Re-assert [hidden]
+   for these too so the dashboard's drag-drop UI works correctly
+   when toggled. */
+.attach-queue[hidden],
+.attach-actions[hidden],
+.attach-zone-empty[hidden] {
+  display: none !important;
+}
+
+.cmd-k-panel {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  width: min(720px, 92vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  animation: slideDown 0.18s ease;
+}
+
+.cmd-k-input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #334155;
+  color: #f1f5f9;
+  font-size: 16px;
+  padding: 16px 18px;
+  outline: none;
+  font-family: inherit;
+  caret-color: #60a5fa;
+}
+.cmd-k-input::placeholder {
+  color: #94a3b8;
+}
+
+.cmd-k-results {
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px 0;
+}
+
+.cmd-k-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 18px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #f1f5f9;
+}
+.cmd-k-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.cmd-k-item.selected {
+  background: rgba(96, 165, 250, 0.18);
+  border-left: 3px solid #60a5fa;
+  padding-left: 15px; /* compensate for the border */
+}
+
+.cmd-k-icon {
+  flex: 0 0 auto;
+  width: 20px;
+  text-align: center;
+  font-size: 15px;
+}
+.cmd-k-label {
+  flex: 1 1 auto;
+  font-weight: 500;
+}
+.cmd-k-category {
+  flex: 0 0 auto;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cmd-k-empty {
+  padding: 18px;
+  text-align: center;
+}
+
+.cmd-k-status {
+  border-top: 1px solid #334155;
+  padding: 8px 18px;
+  font-size: 11px;
+}
+.cmd-k-status[data-kind="error"] {
+  color: #f87171;
+}
+
+/* Shortcuts modal — small inline table. Reuses the existing modal
+   styling; just adds the kbd chip and the table layout. */
+.shortcut-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 12px 0;
+}
+.shortcut-table td {
+  padding: 6px 4px;
+  font-size: 13px;
+  color: var(--text);
+}
+.shortcut-table td:first-child {
+  width: 1%;
+  white-space: nowrap;
+  padding-right: 16px;
+}
+kbd {
+  display: inline-block;
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #f1f5f9;
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.4);
+}
+
+@keyframes slideDown {
+  from { transform: translateY(-12px); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+
+/* ---------------------------------------------------------------------
+   Secrets overlay (rc53.5, feature/secrets-vault)
+   Full-screen overlay that mounts the secretsPage factory on top of
+   the terminal. The overlay has its own header with a Close button.
+   --------------------------------------------------------------------- */
+
+.secrets-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.secrets-overlay[hidden] {
+  display: none !important;
+}
+
+.secrets-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+  flex-shrink: 0;
+}
+
+.secrets-overlay-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Inherit the secrets page's natural styling inside the overlay */
+.secrets-overlay .secrets-page {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+/* rc53.7 — attach overlay (terminal toolbar 📎 button) */
+.attach-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Lesson 229: any element with display: flex needs the [hidden] override
+   so the overlay actually disappears instead of just rendering empty. */
+.attach-overlay[hidden] {
+  display: none !important;
+}
+
+.attach-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+  flex-shrink: 0;
+}
+
+.attach-overlay-title {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.attach-overlay-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 24px;
+}
+
+.attach-overlay-body .attach-zone {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+/* rc53.6 — friendly secrets page styles */
+.secrets-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  color: var(--fg);
+}
+
+.secrets-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.secrets-header h1 {
+  margin: 0;
+  font-size: 22px;
+}
+.badge-warn {
+  margin-left: auto;
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+/* rc53.8 — positive-state badge (e.g. "Encrypted at rest" on the
+   secrets page). Same shape as badge-warn but green-tinted. */
+.badge-ok {
+  margin-left: auto;
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.secrets-add h2,
+.secrets-list-section h2 {
+  margin: 0 0 8px 0;
+  font-size: 16px;
+  color: var(--fg);
+}
+
+.secrets-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.secrets-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.secrets-field > span {
+  font-size: 13px;
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+.secrets-field input[type="text"],
+.secrets-field textarea {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 14px;
+}
+.secrets-field input[type="text"]:focus,
+.secrets-field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.2);
+}
+.secrets-field textarea {
+  resize: vertical;
+  min-height: 64px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+}
+
+/* Lesson 564 (2026-08-24 17:32 MDT, David): optional second row
+   for paired entries (e.g. username + password for one service).
+   Wrapped in <details> so the form stays compact when only one
+   value is needed. The user clicks the summary to expand the
+   second type-chips + value textarea. */
+.secrets-row-2 {
+  margin: 4px 0 16px;
+  padding: 10px 12px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: rgba(91, 108, 255, 0.03);
+}
+.secrets-row-2 > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5b6cff;
+  user-select: none;
+  list-style: none;
+}
+.secrets-row-2 > summary::before {
+  content: "▸ ";
+  display: inline-block;
+  margin-right: 4px;
+  transition: transform 120ms ease;
+}
+.secrets-row-2[open] > summary::before {
+  transform: rotate(90deg);
+}
+.secrets-row-2 > summary::-webkit-details-marker {
+  display: none;
+}
+.secrets-row-2[open] {
+  padding-top: 14px;
+}
+.secrets-row-2 .secrets-field {
+  margin-top: 10px;
+}
+.secrets-row-2 .secrets-field:first-of-type {
+  margin-top: 14px;
+}
+
+/* Type chips */
+.secrets-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.kind-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 13px;
+  user-select: none;
+}
+.kind-chip:has(input:checked) {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: var(--accent);
+  color: var(--fg);
+}
+.kind-chip input { margin: 0; }
+
+/* Lifetime radio cards */
+.secrets-lifetimes {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.lifetime-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 0;
+  min-width: 160px;
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 120ms, background 120ms;
+}
+.lifetime-option:hover {
+  border-color: var(--pill-color, var(--accent));
+}
+.lifetime-option:has(input:checked) {
+  border-color: var(--pill-color, var(--accent));
+  background: color-mix(in srgb, var(--pill-color, var(--accent)) 12%, var(--bg));
+}
+.lifetime-option input { margin: 0; }
+.lifetime-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--pill-color, var(--accent));
+  flex-shrink: 0;
+}
+.lifetime-body {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+.lifetime-body strong {
+  font-size: 13px;
+  color: var(--fg);
+}
+.lifetime-body small {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.secrets-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.secrets-actions #sec-set-status code {
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+}
+
+/* Lifetime pill (used in list rows + status messages) */
+.lifetime-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  vertical-align: middle;
+}
+
+/* Secrets list */
+.secrets-list-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.secrets-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.secrets-list-actions {
+  display: flex;
+  gap: 8px;
+}
+.secrets-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.secret-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.secret-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.secret-name {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 14px;
+  color: var(--fg);
+}
+.secret-row-actions {
+  flex-shrink: 0;
+}
+
+.secrets-footer {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.secrets-footer p { margin: 6px 0; }
+.secrets-footer code {
+  background: var(--bg-card);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+}
+
+/* ---------------------------------------------------------------------
+   rc53.8 — Extras hub page styles
+   --------------------------------------------------------------------- */
+.page-extras {
+  padding: 24px;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.extras-intro {
+  color: var(--muted, #888);
+  margin: 8px 0 24px 0;
+  font-size: 14px;
+}
+.extras-intro code {
+  background: var(--bg-card);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+}
+
+.extras-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.extras-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.extras-card:hover {
+  border-color: var(--accent, #6366f1);
+  transform: translateY(-1px);
+}
+
+.extras-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.extras-icon {
+  font-size: 22px;
+  line-height: 1;
+}
+.extras-name {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg, #1e1e24);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.extras-blurb {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg);
+  opacity: 0.85;
+}
+
+.extras-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.extras-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  background: var(--bg, #1e1e24);
+  border-radius: 999px;
+  color: var(--muted, #888);
+}
+
+.extras-actions {
+  margin-top: auto;
+  padding-top: 4px;
+}
+.extras-run {
+  width: 100%;
+  background: var(--accent, #6366f1);
+  color: white;
+  border: 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.extras-run:hover {
+  opacity: 0.9;
+}
+.extras-run:active {
+  transform: translateY(1px);
+}
+
+.extras-footer {
+  margin-top: 24px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  color: var(--muted, #888);
+}
+.extras-footer code {
+  background: var(--bg-card);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+}
+
+/* ============================================================================
+   Lesson 573 (2026-08-25 07:22 MDT, David): Dashboard "Add-On Modules"
+   button + catalog hub page. Styles mirror the pricing button pair
+   (same arrow, same height, same font) and the extras card grid
+   (auto-fill, 280px min, hover lift).
+   ============================================================================ */
+
+/* Dashboard button — sibling of the pricing-link-btn. Same visual
+   language so the two read as a button pair below the usage bar. */
+.modules-link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: -16px 0 24px 8px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: #5b6cff;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.modules-link-btn:hover { text-decoration: underline; }
+.modules-link-btn[disabled] { opacity: 0.6; cursor: default; }
+.modules-link-arrow {
+  font-size: 11px;
+  margin-left: 2px;
+}
+
+/* Catalog hub page */
+.page-modules {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 32px 24px 48px;
+}
+
+.modules-page-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.modules-intro {
+  margin: 12px 0 24px;
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 720px;
+}
+
+.modules-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+.modules-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+  min-width: 0;
+}
+.modules-card:hover {
+  border-color: var(--accent, #6366f1);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+
+.modules-card-installed {
+  border-color: #2d8f5e;
+}
+.modules-card-installed:hover {
+  border-color: #2d8f5e;
+}
+
+.modules-card-coming {
+  opacity: 0.7;
+}
+.modules-card-coming:hover {
+  /* Subtle — coming-soon cards shouldn't grab attention */
+  transform: none;
+  box-shadow: none;
+}
+
+.modules-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.modules-icon {
+  font-size: 26px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.modules-card-titles {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.modules-card-name {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--fg);
+}
+
+.modules-card-publisher {
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+/* Status pill in the top-right of the card */
+.modules-status {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.modules-status-available {
+  background: rgba(91, 108, 255, 0.15);
+  color: #8a96ff;
+  border: 1px solid rgba(91, 108, 255, 0.35);
+}
+
+.modules-status-installed {
+  background: rgba(45, 143, 94, 0.18);
+  color: #5fd49a;
+  border: 1px solid rgba(45, 143, 94, 0.45);
+}
+
+.modules-status-coming_soon {
+  background: rgba(140, 140, 140, 0.12);
+  color: var(--muted, #888);
+  border: 1px solid var(--border);
+}
+
+.modules-card-desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg);
+  opacity: 0.85;
+}
+
+.modules-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.modules-version {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  background: var(--bg, #1e1e24);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--fg);
+}
+
+.modules-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.modules-tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  background: var(--bg, #1e1e24);
+  border-radius: 999px;
+  color: var(--muted, #888);
+}
+
+.modules-card-actions {
+  margin-top: auto;
+  padding-top: 4px;
+  display: flex;
+  gap: 8px;
+}
+
+.modules-cta {
+  flex: 1 1 auto;
+  background: var(--accent, #6366f1);
+  color: white;
+  border: 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.05s;
+}
+.modules-cta:hover { opacity: 0.9; }
+.modules-cta:active { transform: translateY(1px); }
+.modules-cta[disabled] {
+  background: var(--bg, #1e1e24);
+  color: var(--muted, #888);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+.modules-cta[disabled]:hover { opacity: 0.7; }
+
+.modules-cta-open {
+  background: #2d8f5e;
+}
+.modules-cta-open:hover { background: #34a06b; opacity: 1; }
+
+.modules-footer {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}

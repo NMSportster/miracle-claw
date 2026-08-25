@@ -186,7 +186,7 @@ if [[ -d "$BUNDLE_SRC" && -n "$(ls -A "$BUNDLE_SRC" 2>/dev/null)" ]]; then
     # (read from tauri.conf.json) instead. See Lesson 229 in MEMORY.md.
     # Lesson 459 4th strike: include optional pre-release suffix like
     # -rc4, -rc5, -hotfix so the filename matches what tauri actually built.
-    TAURI_VERSION=$(grep -oE '"version": *"[^"]+"' "$REPO_ROOT/src-tauri/tauri.conf.json" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?')
+    TAURI_VERSION=$(grep -oE '"version": *"[^"]+"' "$REPO_ROOT/src-tauri/tauri.conf.json" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?')
     LATEST_INSTALLER="$OUTPUT_DIR/MiracleClaw_${TAURI_VERSION}_x64-setup.exe"
     if [[ -n "$TAURI_VERSION" && -f "$LATEST_INSTALLER" ]]; then
         DESKTOP_NAME="MiracleClaw_${TAURI_VERSION}_x64-setup.exe"

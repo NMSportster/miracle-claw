@@ -245,14 +245,28 @@ pub fn publish_tier_env(tier: Tier) {
 
 /// The default model id for a given tier (primary in `agents.defaults.model.primary`).
 ///
-/// Free: `milagro-dev` (14B local, fastest, no cloud dependency).
+/// Free: `milagro-m1-t1` (local Qwen3B-distilled — cheapest local path,
+/// zero Ollama usage, English-only but adequate for simple chat).
 /// Paid: `milagro-oc-kimi` (cloud cascade — best cost/quality for code+chat).
 ///
 /// This is also what `mc_get_default_model` returns to the dashboard
 /// so the chat panel's pre-selected model matches the tier routing.
+///
+/// Lesson 569 (2026-08-24 22:57 MDT, David): switched Free primary
+/// from `milagro-oc-deepseek` (Lesson 566) back to a local m1-t model.
+/// Reason: deepseek is Ollama usage level 4 (extra high) — every
+/// Free user request burned 4x what chat-nemotron-nano (level 1)
+/// would. With 50K TPM quota, deepseek defaults would let users
+/// blow through Free quota in minutes. m1-t1 is local 3B (zero
+/// Ollama usage) and chain-falls-back to t2 → t3 → chat-nemotron-nano
+/// (cheapest cloud model). Lesson 568 documented usage levels for
+/// all Ollama Cloud models MAIC routes through.
+///
+/// Lesson 566 history: was `milagro-dev` (claimed local 14B but
+/// routes to ollama-cloud `minimax-m3:cloud` on Hetzner-prod).
 pub fn tier_default_model_id(tier: Tier) -> &'static str {
     match tier {
-        Tier::Free => "milagro-dev",
+        Tier::Free => "milagro-m1-t1",
         // Pro / ProPlus / Team / Enterprise all use the cloud Kimi default.
         // MAIC's plan_code → quota gate still applies server-side, so a
         // downgraded user on this default just gets a clean error rather
@@ -275,18 +289,82 @@ pub fn tier_default_model_id(tier: Tier) -> &'static str {
 ///   3. `milagro-dev` — local 14B fallback if ALL cloud routes fail. Slow
 ///      but never returns a network error.
 ///
-/// Returns an empty slice for Free (Free users don't get auto-fallback —
-/// the local 14B is already their only option, and adding fallbacks to
-/// cloud models would silently burn quota they're not entitled to).
+/// Free chain (Lesson 569, 2026-08-24 22:57 MDT, David):
+///   1. `milagro-m1-t2` — local Qwen7B-distilled, higher quality for
+///      longer contexts that t1 struggles with.
+///   2. `milagro-m1-t3` — local Qwen14B-distilled, the heaviest
+///      local option. Still free of Ollama usage.
+///   3. `chat-nemotron-nano` — Ollama Cloud MoE 30B/3.5B active.
+///      First cloud fallback; usage level 1 (low) — the cheapest
+///      cloud route we expose. Only kicks in if the local 14B
+///      itself fails (OOM, timeout, etc.).
+///
+/// The Free chain NEVER falls back to deepseek/glm/kimi/qwen/minimax:
+/// those are all usage level 3+ and would burn Free quota at 3-4x
+/// the rate of nemotron-nano.
+///
+/// Lesson 566 (2026-08-24): Free's primary was `milagro-dev` (claimed local
+/// 14B but actually routed to ollama-cloud `minimax-m3:cloud`); switched to
+/// `milagro-oc-deepseek` because cloud-deepseek returned 199 tokens in 2.05s
+/// vs milagro-dev's 600 tokens in 12.48s (benchmark at 21:30 MDT).
 pub fn tier_default_fallbacks(tier: Tier) -> &'static [&'static str] {
     match tier {
-        Tier::Free => &[],
+        Tier::Free => &[
+            "milagro-m1-t2",
+            "milagro-m1-t3",
+            "chat-nemotron-nano",
+        ],
         _ => &[
             "milagro-oc-minimax",
             "milagro-oc-glm",
             "milagro-dev",
         ],
     }
+}
+
+/// Check whether the running MC base binary satisfies a module's
+/// `minMcVersion` constraint.
+///
+/// MC versions look like `"1.1.0-rc53.15"`. For v1 we compare the
+/// release-trailer integer (the `15` in `rc53.15`) — same scheme
+/// miracle-claw-tauri-rebuild uses. If parsing fails on either side,
+/// we FAIL OPEN (return Ok) so a module built against a future version
+/// string doesn't block installs of old MC. We log a warning instead.
+///
+/// Future: when MC goes 1.0.0 → 2.0.0, switch to semver crate.
+pub fn assert_version_compatible_with_module(
+    manifest: &crate::modules::manifest::ModuleManifest,
+) -> Result<(), String> {
+    let current = env!("CARGO_PKG_VERSION");
+    let required = &manifest.min_mc_version;
+
+    let current_n = parse_rc_trailer(current);
+    let required_n = parse_rc_trailer(required);
+
+    match (current_n, required_n) {
+        (Some(c), Some(r)) if c >= r => Ok(()),
+        (Some(c), Some(r)) => Err(format!(
+            "MC base is {} (rc{}), module requires rc{} or higher",
+            current, c, r
+        )),
+        _ => {
+            eprintln!(
+                "[modules] version check: could not parse current={} required={} — allowing install",
+                current, required
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Extract the integer trailer from a version like `"1.1.0-rc53.15"`.
+/// Returns `Some(15)` for that string. Returns None for any other shape.
+fn parse_rc_trailer(v: &str) -> Option<u64> {
+    // Format: <major>.<minor>.<patch>-rc<n>.<m>
+    // We want the trailing `.m` integer.
+    let after_rc = v.split("-rc").nth(1)?;
+    let after_dot = after_rc.split('.').nth(1)?;
+    after_dot.parse::<u64>().ok()
 }
 
 #[cfg(test)]
@@ -351,13 +429,29 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn free_default_is_local_14b() {
-        // Free users must default to the local model so the chat works
-        // even when their MAIC quota is exhausted / not provisioned.
-        assert_eq!(tier_default_model_id(Tier::Free), "milagro-dev");
-        // Free has no fallbacks (no cloud access by entitlement).
-        assert!(tier_default_fallbacks(Tier::Free).is_empty(),
-                "Free must not have cloud fallbacks (would silently burn quota)");
+    fn free_default_is_m1_t1() {
+        // Lesson 569 (2026-08-24 22:57 MDT, David): Free default
+        // switched BACK to m1-t1 (local 3B) from milagro-oc-deepseek
+        // (Lesson 566). Reason: deepseek is Ollama usage level 4
+        // (extra high) — burns 4x what chat-nemotron-nano (level 1)
+        // would. Free users on the 50K TPM quota would hit limits in
+        // minutes with deepseek as primary. m1-t1 is local (zero
+        // Ollama usage) and chain-falls-back to t2 → t3 →
+        // chat-nemotron-nano (cheapest cloud route, level 1).
+        assert_eq!(tier_default_model_id(Tier::Free), "milagro-m1-t1");
+        // Free chain: m1-t2 (local 7B) → m1-t3 (local 14B) →
+        // chat-nemotron-nano (cloud level 1). Only the LAST step
+        // burns cloud quota; never deepseek/glm/kimi/qwen/minimax.
+        let chain = tier_default_fallbacks(Tier::Free);
+        assert_eq!(chain, &["milagro-m1-t2", "milagro-m1-t3", "chat-nemotron-nano"]);
+        // Defensive: chain must NOT include any usage-level-3+ cloud model.
+        for forbidden in ["milagro-oc-deepseek", "milagro-oc-glm",
+                          "milagro-oc-qwen", "milagro-oc-kimi",
+                          "milagro-oc-minimax"] {
+            assert!(!chain.contains(&forbidden),
+                    "Free fallback chain must not include {forbidden} (usage level 3+ model); \
+                     this would burn Free quota 3-4x faster than nemotron-nano");
+        }
     }
 
     #[test]

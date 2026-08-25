@@ -113,6 +113,36 @@ description = "Denies the mc_list_tools command."
 commands.deny = ["mc_list_tools"]
 
 [[permission]]
+identifier = "allow-mc-get-quota"
+description = "Enables the mc_get_quota command."
+commands.allow = ["mc_get_quota"]
+
+[[permission]]
+identifier = "deny-mc-get-quota"
+description = "Denies the mc_get_quota command."
+commands.deny = ["mc_get_quota"]
+
+[[permission]]
+identifier = "allow-mc-list-plans"
+description = "Enables the mc_list_plans command."
+commands.allow = ["mc_list_plans"]
+
+[[permission]]
+identifier = "deny-mc-list-plans"
+description = "Denies the mc_list_plans command."
+commands.deny = ["mc_list_plans"]
+
+[[permission]]
+identifier = "allow-mc-open-checkout-url"
+description = "Enables the mc_open_checkout_url command."
+commands.allow = ["mc_open_checkout_url"]
+
+[[permission]]
+identifier = "deny-mc-open-checkout-url"
+description = "Denies the mc_open_checkout_url command."
+commands.deny = ["mc_open_checkout_url"]
+
+[[permission]]
 identifier = "allow-mc-refresh-tier"
 description = "Enables the mc_refresh_tier command."
 commands.allow = ["mc_refresh_tier"]
@@ -287,3 +317,222 @@ commands.allow = ["mc_ui_open_externally"]
 identifier = "deny-mc-ui-open-externally"
 description = "Denies the mc_ui_open_externally command."
 commands.deny = ["mc_ui_open_externally"]
+
+# v1.1.0-prep (feature/drag-drop): attachment staging commands.
+# Hand-added because tauri-build's autogeneration step is skipped on
+# this host (Lesson 219 / sccache trap).
+[[permission]]
+identifier = "allow-mc-stage-attachment"
+description = "Enables the mc_stage_attachment command."
+commands.allow = ["mc_stage_attachment"]
+
+[[permission]]
+identifier = "deny-mc-stage-attachment"
+description = "Denies the mc_stage_attachment command."
+commands.deny = ["mc_stage_attachment"]
+
+[[permission]]
+identifier = "allow-mc-list-attachments"
+description = "Enables the mc_list_attachments command."
+commands.allow = ["mc_list_attachments"]
+
+[[permission]]
+identifier = "deny-mc-list-attachments"
+description = "Denies the mc_list_attachments command."
+commands.deny = ["mc_list_attachments"]
+
+[[permission]]
+identifier = "allow-mc-remove-attachment"
+description = "Enables the mc_remove_attachment command."
+commands.allow = ["mc_remove_attachment"]
+
+[[permission]]
+identifier = "deny-mc-remove-attachment"
+description = "Denies the mc_remove_attachment command."
+commands.deny = ["mc_remove_attachment"]
+
+[[permission]]
+identifier = "allow-mc-clear-attachments"
+description = "Enables the mc_clear_attachments command."
+commands.allow = ["mc_clear_attachments"]
+
+[[permission]]
+identifier = "deny-mc-clear-attachments"
+description = "Denies the mc_clear_attachments command."
+commands.deny = ["mc_clear_attachments"]
+
+[[permission]]
+identifier = "allow-mc-send-attachments-to-chat"
+description = "Enables the mc_send_attachments_to_chat command."
+commands.allow = ["mc_send_attachments_to_chat"]
+
+[[permission]]
+identifier = "deny-mc-send-attachments-to-chat"
+description = "Denies the mc_send_attachments_to_chat command."
+commands.deny = ["mc_send_attachments_to_chat"]
+
+[[permission]]
+identifier = "allow-mc-secret-set"
+description = "Enables the mc_secret_set command."
+commands.allow = ["mc_secret_set"]
+
+[[permission]]
+identifier = "deny-mc-secret-set"
+description = "Denies the mc_secret_set command."
+commands.deny = ["mc_secret_set"]
+
+[[permission]]
+identifier = "allow-mc-secret-delete"
+description = "Enables the mc_secret_delete command."
+commands.allow = ["mc_secret_delete"]
+
+[[permission]]
+identifier = "deny-mc-secret-delete"
+description = "Denies the mc_secret_delete command."
+commands.deny = ["mc_secret_delete"]
+
+[[permission]]
+identifier = "allow-mc-secret-list"
+description = "Enables the mc_secret_list command."
+commands.allow = ["mc_secret_list"]
+
+[[permission]]
+identifier = "deny-mc-secret-list"
+description = "Denies the mc_secret_list command."
+commands.deny = ["mc_secret_list"]
+
+[[permission]]
+identifier = "allow-mc-secret-expand"
+description = "Enables the mc_secret_expand command."
+commands.allow = ["mc_secret_expand"]
+
+[[permission]]
+identifier = "deny-mc-secret-expand"
+description = "Denies the mc_secret_expand command."
+commands.deny = ["mc_secret_expand"]
+
+[[permission]]
+identifier = "allow-mc-secret-debug-dump"
+description = "Enables the mc_secret_debug_dump command."
+commands.allow = ["mc_secret_debug_dump"]
+
+[[permission]]
+identifier = "deny-mc-secret-debug-dump"
+description = "Denies the mc_secret_debug_dump command."
+commands.deny = ["mc_secret_debug_dump"]
+
+[[permission]]
+identifier = "allow-mc-secret-set-friendly"
+description = "Enables the mc_secret_set_friendly command."
+commands.allow = ["mc_secret_set_friendly"]
+
+[[permission]]
+identifier = "deny-mc-secret-set-friendly"
+description = "Denies the mc_secret_set_friendly command."
+commands.deny = ["mc_secret_set_friendly"]
+
+[[permission]]
+identifier = "allow-mc-secret-list-ephemerals"
+description = "Enables the mc_secret_list_ephemerals command."
+commands.allow = ["mc_secret_list_ephemerals"]
+
+[[permission]]
+identifier = "deny-mc-secret-list-ephemerals"
+description = "Denies the mc_secret_list_ephemerals command."
+commands.deny = ["mc_secret_list_ephemerals"]
+
+[[permission]]
+identifier = "allow-mc-secret-clear-session-ephemerals"
+description = "Enables the mc_secret_clear_session_ephemerals command."
+commands.allow = ["mc_secret_clear_session_ephemerals"]
+
+[[permission]]
+identifier = "deny-mc-secret-clear-session-ephemerals"
+description = "Denies the mc_secret_clear_session_ephemerals command."
+commands.deny = ["mc_secret_clear_session_ephemerals"]
+
+[[permission]]
+identifier = "allow-mc-open-overlay"
+description = "Enables the mc_open_overlay command without any pre-configured scope."
+commands.allow = ["mc_open_overlay"]
+
+[[permission]]
+identifier = "deny-mc-open-overlay"
+description = "Denies the mc_open_overlay command without any pre-configured scope."
+commands.deny = ["mc_open_overlay"]
+
+[[permission]]
+identifier = "allow-mc-close-overlay"
+description = "Enables the mc_close_overlay command without any pre-configured scope."
+commands.allow = ["mc_close_overlay"]
+
+[[permission]]
+identifier = "deny-mc-close-overlay"
+description = "Denies the mc_close_overlay command without any pre-configured scope."
+commands.deny = ["mc_close_overlay"]
+
+[[permission]]
+identifier = "allow-mc-secret-clear-all-ephemerals"
+description = "Enables the mc_secret_clear_all_ephemerals command."
+commands.allow = ["mc_secret_clear_all_ephemerals"]
+
+[[permission]]
+identifier = "deny-mc-secret-clear-all-ephemerals"
+description = "Denies the mc_secret_clear_all_ephemerals command."
+commands.deny = ["mc_secret_clear_all_ephemerals"]
+
+# ----------------------------------------------------------------------------
+# v1.1.0-rc53.15 (Lesson 570): MC Module Framework commands.
+# ----------------------------------------------------------------------------
+# These 4 commands are the public surface of the module framework. Voice
+# is the first module to use them; OCR/TTS/local-search will follow.
+#
+# Important: `allow-mc-module-call` is the umbrella permission that lets
+# the JS side dispatch to ANY module's commands via mc_module_call. Per-
+# module command ACLs aren't needed because:
+#   1. mc_module_call only routes to commands declared in a module's
+#      installer.json — the registry rejects unknown commands
+#   2. Modules can only execute sidecars that are already on disk under
+#      <app_data>/modules/<id>/bin/ — they can't inject arbitrary binaries
+#   3. The dispatcher returns a friendly error if a module isn't installed
+# ----------------------------------------------------------------------------
+
+[[permission]]
+identifier = "allow-mc-module-list"
+description = "Enables the mc_module_list command without any pre-configured scope."
+commands.allow = ["mc_module_list"]
+
+[[permission]]
+identifier = "deny-mc-module-list"
+description = "Denies the mc_module_list command."
+commands.deny = ["mc_module_list"]
+
+[[permission]]
+identifier = "allow-mc-module-install-local"
+description = "Enables the mc_module_install_local command without any pre-configured scope."
+commands.allow = ["mc_module_install_local"]
+
+[[permission]]
+identifier = "deny-mc-module-install-local"
+description = "Denies the mc_module_install_local command."
+commands.deny = ["mc_module_install_local"]
+
+[[permission]]
+identifier = "allow-mc-module-uninstall"
+description = "Enables the mc_module_uninstall command without any pre-configured scope."
+commands.allow = ["mc_module_uninstall"]
+
+[[permission]]
+identifier = "deny-mc-module-uninstall"
+description = "Denies the mc_module_uninstall command."
+commands.deny = ["mc_module_uninstall"]
+
+[[permission]]
+identifier = "allow-mc-module-call"
+description = "Enables the mc_module_call command — umbrella permission for dispatching to any installed module's sidecar."
+commands.allow = ["mc_module_call"]
+
+[[permission]]
+identifier = "deny-mc-module-call"
+description = "Denies the mc_module_call command."
+commands.deny = ["mc_module_call"]
