@@ -518,7 +518,7 @@ fn migrate_legacy_mc_config(path: &Path) -> io::Result<bool> {
 //   IPs, so the Cloudflare endpoint is the only universally-reachable
 //   option for a fresh install.
 //
-// Lesson 520 helper: idempotently merge the 17 known MAIC model ids into
+// Lesson 520 helper: idempotently merge the 20 known MAIC model ids into
 // `cfg.models.providers[<provider_id>].models[]`. Used by both the new-entry
 // write path AND the existing-complete-entry early-return path, so users
 // upgrading from rc18 (where only `milagro-dev` was seeded) get the full
@@ -537,7 +537,7 @@ fn migrate_legacy_mc_config(path: &Path) -> io::Result<bool> {
 //
 // Lesson 527 (NEW 2026-08-21 13:57 MDT): tier-gated model list.
 // Free users get ONLY m1-t1 + m1-t2 (small distilled models, chat-only
-// UX). Paid tiers (Pro, ProPlus, Team, Enterprise) get the full 17-
+// UX). Paid tiers (Pro, ProPlus, Team, Enterprise) get the full 20-
 // model catalog. This is the actual cost-control for Free accounts:
 // they can't accidentally pick `milagro-dev` (14B) and burn their
 // 50K TPM in 3 messages. Tier parameter added — callers without
@@ -548,8 +548,8 @@ fn merge_known_model_ids_into_provider(
     provider_id: &str,
     tier: crate::auth::tier::Tier,
 ) {
-    // Full catalog (17 models). Free users see only the 2 in
-    // FREE_MODEL_IDS; paid users see all 17.
+    // Full catalog (20 models). Free users see only the ones in
+    // FREE_MODEL_IDS; paid users see all 20.
     const ALL_MODEL_IDS: &[&str] = &[
         "milagro-dev", "milagro-dev-coder", "milagro-m1",
         "milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3",
@@ -557,22 +557,24 @@ fn merge_known_model_ids_into_provider(
         "milagro-oc-minimax", "milagro-oc-glm", "milagro-oc-qwen",
         "milagro-oc-deepseek", "milagro-oc-kimi",
         "chat-glm", "chat-deepseek", "chat-qwen",
+        // Lesson 567 (2026-08-24 22:25 MDT, David): add 3 Nemotron
+        // models — NVIDIA's open-weights MoE family. Available on
+        // Ollama Cloud (we already pay flat subscription via
+        // OLLAMA_API_KEY_1/2/3). Benchmark via MAIC: 1.7-1.8s for
+        // short answers, English-clean, supports reasoning.
+        "chat-nemotron-nano",
+        "chat-nemotron-super",
+        "chat-nemotron-ultra",
     ];
-    // Lesson 527: Free tier gets only the distilled m1 models.
-    // These are the chat-only fast tier — 7B ternary, fast response,
-    // low TPM cost. Picking anything else would blow through the
-    // 50K TPM ceiling in a few messages.
+    // Lesson 527: Free tier gets the distilled m1 models + cheap cloud Nemotron.
     // Lesson 565 (2026-08-24 18:41 MDT, David): add t3 to free tier.
-    // "m3 should also be on the free user tier — doesn't cost us
-    // anything and gives a better experience." t3 is the heaviest
-    // local 14B-distilled model (LORA on Qwen2.5-14B). It's MORE
-    // reliable than t1/t2 so it actually REDUCES the chance of
-    // falling back to cloud `minimax-m3:cloud` (the only real
-    // cost path). Net cost effect: negligible to slightly negative.
+    // Lesson 567 (2026-08-24 22:25 MDT, David): add chat-nemotron-nano — 1.7s,
+    // NVIDIA MoE, very capable, ~$0.05/M blended via Ollama Cloud subscription.
     const FREE_MODEL_IDS: &[&str] = &[
         "milagro-m1-t1",
         "milagro-m1-t2",
         "milagro-m1-t3",
+        "chat-nemotron-nano",
     ];
     let allowed: &[&str] = match tier {
         crate::auth::tier::Tier::Free => FREE_MODEL_IDS,
@@ -1066,9 +1068,12 @@ fn ensure_maic_provider_config_for_tier(
         //
         // See MEMORY.md "MAIC Deployed Model Inventory" for the
         // verified list (2026-08-14 12:06 MDT).
-    // Lesson 527 (NEW 2026-08-21 13:57 MDT): tier-gated model list.
-    // Free gets m1-t1 + m1-t2 only (chat-only fast tier). Paid gets
-    // the full 17-model catalog. The `seeds` array drives the
+    // Lesson 527 (NEW 2026-08-21 13:57 MDT, revised 2026-08-24
+    // Lesson 567): tier-gated model list.
+    // Free gets m1-t1 + m1-t2 + m1-t3 + chat-nemotron-nano
+    // (chat-only fast tier + cheap NVIDIA MoE).
+    // Paid gets the full 20-model catalog (Lesson 567 added 3 Nemotron
+    // models on 2026-08-24). The `seeds` array drives the
     // first-install write path (when models list is empty); for
     // upgrades the `else` branch below does the same tier gating.
     // Lesson 565 (2026-08-24 18:41 MDT, David): add m1-t3 to Free
@@ -1077,15 +1082,16 @@ fn ensure_maic_provider_config_for_tier(
     // cloud fallbacks.
     let seeds: &[(&str, &str)] = match tier {
         crate::auth::tier::Tier::Free => &[
-            ("milagro-m1-t1",  "MAIC m1-t1 — 7B LoRA-distilled (fast)"),
-            ("milagro-m1-t2",  "MAIC m1-t2 — 7B LoRA-distilled (mid)"),
-            ("milagro-m1-t3",  "MAIC m1-t3 — 14B LoRA-distilled (top of t-series)"),
+            ("milagro-m1-t1",      "MAIC m1-t1 — 3B LoRA-distilled (fast)"),
+            ("milagro-m1-t2",      "MAIC m1-t2 — 7B LoRA-distilled (mid)"),
+            ("milagro-m1-t3",      "MAIC m1-t3 — 14B LoRA-distilled (top of t-series)"),
+            ("chat-nemotron-nano", "Cloud Nemotron 3 Nano 30B (NVIDIA MoE, 1.7s)"),
         ],
         _ => &[
             ("milagro-dev",            "MAIC default (miracle-claw) — 14B local generalist"),
             ("milagro-dev-coder",      "MAIC coder — 14B local code-tuned"),
             ("milagro-m1",             "MAIC m1 — base"),
-            ("milagro-m1-t1",          "MAIC m1-t1 — 7B LoRA-distilled (fast)"),
+            ("milagro-m1-t1",          "MAIC m1-t1 — 3B LoRA-distilled (fast)"),
             ("milagro-m1-t2",          "MAIC m1-t2 — 7B LoRA-distilled (mid)"),
             ("milagro-m1-t3",          "MAIC m1-t3 — 14B LoRA-distilled (top of t-series)"),
             ("milagro-chat",           "MAIC chat — small general baseline"),
@@ -1099,6 +1105,9 @@ fn ensure_maic_provider_config_for_tier(
             ("chat-glm",               "Cloud — GLM (direct)"),
             ("chat-deepseek",          "Cloud — DeepSeek (direct)"),
             ("chat-qwen",              "Cloud — Qwen (direct)"),
+            ("chat-nemotron-nano",     "Cloud — Nemotron 3 Nano 30B A3B (NVIDIA MoE, 1.7s)"),
+            ("chat-nemotron-super",    "Cloud — Nemotron 3 Super 120B A12B (NVIDIA MoE, 1.8s)"),
+            ("chat-nemotron-ultra",    "Cloud — Nemotron 3 Ultra 550B A55B (NVIDIA MoE, flagship)"),
         ],
     };
         for (id, name) in seeds {
@@ -1126,7 +1135,9 @@ fn ensure_maic_provider_config_for_tier(
         // (preserves user renames).
         //
         // Lesson 527 (NEW 2026-08-21): tier-gated. Free gets only
-        // m1-t1 + m1-t2 (chat-only fast tier). Paid gets all 17.
+        // m1-t1 + m1-t2 + m1-t3 + chat-nemotron-nano (Lesson 565
+        // added t3; Lesson 567 added chat-nemotron-nano for a fast
+        // MoE option). Paid gets all 20.
         // Lesson 565 (2026-08-24 18:41 MDT, David): add m1-t3 to Free
         // — heaviest local 14B-distilled, gives better experience,
         // cost-neutral (local, fewer cloud fallbacks).
@@ -1138,6 +1149,7 @@ fn ensure_maic_provider_config_for_tier(
                 "milagro-m1-t1",
                 "milagro-m1-t2",
                 "milagro-m1-t3",
+                "chat-nemotron-nano",
             ],
             _ => &[
                 "milagro-dev", "milagro-dev-coder", "milagro-m1",
@@ -1146,6 +1158,14 @@ fn ensure_maic_provider_config_for_tier(
                 "milagro-oc-minimax", "milagro-oc-glm", "milagro-oc-qwen",
                 "milagro-oc-deepseek", "milagro-oc-kimi",
                 "chat-glm", "chat-deepseek", "chat-qwen",
+                // Lesson 567 (2026-08-24 22:25 MDT, David): 3 NVIDIA Nemotron
+                // models — open MoE family available on Ollama Cloud via
+                // existing OLLAMA_API_KEY_1/2/3 subscriptions. Brings the
+                // catalog from 17 → 20. nano added to Free (cheap MoE,
+                // ~$0.05/M blended), super + ultra paid-only (550B flagship).
+                "chat-nemotron-nano",
+                "chat-nemotron-super",
+                "chat-nemotron-ultra",
             ],
         };
         let present: std::collections::HashSet<String> = models
@@ -7092,8 +7112,11 @@ mod tests {
     }
 
     // =====================================================================
-    // Lesson 527 (NEW 2026-08-21 13:57 MDT): tier-gated model list.
-    // Free = m1-t1 + m1-t2 only (chat-only fast tier). Paid = all 17.
+    // Lesson 527 (NEW 2026-08-21 13:57 MDT, last revised 2026-08-24
+    // Lesson 567): tier-gated model list.
+    // Free = m1-t1 + m1-t2 + m1-t3 + chat-nemotron-nano
+    //        (chat-only fast tier + cheap NVIDIA MoE).
+    // Paid = all 20 (Lesson 567 added 3 Nemotron models).
     // This is the actual cost-control for Free accounts — they can't
     // accidentally pick `milagro-dev` (14B) and burn their 50K TPM in
     // three messages. Both the write path AND the existing-entry path
@@ -7122,6 +7145,9 @@ mod tests {
         // free users get the heaviest local 14B-distilled model as
         // their best option. Cost effect is neutral (t3 is local;
         // picking it REDUCES cloud fallback risk vs. t1/t2).
+        // 2026-08-24 (Lesson 567, David): added chat-nemotron-nano
+        // — NVIDIA MoE via Ollama Cloud, 1.7s response, costs us
+        // ~$0 via existing subscription.
         // Free tier excludes the 14B `milagro-dev` (general-purpose)
         // and the coder/dev-coder/oc-* cloud models.
         let _lock = lock_env();
@@ -7132,12 +7158,13 @@ mod tests {
         let ids = read_model_ids();
         assert_eq!(
             ids.len(),
-            3,
-            "Free tier should see exactly 3 models (m1-t1, m1-t2, m1-t3); got {ids:?}"
+            4,
+            "Free tier should see exactly 4 models (m1-t1, m1-t2, m1-t3, chat-nemotron-nano); got {ids:?}"
         );
         assert!(ids.contains(&"milagro-m1-t1".to_string()));
         assert!(ids.contains(&"milagro-m1-t2".to_string()));
         assert!(ids.contains(&"milagro-m1-t3".to_string()));
+        assert!(ids.contains(&"chat-nemotron-nano".to_string()));
         // General-purpose 14B + coder + cloud models still excluded.
         for forbidden in ["milagro-dev", "milagro-dev-coder", "milagro-m1"] {
             assert!(
@@ -7148,8 +7175,12 @@ mod tests {
     }
 
     #[test]
-    fn paid_tiers_see_all_seventeen_models() {
-        // Lesson 527: paid tiers see the full 17-model catalog.
+    fn paid_tiers_see_all_twenty_models() {
+        // Lesson 527: paid tiers see the full 20-model catalog.
+        // Lesson 567 (2026-08-24, David): catalog grew 17 → 20 with
+        // the addition of 3 Nemotron models
+        // (chat-nemotron-nano/super/ultra). nano is also added to
+        // Free (test asserts that separately).
         // Note: existing tests like `paid_tiers_write_all_seven_tools`
         // test the TOOLS list, not the model list. This is the
         // parallel test for models.
@@ -7167,12 +7198,15 @@ mod tests {
             let ids = read_model_ids();
             assert_eq!(
                 ids.len(),
-                17,
-                "Paid tier {tier:?} should see all 17 models; got {ids:?}"
+                20,
+                "Paid tier {tier:?} should see all 20 models; got {ids:?}"
             );
             assert!(ids.contains(&"milagro-dev".to_string()));
             assert!(ids.contains(&"milagro-m1-t1".to_string()));
             assert!(ids.contains(&"milagro-oc-minimax".to_string()));
+            assert!(ids.contains(&"chat-nemotron-nano".to_string()));
+            assert!(ids.contains(&"chat-nemotron-super".to_string()));
+            assert!(ids.contains(&"chat-nemotron-ultra".to_string()));
         }
     }
 
@@ -7180,50 +7214,52 @@ mod tests {
     fn downgrade_from_pro_to_free_removes_paid_models() {
         // Lesson 527: downgrade path. Pro user downgrades to Free
         // → their on-disk config must be re-stamped to only allow
-        // m1-t1 + m1-t2 + m1-t3 (the three local distilled m1
-        // models — Lesson 565 added t3 to Free tier 2026-08-24).
+        // m1-t1 + m1-t2 + m1-t3 + chat-nemotron-nano (Lesson 565
+        // added t3; Lesson 567 added chat-nemotron-nano to Free).
         let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "any-key");
 
-        // First call as Pro: writes 17 models.
+        // First call as Pro: writes 20 models.
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro).expect("ok");
-        assert_eq!(read_model_ids().len(), 17);
+        assert_eq!(read_model_ids().len(), 20);
 
         // Downgrade to Free.
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free).expect("ok");
         let ids = read_model_ids();
         assert_eq!(
             ids.len(),
-            3,
-            "After Pro→Free downgrade, only 3 models should remain (t1, t2, t3); got {ids:?}"
+            4,
+            "After Pro→Free downgrade, only 4 models should remain (t1, t2, t3, chat-nemotron-nano); got {ids:?}"
         );
         assert!(ids.contains(&"milagro-m1-t1".to_string()));
         assert!(ids.contains(&"milagro-m1-t2".to_string()));
         assert!(ids.contains(&"milagro-m1-t3".to_string()));
+        assert!(ids.contains(&"chat-nemotron-nano".to_string()));
     }
 
     #[test]
     fn upgrade_from_free_to_pro_adds_paid_models() {
         // Lesson 527: upgrade path. Free user upgrades to Pro →
         // their on-disk config must be re-stamped to include all
-        // 17 models. Without this, the user would see only 3
-        // models (Free: t1+t2+t3 since Lesson 565) even after paying.
+        // 20 models. Without this, the user would see only 4
+        // models (Free: t1+t2+t3+chat-nemotron-nano) even after
+        // paying.
         let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "any-key");
 
-        // First call as Free: writes 3 models (t1, t2, t3 — Lesson 565).
+        // First call as Free: writes 4 models (t1, t2, t3, chat-nemotron-nano).
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free).expect("ok");
-        assert_eq!(read_model_ids().len(), 3);
+        assert_eq!(read_model_ids().len(), 4);
 
         // Upgrade to Pro.
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro).expect("ok");
         let ids = read_model_ids();
         assert_eq!(
             ids.len(),
-            17,
-            "After Free→Pro upgrade, all 17 models should be present; got {ids:?}"
+            20,
+            "After Free→Pro upgrade, all 20 models should be present; got {ids:?}"
         );
     }
 
@@ -7797,19 +7833,21 @@ mod tests {
             .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
             .collect();
         // Lesson 527: ensure_maic_provider_config() defaults to Free
-        // tier (no context). Free gets m1-t1 + m1-t2 + m1-t3
-        // (Lesson 565 added t3 for better free experience, 2026-08-24).
-        for id in ["milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3"] {
+        // tier (no context). Free gets m1-t1 + m1-t2 + m1-t3 +
+        // chat-nemotron-nano (Lesson 565 added t3 for better free
+        // experience, 2026-08-24; Lesson 567 added chat-nemotron-nano
+        // as a fast NVIDIA MoE option, 2026-08-24).
+        for id in ["milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3", "chat-nemotron-nano"] {
             assert!(ids.contains(id), "Free tier must include model {}", id);
         }
-        // Total = 3 unique ids for Free tier.
-        assert_eq!(models.len(), 3, "Free tier should see exactly 3 models (t1, t2, t3 per Lesson 565)");
+        // Total = 4 unique ids for Free tier (Lesson 567).
+        assert_eq!(models.len(), 4, "Free tier should see exactly 4 models (t1, t2, t3, chat-nemotron-nano per Lesson 565+567)");
     }
 
     #[test]
     fn lesson_520_known_ids_merge_is_idempotent() {
         // Re-running ensure_maic_provider_config() on a file that already
-        // has all 17 ids must NOT add duplicates and must NOT change the
+        // has all 20 ids must NOT add duplicates and must NOT change the
         // apiKey/baseUrl. This protects against file-mtime churn.
         let _env = lock_env();
         let _g = fresh_openclaw_with_model(None, None);
