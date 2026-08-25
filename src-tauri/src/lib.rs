@@ -570,6 +570,10 @@ fn merge_known_model_ids_into_provider(
     // Lesson 565 (2026-08-24 18:41 MDT, David): add t3 to free tier.
     // Lesson 567 (2026-08-24 22:25 MDT, David): add chat-nemotron-nano — 1.7s,
     // NVIDIA MoE, very capable, ~$0.05/M blended via Ollama Cloud subscription.
+    // Lesson 569 (2026-08-24 22:57 MDT, David): confirm Free chain is local-first
+    // (m1-t1 → m1-t2 → m1-t3) and ONLY hits the cloud as last-resort fallback
+    // (chat-nemotron-nano, usage level 1 — the cheapest Ollama Cloud route).
+    // See Lesson 568 for the full Ollama usage-level ranking.
     const FREE_MODEL_IDS: &[&str] = &[
         "milagro-m1-t1",
         "milagro-m1-t2",
@@ -1105,7 +1109,7 @@ fn ensure_maic_provider_config_for_tier(
             ("chat-glm",               "Cloud — GLM (direct)"),
             ("chat-deepseek",          "Cloud — DeepSeek (direct)"),
             ("chat-qwen",              "Cloud — Qwen (direct)"),
-            ("chat-nemotron-nano",     "Cloud — Nemotron 3 Nano 30B A3B (NVIDIA MoE, 1.7s)"),
+            ("chat-nemotron-nano",     "Cloud — Nemotron 3 Nano 30B A3B (NVIDIA MoE, 1.7s) — Free tier cloud fallback"),
             ("chat-nemotron-super",    "Cloud — Nemotron 3 Super 120B A12B (NVIDIA MoE, 1.8s)"),
             ("chat-nemotron-ultra",    "Cloud — Nemotron 3 Ultra 550B A55B (NVIDIA MoE, flagship)"),
         ],
@@ -7623,13 +7627,28 @@ mod tests {
         // catalog state (defends against the rc18→rc19/20 upgrade gap
         // fixed in Lesson 520).
         let primary = cfg.pointer("/agents/defaults/model/primary").unwrap();
-        // Lesson 566: Free default switched to milagro-oc-deepseek (2s cloud).
-        // Was "maic/milagro-dev" which was claimed local 14B but actually routed
-        // to ollama-cloud minimax-m3:cloud with ~13s response latency.
-        assert_eq!(primary, "maic/milagro-oc-deepseek");
-        // Free must NOT have fallbacks.
-        assert!(cfg.pointer("/agents/defaults/model/fallbacks").is_none(),
-                "Free must not have a fallbacks array");
+        // Lesson 569 (2026-08-24 22:57 MDT, David): Free default switched
+        // BACK to local m1-t1 (zero Ollama usage) from cloud-deepseek
+        // (Lesson 566). Reason: deepseek = Ollama usage level 4 (extra
+        // high) — burns 4x what nemotron-nano would, blowing through
+        // Free quota in minutes. m1-t1 → m1-t2 → m1-t3 → chat-nemotron-nano
+        // chain keeps Free users on cheap paths.
+        assert_eq!(primary, "maic/milagro-m1-t1");
+        // Lesson 569: Free NOW has a 3-step fallback chain ending at the
+        // cheapest cloud route (chat-nemotron-nano, level 1).
+        let fallbacks: Vec<String> = cfg
+            .pointer("/agents/defaults/model/fallbacks")
+            .expect("Free must have fallbacks array (Lesson 569)")
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            fallbacks,
+            vec!["maic/milagro-m1-t2", "maic/milagro-m1-t3", "maic/chat-nemotron-nano"],
+            "Free chain must be local 7B → local 14B → cloud nano (level 1)"
+        );
     }
 
     #[test]
@@ -7748,9 +7767,10 @@ mod tests {
     fn lesson_517_free_clears_stale_paid_fallbacks_on_downgrade() {
         let _env = lock_env();
         // User paid → had Kimi+fallbacks. Downgraded to Free. Next login
-        // must clean up the stale fallbacks so the dropdown only shows
-        // `milagro-dev`. We model this by starting with Free default
-        // + a fallback array, then calling the writer with Free.
+        // must rewrite the chain to Free's m1-t chain so the dropdown
+        // shows the local models + cheap cloud fallback. We model this
+        // by starting with Free default + a paid fallback array, then
+        // calling the writer with Free.
         let _g = fresh_openclaw_with_model(Some(""), Some(vec!["maic/milagro-oc-minimax", "maic/milagro-dev"]));
         let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
             .expect("writer should succeed");
@@ -7760,15 +7780,29 @@ mod tests {
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         // Lesson 521: provider-prefixed.
-        // Lesson 566: Free default is now "milagro-oc-deepseek", was "milagro-dev".
+        // Lesson 569 (2026-08-24 22:57 MDT, David): Free primary is now
+        // local m1-t1 (was cloud-deepseek from Lesson 566). Lesson 569
+        // also re-introduces a Free fallback chain (was empty); the chain
+        // walks cheap → expensive (local 7B → local 14B → cloud nano).
         assert_eq!(
             cfg.pointer("/agents/defaults/model/primary").unwrap(),
-            "maic/milagro-oc-deepseek"
+            "maic/milagro-m1-t1"
         );
-        assert!(
-            cfg.pointer("/agents/defaults/model/fallbacks").is_none(),
-            "Free downgrade must clear the fallbacks array (was: {:?})",
-            cfg.pointer("/agents/defaults/model/fallbacks")
+        // Lesson 569: Free now has a 3-step fallback chain ending at
+        // chat-nemotron-nano. The downgrade REPLACES the stale paid
+        // fallbacks with Free's chain (does not leave them).
+        let fallbacks: Vec<String> = cfg
+            .pointer("/agents/defaults/model/fallbacks")
+            .expect("Free must have fallbacks (Lesson 569)")
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            fallbacks,
+            vec!["maic/milagro-m1-t2", "maic/milagro-m1-t3", "maic/chat-nemotron-nano"],
+            "Free downgrade must replace paid fallbacks with Free's m1-t chain"
         );
     }
 

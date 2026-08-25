@@ -245,24 +245,28 @@ pub fn publish_tier_env(tier: Tier) {
 
 /// The default model id for a given tier (primary in `agents.defaults.model.primary`).
 ///
-/// Free: `milagro-oc-deepseek` (cloud DeepSeek — 2.09s avg per Lesson 566).
+/// Free: `milagro-m1-t1` (local Qwen3B-distilled — cheapest local path,
+/// zero Ollama usage, English-only but adequate for simple chat).
 /// Paid: `milagro-oc-kimi` (cloud cascade — best cost/quality for code+chat).
 ///
 /// This is also what `mc_get_default_model` returns to the dashboard
 /// so the chat panel's pre-selected model matches the tier routing.
 ///
-/// Lesson 566 (2026-08-24 21:50 MDT): was `milagro-dev` but moved to
-/// `milagro-oc-deepseek` because (a) `milagro-dev` actually routes to
-/// `openai/minimax-m3:cloud` on Hetzner-prod (the "local 14B" config
-/// is documentation-only, the deployment is cloud-Ollama), (b) deepseek
-/// returned 199-token clean-stop responses in 2.05s during the 50K
-/// Free tier benchmark; (c) Free users can pick t1/t2/t3 explicitly
-/// from the picker but the t-series is currently broken under any
-/// request that triggers tool-call JSON parsing in the litellm cascade.
-/// Default to a known-good path; show t-series as opt-in.
+/// Lesson 569 (2026-08-24 22:57 MDT, David): switched Free primary
+/// from `milagro-oc-deepseek` (Lesson 566) back to a local m1-t model.
+/// Reason: deepseek is Ollama usage level 4 (extra high) — every
+/// Free user request burned 4x what chat-nemotron-nano (level 1)
+/// would. With 50K TPM quota, deepseek defaults would let users
+/// blow through Free quota in minutes. m1-t1 is local 3B (zero
+/// Ollama usage) and chain-falls-back to t2 → t3 → chat-nemotron-nano
+/// (cheapest cloud model). Lesson 568 documented usage levels for
+/// all Ollama Cloud models MAIC routes through.
+///
+/// Lesson 566 history: was `milagro-dev` (claimed local 14B but
+/// routes to ollama-cloud `minimax-m3:cloud` on Hetzner-prod).
 pub fn tier_default_model_id(tier: Tier) -> &'static str {
     match tier {
-        Tier::Free => "milagro-oc-deepseek",
+        Tier::Free => "milagro-m1-t1",
         // Pro / ProPlus / Team / Enterprise all use the cloud Kimi default.
         // MAIC's plan_code → quota gate still applies server-side, so a
         // downgraded user on this default just gets a clean error rather
@@ -285,16 +289,31 @@ pub fn tier_default_model_id(tier: Tier) -> &'static str {
 ///   3. `milagro-dev` — local 14B fallback if ALL cloud routes fail. Slow
 ///      but never returns a network error.
 ///
-/// Returns an empty slice for Free (Free users don't get auto-fallback —
-/// the cloud path is already their only option, and adding fallbacks to
-/// paid-tier models would silently burn quota they're not entitled to).
+/// Free chain (Lesson 569, 2026-08-24 22:57 MDT, David):
+///   1. `milagro-m1-t2` — local Qwen7B-distilled, higher quality for
+///      longer contexts that t1 struggles with.
+///   2. `milagro-m1-t3` — local Qwen14B-distilled, the heaviest
+///      local option. Still free of Ollama usage.
+///   3. `chat-nemotron-nano` — Ollama Cloud MoE 30B/3.5B active.
+///      First cloud fallback; usage level 1 (low) — the cheapest
+///      cloud route we expose. Only kicks in if the local 14B
+///      itself fails (OOM, timeout, etc.).
+///
+/// The Free chain NEVER falls back to deepseek/glm/kimi/qwen/minimax:
+/// those are all usage level 3+ and would burn Free quota at 3-4x
+/// the rate of nemotron-nano.
+///
 /// Lesson 566 (2026-08-24): Free's primary was `milagro-dev` (claimed local
 /// 14B but actually routed to ollama-cloud `minimax-m3:cloud`); switched to
 /// `milagro-oc-deepseek` because cloud-deepseek returned 199 tokens in 2.05s
 /// vs milagro-dev's 600 tokens in 12.48s (benchmark at 21:30 MDT).
 pub fn tier_default_fallbacks(tier: Tier) -> &'static [&'static str] {
     match tier {
-        Tier::Free => &[],
+        Tier::Free => &[
+            "milagro-m1-t2",
+            "milagro-m1-t3",
+            "chat-nemotron-nano",
+        ],
         _ => &[
             "milagro-oc-minimax",
             "milagro-oc-glm",
@@ -365,16 +384,29 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn free_default_is_cloud_deepseek() {
-        // Lesson 566 (2026-08-24 21:50 MDT): Free default switched to
-        // milagro-oc-deepseek (2s cloud) from milagro-dev (claimed local 14B
-        // but actually routed to ollama-cloud in 12.5s). Free users must get
-        // a known-fast path by default; the picker still lets them opt into
-        // t1/t2/t3 (which are currently unstable under tool-call JSON parse).
-        assert_eq!(tier_default_model_id(Tier::Free), "milagro-oc-deepseek");
-        // Free has no fallbacks (no cloud access by entitlement).
-        assert!(tier_default_fallbacks(Tier::Free).is_empty(),
-                "Free must not have cloud fallbacks (would silently burn quota)");
+    fn free_default_is_m1_t1() {
+        // Lesson 569 (2026-08-24 22:57 MDT, David): Free default
+        // switched BACK to m1-t1 (local 3B) from milagro-oc-deepseek
+        // (Lesson 566). Reason: deepseek is Ollama usage level 4
+        // (extra high) — burns 4x what chat-nemotron-nano (level 1)
+        // would. Free users on the 50K TPM quota would hit limits in
+        // minutes with deepseek as primary. m1-t1 is local (zero
+        // Ollama usage) and chain-falls-back to t2 → t3 →
+        // chat-nemotron-nano (cheapest cloud route, level 1).
+        assert_eq!(tier_default_model_id(Tier::Free), "milagro-m1-t1");
+        // Free chain: m1-t2 (local 7B) → m1-t3 (local 14B) →
+        // chat-nemotron-nano (cloud level 1). Only the LAST step
+        // burns cloud quota; never deepseek/glm/kimi/qwen/minimax.
+        let chain = tier_default_fallbacks(Tier::Free);
+        assert_eq!(chain, &["milagro-m1-t2", "milagro-m1-t3", "chat-nemotron-nano"]);
+        // Defensive: chain must NOT include any usage-level-3+ cloud model.
+        for forbidden in ["milagro-oc-deepseek", "milagro-oc-glm",
+                          "milagro-oc-qwen", "milagro-oc-kimi",
+                          "milagro-oc-minimax"] {
+            assert!(!chain.contains(&forbidden),
+                    "Free fallback chain must not include {forbidden} (usage level 3+ model); \
+                     this would burn Free quota 3-4x faster than nemotron-nano");
+        }
     }
 
     #[test]
