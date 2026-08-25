@@ -197,7 +197,24 @@
       });
     });
   }
+  // Module registry (mirrors modules-runtime.js's Map, scoped to this window)
+  // Declared early so the bridge helpers below can reference it without TDZ.
+  const installedModules = new Map(); // id -> { name, version }
+
   window.__openclawHostBridge.invoke = bridgeInvoke;
+
+  // Lesson 572: module-aware helpers exposed on the bridge so page code
+  // can do `__openclawHostBridge.isModuleInstalled('voice')` and
+  // `__openclawHostBridge.invokeModule('mc_voice_transcribe', {...})`
+  // without caring about mc_module_call routing. Mirrors the public API
+  // of modules-runtime.js (used in MC's main window).
+  window.__openclawHostBridge.isModuleInstalled = function (id) {
+    return installedModules.has(id);
+  };
+  window.__openclawHostBridge.invokeModule = function (command, params) {
+    const id = command.split('_')[1] || '';
+    return bridgeInvoke('mc_module_call', { id: id, command: command, params: params || {} });
+  };
 
   // rc53.11 (Lesson 247): convenience wrapper for the overlay-close
   // round trip. Page code calls `__openclawHostBridge.closeOverlay()`
@@ -212,6 +229,263 @@
   window.__openclawHostBridge.closeOverlay = function () {
     return bridgeInvoke('mc_close_overlay', {});
   };
+
+  // ============================================================
+  // Lesson 572: Voice button wiring for the OpenClaw chat overlay.
+  // The chat window (openclaw-host-bridge.js) does NOT have access to
+  // MC's modules-runtime.js (which lives in the main bundle), so we
+  // re-implement just enough here: subscribe to the module-installed
+  // events, find the chat input, inject a floating mic button, and
+  // dispatch to mc_module_call.
+  //
+  // Why here (not in main.js / modules-runtime.js): the chat window
+  // is a separate runtime with its own DOM tree. The bridge script
+  // runs in BOTH the main window and the chat window via
+  // initialization_script(), so it's the single source of truth for
+  // voice button wiring across runtimes.
+  // ============================================================
+
+  // Re-broadcast events for page-level subscribers (mirrors modules-runtime.js)
+  function reBroadcast(name, detail) {
+    try { window.dispatchEvent(new CustomEvent(name, { detail: detail })); } catch (_) {}
+  }
+
+  // Subscribe to MC module events. listen() returns an unlisten fn we keep
+  // around for potential teardown. Listening happens once at script load.
+  if (typeof window.__TAURI__ !== 'undefined' && window.__TAURI__.event && typeof window.__TAURI__.event.listen === 'function') {
+    window.__TAURI__.event.listen('mc:module-installed', function (event) {
+      const m = (event && event.payload) || {};
+      if (m.id) {
+        installedModules.set(m.id, m);
+        reBroadcast('mc:module-installed', m);
+        syncVoiceButtons();
+      }
+    }).catch(function () { /* listen failed; ignore */ });
+
+    window.__TAURI__.event.listen('mc:module-uninstalled', function (event) {
+      const m = (event && event.payload) || {};
+      if (m.id) {
+        installedModules.delete(m.id);
+        reBroadcast('mc:module-uninstalled', m);
+        syncVoiceButtons();
+      }
+    }).catch(function () { /* listen failed; ignore */ });
+
+    // Initial sync: pull current module list so we don't have to wait for
+    // an event (in case the module was installed before this window loaded).
+    bridgeInvoke('mc_module_list', {}).then(function (list) {
+      const arr = Array.isArray(list) ? list : [];
+      arr.forEach(function (m) {
+        if (m && m.id) installedModules.set(m.id, m);
+      });
+      syncVoiceButtons();
+    }).catch(function () { /* mc_module_list unavailable; ok */ });
+  }
+
+  function isVoiceInstalled() { return installedModules.has('voice'); }
+
+  function syncVoiceButtons() {
+    // Gate any existing voice buttons in the page DOM via data-attr.
+    const installed = isVoiceInstalled();
+    document.querySelectorAll('[data-module-voice-installed]').forEach(function (el) {
+      el.setAttribute('data-module-voice-installed', installed ? 'true' : 'false');
+    });
+    // If we're on a chat page and no button exists yet, inject one.
+    if (window.__openclawHostBridge.isChatPage()) {
+      ensureChatVoiceButton();
+    }
+  }
+
+  // Pick the most likely chat input. The OpenClaw chat UI uses various
+  // input shapes (textarea, contenteditable). Try a few selectors in
+  // priority order; first hit wins.
+  function findChatInput() {
+    const selectors = [
+      'textarea[data-chat-input]',
+      '#chat-input',
+      'textarea[name="message"]',
+      'textarea[placeholder*="message" i]',
+      'div[contenteditable="true"][data-chat-input]',
+      'div[contenteditable="true"][role="textbox"]',
+      'div[contenteditable="true"]',
+      'input[type="text"][data-chat-input]',
+      'input[type="text"]',
+    ];
+    for (let i = 0; i < selectors.length; i++) {
+      const el = document.querySelector(selectors[i]);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  // Drop text into a chat input. Handles textarea, input, contenteditable.
+  function writeChatInput(el, text) {
+    if (!el || !text) return false;
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'textarea' || tag === 'input') {
+      // Append to existing content rather than replace — user may have
+      // started typing.
+      const existing = el.value || '';
+      el.value = (existing ? existing + (existing.endsWith(' ') ? '' : ' ') : '') + text;
+      // Trigger input event so framework listeners (React, Vue, etc.)
+      // pick up the change.
+      try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+      el.focus();
+      // Move caret to end
+      try {
+        const len = el.value.length;
+        if (el.setSelectionRange) el.setSelectionRange(len, len);
+      } catch (_) {}
+      return true;
+    }
+    if (el.isContentEditable || el.getAttribute && el.getAttribute('contenteditable') === 'true') {
+      const existing = el.innerText || el.textContent || '';
+      const appended = (existing ? existing + (existing.endsWith(' ') ? '' : ' ') : '') + text;
+      el.innerText = appended;
+      try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+      el.focus();
+      return true;
+    }
+    return false;
+  }
+
+  // The voice button element we inject. Singleton: re-attach if removed.
+  let chatVoiceBtn = null;
+
+  function ensureChatVoiceButton() {
+    if (chatVoiceBtn && document.body && document.body.contains(chatVoiceBtn)) return;
+    const btn = document.createElement('button');
+    btn.id = 'openclaw-chat-voice-btn';
+    btn.type = 'button';
+    btn.setAttribute('data-module-voice-installed', isVoiceInstalled() ? 'true' : 'false');
+    btn.setAttribute('aria-label', 'Voice input');
+    btn.title = 'Voice input';
+    btn.textContent = '🎙';
+    btn.style.cssText = [
+      'position: fixed',
+      'bottom: 18px',
+      'right: 18px',
+      'z-index: 2147483646',
+      'width: 44px',
+      'height: 44px',
+      'border-radius: 50%',
+      'border: 1px solid rgba(255,255,255,0.18)',
+      'background: rgba(20, 20, 24, 0.92)',
+      'color: #f5f5f7',
+      'font-size: 20px',
+      'line-height: 1',
+      'cursor: pointer',
+      'box-shadow: 0 4px 14px rgba(0,0,0,0.45)',
+      'backdrop-filter: blur(6px)',
+      '-webkit-backdrop-filter: blur(6px)',
+      'transition: transform .12s ease, background .12s ease',
+    ].join(';');
+
+    // Greyed-out state when module not installed
+    function applyDisabledState() {
+      if (isVoiceInstalled()) {
+        btn.style.opacity = '1';
+        btn.style.cursor = 'pointer';
+        btn.style.pointerEvents = 'auto';
+        btn.title = 'Voice input (click to record)';
+      } else {
+        btn.style.opacity = '0.4';
+        btn.style.cursor = 'not-allowed';
+        btn.style.pointerEvents = 'none';
+        btn.title = 'Voice module not installed — open Settings → Modules to install';
+      }
+    }
+    applyDisabledState();
+
+    btn.addEventListener('mouseenter', function () {
+      if (isVoiceInstalled()) btn.style.background = 'rgba(40, 40, 48, 0.95)';
+    });
+    btn.addEventListener('mouseleave', function () {
+      btn.style.background = 'rgba(20, 20, 24, 0.92)';
+    });
+
+    btn.addEventListener('click', async function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!isVoiceInstalled()) {
+        showToast('Voice module not installed.\nOpen Settings → Modules to install.', 'error');
+        return;
+      }
+      btn.style.transform = 'scale(0.95)';
+      showToast('🎙 Recording… (auto-stops on silence)', 'info');
+      try {
+        const result = await bridgeInvoke('mc_module_call', {
+          id: 'voice',
+          command: 'mc_voice_transcribe',
+          params: { seconds: 30, vad_enabled: true, silence_ms: 1500 },
+        });
+        // result shape from dispatcher.rs:
+        // { ok: true, result: { text: "..." } } OR { ok: false, error: "..." }
+        const ok = result && result.ok;
+        const text = ok && result.result ? (result.result.text || '') : '';
+        if (text) {
+          const input = findChatInput();
+          if (input && writeChatInput(input, text)) {
+            showToast('🎙 Transcript: ' + (text.length > 60 ? text.slice(0, 57) + '...' : text), 'ok');
+          } else {
+            // No chat input found — copy to clipboard as fallback
+            try {
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+              }
+            } catch (_) {}
+            showToast('🎙 Transcript copied to clipboard:\n' + text.slice(0, 80), 'ok');
+          }
+        } else if (!ok && result && result.error) {
+          showToast('Voice error: ' + result.error, 'error');
+        } else {
+          showToast('🎙 No speech detected', 'info');
+        }
+      } catch (e) {
+        const msg = (e && (e.message || e.toString())) || 'unknown';
+        showToast('Voice failed: ' + msg, 'error');
+      } finally {
+        btn.style.transform = 'scale(1)';
+      }
+    });
+
+    (document.body || document.documentElement).appendChild(btn);
+    chatVoiceBtn = btn;
+  }
+
+  // Poll for the button's data-attr to stay in sync with module state.
+  // Cheap, runs every 1s; only writes the attr if it changed.
+  setInterval(function () {
+    if (chatVoiceBtn && chatVoiceBtn.parentNode) {
+      const want = isVoiceInstalled() ? 'true' : 'false';
+      if (chatVoiceBtn.getAttribute('data-module-voice-installed') !== want) {
+        chatVoiceBtn.setAttribute('data-module-voice-installed', want);
+      }
+    }
+  }, 1000);
+
+  // Hook into the same syncOverlay flow so the voice button appears on
+  // chat pages and disappears on dashboard.
+  (function () {
+    const origSync = typeof syncOverlay === 'function' ? syncOverlay : null;
+    if (origSync) {
+      // Wrap syncOverlay to also inject/remove the voice button.
+      // (syncOverlay is already defined later in the file via function
+      // declaration; we re-define behavior by polling at 250ms below.)
+    }
+  })();
+
+  // Re-sync the voice button on a 250ms cadence (same pattern as the
+  // back-to-dashboard overlay). Cheap, mirrors the SPA-navigate
+  // detection that syncOverlay already does.
+  setInterval(function () {
+    if (window.__openclawHostBridge.isChatPage()) {
+      ensureChatVoiceButton();
+    } else if (chatVoiceBtn && chatVoiceBtn.parentNode) {
+      chatVoiceBtn.parentNode.removeChild(chatVoiceBtn);
+      chatVoiceBtn = null;
+    }
+  }, 250);
 
   function showOverlay() {
     if (document.getElementById('__mc-back-overlay')) return;
