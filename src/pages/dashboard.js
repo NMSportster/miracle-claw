@@ -71,13 +71,27 @@ function renderPlansButton() {
     </button>`;
 }
 
+// Lesson 573 (2026-08-25 07:22 MDT, David): Add-On Modules catalog hub.
+// Mirrors the pricing button styling + arrow so the two read as a button
+// pair. Routes to the in-app modules catalog page (not the OS browser).
+function renderModulesButton() {
+  return `
+    <button type="button"
+            class="modules-link-btn"
+            id="modules-link-btn"
+            title="Browse the Add-On Modules catalog">
+      Add-On Modules
+      <span class="modules-link-arrow" aria-hidden="true">↗</span>
+    </button>`;
+}
+
 export const dashboardPage = {
   label: "Dashboard",
   icon: null,
   requiresAuth: true,
 
   mount(root, ctx = {}) {
-    const { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing } = ctx;
+    const { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules } = ctx;
 
     (async () => {
       // Lesson 561 (2026-08-24 16:08 MDT, David): the dashboard's usage
@@ -166,6 +180,7 @@ export const dashboardPage = {
           </div>
 
           ${renderPlansButton()}
+          ${renderModulesButton()}
 
           <div class="tiles">
             <button class="tile tile-primary" id="openclaw-windows-tile" type="button">
@@ -394,6 +409,18 @@ export const dashboardPage = {
       if (pricingBtn && onOpenPricing) {
         pricingBtn.addEventListener("click", () => {
           onOpenPricing();
+        });
+      }
+
+      // Lesson 573 (2026-08-25 07:22 MDT, David): the Add-On Modules
+      // button routes to the in-app catalog hub. Mirror of the pricing
+      // wire above — kept on its own (not nested under onOpenPricing)
+      // so an onOpenPricing regression can't take this down with it
+      // (rc53.11 lesson: don't share failure modes between siblings).
+      const modulesBtn = document.getElementById("modules-link-btn");
+      if (modulesBtn && onOpenModules) {
+        modulesBtn.addEventListener("click", () => {
+          onOpenModules();
         });
       }
 

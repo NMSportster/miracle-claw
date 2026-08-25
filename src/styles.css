@@ -2946,3 +2946,234 @@ kbd {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 12px;
 }
+
+/* ============================================================================
+   Lesson 573 (2026-08-25 07:22 MDT, David): Dashboard "Add-On Modules"
+   button + catalog hub page. Styles mirror the pricing button pair
+   (same arrow, same height, same font) and the extras card grid
+   (auto-fill, 280px min, hover lift).
+   ============================================================================ */
+
+/* Dashboard button — sibling of the pricing-link-btn. Same visual
+   language so the two read as a button pair below the usage bar. */
+.modules-link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: -16px 0 24px 8px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: #5b6cff;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.modules-link-btn:hover { text-decoration: underline; }
+.modules-link-btn[disabled] { opacity: 0.6; cursor: default; }
+.modules-link-arrow {
+  font-size: 11px;
+  margin-left: 2px;
+}
+
+/* Catalog hub page */
+.page-modules {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 32px 24px 48px;
+}
+
+.modules-page-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.modules-intro {
+  margin: 12px 0 24px;
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 720px;
+}
+
+.modules-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+.modules-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+  min-width: 0;
+}
+.modules-card:hover {
+  border-color: var(--accent, #6366f1);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+
+.modules-card-installed {
+  border-color: #2d8f5e;
+}
+.modules-card-installed:hover {
+  border-color: #2d8f5e;
+}
+
+.modules-card-coming {
+  opacity: 0.7;
+}
+.modules-card-coming:hover {
+  /* Subtle — coming-soon cards shouldn't grab attention */
+  transform: none;
+  box-shadow: none;
+}
+
+.modules-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.modules-icon {
+  font-size: 26px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.modules-card-titles {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.modules-card-name {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--fg);
+}
+
+.modules-card-publisher {
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+/* Status pill in the top-right of the card */
+.modules-status {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.modules-status-available {
+  background: rgba(91, 108, 255, 0.15);
+  color: #8a96ff;
+  border: 1px solid rgba(91, 108, 255, 0.35);
+}
+
+.modules-status-installed {
+  background: rgba(45, 143, 94, 0.18);
+  color: #5fd49a;
+  border: 1px solid rgba(45, 143, 94, 0.45);
+}
+
+.modules-status-coming_soon {
+  background: rgba(140, 140, 140, 0.12);
+  color: var(--muted, #888);
+  border: 1px solid var(--border);
+}
+
+.modules-card-desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg);
+  opacity: 0.85;
+}
+
+.modules-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.modules-version {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  background: var(--bg, #1e1e24);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--fg);
+}
+
+.modules-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.modules-tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  background: var(--bg, #1e1e24);
+  border-radius: 999px;
+  color: var(--muted, #888);
+}
+
+.modules-card-actions {
+  margin-top: auto;
+  padding-top: 4px;
+  display: flex;
+  gap: 8px;
+}
+
+.modules-cta {
+  flex: 1 1 auto;
+  background: var(--accent, #6366f1);
+  color: white;
+  border: 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.05s;
+}
+.modules-cta:hover { opacity: 0.9; }
+.modules-cta:active { transform: translateY(1px); }
+.modules-cta[disabled] {
+  background: var(--bg, #1e1e24);
+  color: var(--muted, #888);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+.modules-cta[disabled]:hover { opacity: 0.7; }
+
+.modules-cta-open {
+  background: #2d8f5e;
+}
+.modules-cta-open:hover { background: #34a06b; opacity: 1; }
+
+.modules-footer {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}

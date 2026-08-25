@@ -38,6 +38,12 @@ import { extrasPage, extrasPaletteActions } from "./pages/extras.js";
 // the same 6 plans as the web /pricing page, fetched live from MAIC,
 // and each paid-plan CTA opens Stripe Checkout in the OS browser.
 import { pricingPage } from "./pages/pricing.js";
+// Lesson 573 (2026-08-25 07:22 MDT, David): Add-On Modules catalog
+// hub. Discovery surface for the module ecosystem — Settings →
+// Modules (Lesson 572) stays the install manager. The catalog lists
+// every MC module with status pills (Available / Installed / Coming
+// Soon) and routes users to install/hook flows.
+import { modulesPage } from "./pages/modules.js";
 // rc53 (feature/secrets-vault): debug page for v0 verification.
 // Not registered in the main page map; mounted via window.__mc_openSecretsDebug.
 import { secretsDebugPage } from "./secrets/debug_page.js";
@@ -69,6 +75,11 @@ register("extras", extrasPage);
 // Lesson 564: in-app Plans & Pricing page. Reachable via the small
 // "Plans & Pricing ↗" button on the dashboard, or via Cmd-K palette.
 register("pricing", pricingPage);
+// Lesson 573: Add-On Modules catalog hub. Reachable via the small
+// "Add-On Modules ↗" button on the dashboard. Catalog lives at
+// src/pages/modules.js — Settings → Modules (Lesson 572) is the
+// install manager; this is the discovery surface.
+register("modules", modulesPage);
 // rc53 (feature/secrets-vault): debug page registration. Mounted
 // only via window.__mc_openSecretsDebug() (dev escape hatch).
 register("secrets-debug", secretsDebugPage);
@@ -108,6 +119,10 @@ installNavigation({
     [
       "pricing",
       () => pricingCtx(),
+    ],
+    [
+      "modules",
+      () => modulesCtx(),
     ],
     [
       "login",
@@ -221,6 +236,10 @@ function pageCtx() {
     // here so the in-app pricing page renders the 6 plans + Stripe
     // CTAs (not a 6-card grid jammed into the dashboard).
     onOpenPricing: () => navigate("pricing"),
+    // Lesson 573: dashboard's "Add-On Modules ↗" button routes here
+    // so the in-app catalog hub renders the 15 modules with status
+    // pills + install/open CTAs.
+    onOpenModules: () => navigate("modules"),
     // rc53.8 (feature/extras-hub): hand off to Terminal with a
     // pre-filled command + the right shell for the OS. cmd on
     // Windows, bash on Linux/macOS — both can resolve mlg-* from
@@ -296,6 +315,19 @@ function pricingCtx() {
   return {
     onBackToDashboard: () => navigate("dashboard"),
     onNeedsLogin: mountLogin,
+  };
+}
+
+// Lesson 573 (2026-08-25 07:22 MDT, David): ctx for the Add-On
+// Modules catalog hub. Same shape as pricingCtx — back-to-dashboard
+// + onNeedsLogin — plus onOpenSettings so installed-card "Open"
+// buttons can route to Settings when there's no specific hook
+// location configured.
+function modulesCtx() {
+  return {
+    onBackToDashboard: () => navigate("dashboard"),
+    onNeedsLogin: mountLogin,
+    onOpenSettings: () => navigate("settings"),
   };
 }
 
