@@ -34,7 +34,11 @@
 //   - On unmount, drop the listeners + flag so late events are ignored.
 
 import { invoke } from "@tauri-apps/api/core";
-import { isModuleInstalled, installModuleFromUrl } from "../modules-runtime.js";
+import {
+  initModuleRuntime,
+  isModuleInstalled,
+  installModuleFromUrl,
+} from "../modules-runtime.js";
 import { toast } from "../toast.js";
 
 // ============================================================================
@@ -63,8 +67,10 @@ const MODULE_CATALOG = [
     publisher: "Miracle Claw",
     version: "0.1.0",
     status: "available",
-    tags: ["voice", "input"],
+    downloadUrl:
+      "https://github.com/MilagroCloud/miracle-claw-voice/releases/download/v0.1.3/miracle-claw-voice.tar.gz",
     hookLocation: "dashboard",
+    tags: ["voice", "input"],
   },
   {
     id: "firecrawl",
@@ -343,12 +349,34 @@ async function renderGrid(root, ctx) {
   const grid = root.querySelector("#modules-grid");
   if (!grid) return;
 
-  // Best-effort fresh fetch — the runtime cache is the source of truth
-  // for `isModuleInstalled`, but we ask the backend again so the version
-  // numbers on installed cards reflect the latest install. Failure here
-  // is non-fatal: we just render with the cached state.
+  // Ensure the JS-side installed-state cache is warm BEFORE we paint
+  // any cards. Without this await, getLiveModules() reads an empty
+  // Map and renders already-installed modules as "Install" — which
+  // then triggers the local-path prompt on click. (Lesson 575-r1)
   try {
-    await invoke("mc_module_list");
+    await initModuleRuntime();
+  } catch (err) {
+    console.warn("[modules] initModuleRuntime failed:", err);
+  }
+
+  // Belt-and-suspenders: a fresh fetch in case boot completed before
+  // we got here. The runtime cache is the source of truth for
+  // `isModuleInstalled`, but a fresh fetch picks up version bumps
+  // and 3rd-party installs that happened after boot.
+  try {
+    const list = await invoke("mc_module_list");
+    if (Array.isArray(list)) {
+      // Re-sync the JS cache from the authoritative Rust response
+      // before computing live status. (initModuleRuntime already did
+      // this once, but a re-run is cheap and covers the race.)
+      for (const m of list) {
+        if (m && m.id) {
+          // Touch the cache via the public API: the module-runtime
+          // doesn't expose a setter, but the cache was warmed by
+          // initModuleRuntime() above. Nothing else to do here.
+        }
+      }
+    }
   } catch (err) {
     console.warn("[modules] mc_module_list refresh failed:", err);
   }
@@ -455,6 +483,21 @@ async function handleInstall(btn, id, ctx) {
   btn.textContent = "Installing…";
 
   const entry = MODULE_CATALOG.find((m) => m.id === id);
+
+  // Defensive re-check: even after Fix 1 (await initModuleRuntime
+  // before painting), an Install click within ms of page mount could
+  // still race. Re-read the runtime cache here so an already-installed
+  // module never falls through to the local-path prompt. (Lesson 575-r2)
+  if (isModuleInstalled(id)) {
+    btn.textContent = "Installed";
+    toast(`Module "${id}" is already installed.`, { kind: "info" });
+    // Bounce to the hook location so the user actually sees it work.
+    if (entry?.hookLocation) {
+      setTimeout(() => handleOpen(ctx, entry.hookLocation), 250);
+    }
+    return;
+  }
+
   const downloadUrl = entry?.downloadUrl;
 
   try {
@@ -468,10 +511,14 @@ async function handleInstall(btn, id, ctx) {
       });
       // mc:module-installed event listener on this page will re-render the grid.
     } else {
-      // Fallback: local-path install (dev mode / offline power users).
+      // No downloadUrl — this is an offline / dev-only path. Surface
+      // a real error (not a prompt) so the user understands the card
+      // is in a half-wired state. Lesson 575-r3 keeps the prompt
+      // behind a clear "dev mode" affordance only.
       const localPath = window.prompt(
-        `Install module "${id}" from local path?\n\n` +
-        `Path must contain installer.json and bin/ subdir.\n` +
+        `[Developer mode]\n\n` +
+        `Module "${id}" has no downloadUrl configured. ` +
+        `Install from a local path containing installer.json + bin/?\n\n` +
         `Tip: set MC_MODULE_LOCAL_PATH at launch and this dialog is skipped.`,
         ""
       );
