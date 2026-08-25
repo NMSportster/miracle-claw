@@ -22,7 +22,7 @@ import { openPalette as openCmdKPalette } from "../cmd_k_palette.js";
 // Lesson 571 (2026-08-25 00:37 MDT, David): MC Module Framework —
 // dashboard FAB calls the voice module via the JS-side runtime.
 // Button starts greyed out (data-module-voice-installed="false").
-import { isModuleInstalled, invokeModule } from "../modules-runtime.js";
+import { isModuleInstalled, invokeModule, ensureVoiceModel } from "../modules-runtime.js";
 import { toast } from "../toast.js";
 
 function escapeHtml(s) {
@@ -370,6 +370,20 @@ export const dashboardPage = {
           const orig = voiceFab.textContent;
           voiceFab.textContent = "🎙…";
           try {
+            // Lesson 581 (2026-08-25 16:25 MDT, David): ensure whisper
+            // model is present before transcribing. If missing,
+            // auto-download (~75MB) so the user gets a working mic
+            // without having to dig into the binary's env vars.
+            const ready = await ensureVoiceModel((status) => {
+              voiceFab.textContent = status.startsWith("Downloading") ? "📥…" : "🎙…";
+            });
+            if (!ready) {
+              toast(
+                "🎙 whisper model missing. Run Settings → Modules → Voice → \"Download model\".",
+                { kind: "error", duration: 10000 }
+              );
+              return;
+            }
             const result = await invokeModule("mc_voice_transcribe", {
               seconds: 30,
               vad_enabled: true,
@@ -400,7 +414,15 @@ export const dashboardPage = {
               toast("🎙 (no speech detected)", { kind: "info" });
             }
           } catch (e) {
-            toast(`🎙 transcription failed: ${e}`, { kind: "error" });
+            const msg = String(e);
+            if (/no whisper model|MILAGRO_VOICE_MODEL/i.test(msg)) {
+              toast(
+                "🎙 whisper model missing. Run Settings → Modules → Voice → \"Download model\".",
+                { kind: "error", duration: 10000 }
+              );
+            } else {
+              toast(`🎙 transcription failed: ${msg}`, { kind: "error" });
+            }
           } finally {
             voiceFab.disabled = false;
             voiceFab.textContent = orig;

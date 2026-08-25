@@ -20,7 +20,7 @@ import { register, mount as mountPage } from "./page_registry.js";
 // voice module wires its UI hooks (terminal toolbar, fullscreen
 // overlay, dashboard FAB) to the live `mc:module-installed` event
 // here. See modules-runtime.js for the activation logic.
-import { initModuleRuntime, isModuleInstalled, invokeModule } from "./modules-runtime.js";
+import { initModuleRuntime, isModuleInstalled, invokeModule, reapplyAllUiHooks } from "./modules-runtime.js";
 import { loginPage } from "./pages/login.js";
 import { dashboardPage } from "./pages/dashboard.js";
 import { settingsPage } from "./pages/settings.js";
@@ -155,6 +155,14 @@ async function boot() {
   // Lesson 571: wire the module runtime first so mc:module-installed
   // events arriving during boot() aren't dropped on the floor.
   await initModuleRuntime();
+
+  // Lesson 581 (2026-08-25 16:25 MDT, David): expose a global hook
+  // so page_registry.js can re-apply uiHooks on every page mount.
+  // Terminal/Files/etc. mount lazily (post-boot), so their module
+  // hooks (`#terminal-voice-btn`, etc.) render with the template's
+  // `data-module-<id>-installed="false"` and never get flipped
+  // unless we re-run activateUiHooks() after the page mounts.
+  window.__MC_REAPPLY_UI_HOOKS__ = reapplyAllUiHooks;
 
   let report;
   try {

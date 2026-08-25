@@ -86,6 +86,19 @@ export function mount(id, root, ctx = {}) {
     def.mount(root, ctx);
     current.id = id;
     current.def = def;
+    // Lesson 581 (2026-08-25 16:25 MDT, David): re-apply module UI
+    // hooks after each page mount. Terminal/Files/etc. buttons render
+    // AFTER initModuleRuntime's boot sync, so they keep the template's
+    // `data-module-<id>-installed="false"` and stay greyed out even
+    // when the module IS installed. Re-running activateUiHooks here
+    // flips them to "true" the moment the page becomes visible.
+    if (typeof window !== "undefined" && window.__MC_REAPPLY_UI_HOOKS__) {
+      try {
+        window.__MC_REAPPLY_UI_HOOKS__();
+      } catch (e) {
+        console.warn("[page_registry] reapply ui hooks failed:", e);
+      }
+    }
     return true;
   } catch (err) {
     console.error(`[page_registry] mount('${id}') threw:`, err);

@@ -3233,6 +3233,46 @@ kbd {
 }
 .modules-cta-open:hover { background: #34a06b; opacity: 1; }
 
+/* Lesson 581: secondary CTA on the Voice card for "Download model".
+   Smaller, less prominent — the primary action stays "Open". */
+.modules-cta-secondary {
+  background: transparent;
+  color: var(--accent, #6366f1);
+  border: 1px solid var(--accent, #6366f1);
+  flex: 0 1 auto;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+.modules-cta-secondary:hover {
+  background: rgba(99, 102, 241, 0.08);
+  opacity: 1;
+}
+
+/* Lesson 581: model-state pill on the Voice card. */
+.modules-card-pills {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.modules-pill {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.modules-pill-ok {
+  background: rgba(45, 143, 94, 0.15);
+  color: #2d8f5e;
+  border: 1px solid rgba(45, 143, 94, 0.35);
+}
+.modules-pill-warn {
+  background: rgba(217, 119, 6, 0.15);
+  color: #d97706;
+  border: 1px solid rgba(217, 119, 6, 0.35);
+}
+
 .modules-footer {
   margin-top: 24px;
   padding-top: 16px;

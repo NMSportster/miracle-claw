@@ -51,7 +51,7 @@ import "@xterm/xterm/css/xterm.css";
 // the JS-side module runtime. The button starts greyed out
 // (data-module-voice-installed="false") and lights up when the
 // voice module installs.
-import { isModuleInstalled, invokeModule } from "../modules-runtime.js";
+import { isModuleInstalled, invokeModule, ensureVoiceModel } from "../modules-runtime.js";
 import { toast } from "../toast.js";
 // rc53.5 (feature/secrets-vault): mount the secrets page inside an
 // overlay when the toolbar button is clicked. Re-uses the existing
@@ -549,6 +549,20 @@ export const terminalPage = {
       voiceBtn.disabled = true;
       voiceBtn.textContent = "🎙 Listening…";
       try {
+        // Lesson 581 (2026-08-25 16:25 MDT, David): ensure whisper
+        // model is present before transcribing. If missing,
+        // auto-download (~75MB) so the user gets a working mic
+        // without having to dig into the binary's env vars.
+        const ready = await ensureVoiceModel((status) => {
+          voiceBtn.textContent = status.startsWith("Downloading") ? "📥 Downloading…" : "🎙 Preparing…";
+        });
+        if (!ready) {
+          toast(
+            "🎙 whisper model missing. Run Settings → Modules → Voice → \"Download model\".",
+            { kind: "error", duration: 10000 }
+          );
+          return;
+        }
         const result = await invokeModule("mc_voice_transcribe", {
           seconds: 30,
           vad_enabled: true,
@@ -571,7 +585,15 @@ export const terminalPage = {
           toast("🎙 (no speech detected)", { kind: "info" });
         }
       } catch (e) {
-        toast(`🎙 transcription failed: ${e}`, { kind: "error" });
+        const msg = String(e);
+        if (/no whisper model|MILAGRO_VOICE_MODEL/i.test(msg)) {
+          toast(
+            "🎙 whisper model missing. Run Settings → Modules → Voice → \"Download model\".",
+            { kind: "error", duration: 10000 }
+          );
+        } else {
+          toast(`🎙 transcription failed: ${msg}`, { kind: "error" });
+        }
       } finally {
         voiceBtn.disabled = false;
         voiceBtn.textContent = "🎙 Voice";

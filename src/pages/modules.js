@@ -38,6 +38,9 @@ import {
   initModuleRuntime,
   isModuleInstalled,
   installModuleFromUrl,
+  reapplyAllUiHooks,
+  ensureVoiceModel,
+  checkModuleHealth,
 } from "../modules-runtime.js";
 import { toast } from "../toast.js";
 
@@ -282,10 +285,14 @@ export const modulesPage = {
 
     state.onInstalled = () => {
       if (state.unmounted) return;
+      // Voice module just installed — clear any stale model cache.
+      modelHealthCache.delete("voice");
       renderGrid(root, ctx);
     };
     state.onUninstalled = () => {
       if (state.unmounted) return;
+      // Voice module just uninstalled — clear any cached model state.
+      modelHealthCache.delete("voice");
       renderGrid(root, ctx);
     };
 
@@ -385,8 +392,50 @@ async function renderGrid(root, ctx) {
   }
 
   const live = getLiveModules();
+
+  // Per-module asset status (Lesson 581, 2026-08-25 16:25 MDT, David):
+  // Voice binary requires a separately-downloaded whisper model. We
+  // probe `mc_voice_check` for installed voice modules and surface a
+  // "Setup model" CTA on the card if the model is missing. The probe
+  // is cached in `modelHealthCache` so navigating away and back is
+  // instant, and the cache invalidates on `mc:module-installed` /
+  // successful model download.
+  await annotateModelHealth(live);
+
   grid.innerHTML = live.map((m) => renderCard(m, ctx)).join("");
   wireCardButtons(grid, ctx);
+}
+
+// Per-module asset cache. Keyed by moduleId. Voice-only for now.
+const modelHealthCache = new Map();
+let modelHealthInflight = null;
+
+async function annotateModelHealth(modules) {
+  const installed = modules.filter((m) => m.status === "installed");
+  const voice = installed.find((m) => m.id === "voice");
+  if (!voice) {
+    // Voice not installed → no model status to surface.
+    voice && (voice.modelState = null);
+    return;
+  }
+
+  let cached = modelHealthCache.get("voice");
+  if (!cached) {
+    if (!modelHealthInflight) {
+      modelHealthInflight = checkModuleHealth("voice").finally(() => {
+        modelHealthInflight = null;
+      });
+    }
+    cached = await modelHealthInflight;
+    modelHealthCache.set("voice", cached);
+  }
+  voice.modelState = cached.model_loaded ? "ready" : "needs_model";
+}
+
+// Public hook — call after a successful model download to invalidate
+// the cache and re-render the catalog.
+export function invalidateModelHealth(moduleId = "voice") {
+  modelHealthCache.delete(moduleId);
 }
 
 function renderCard(m, ctx) {
@@ -397,6 +446,18 @@ function renderCard(m, ctx) {
 
   let cta;
   if (status === "installed") {
+    // Voice-only: if model is missing, add a secondary "Download model" CTA.
+    let secondary = "";
+    if (m.id === "voice" && m.modelState === "needs_model") {
+      secondary = `
+        <button type="button"
+                class="modules-cta modules-cta-secondary modules-cta-download-model"
+                data-action="download-model"
+                data-module-id="voice"
+                title="Download the whisper model (~75 MB) so voice transcription works.">
+          Download model
+        </button>`;
+    }
     cta = `
       <button type="button"
               class="modules-cta modules-cta-open"
@@ -404,7 +465,7 @@ function renderCard(m, ctx) {
               data-module-id="${escapeHtml(m.id)}"
               data-hook-location="${escapeHtml(m.hookLocation || "settings")}">
         Open
-      </button>`;
+      </button>${secondary}`;
   } else if (status === "available") {
     cta = `
       <button type="button"
@@ -425,6 +486,16 @@ function renderCard(m, ctx) {
       </button>`;
   }
 
+  // Voice-only model-state pill (Lesson 581).
+  let modelPill = "";
+  if (status === "installed" && m.id === "voice") {
+    if (m.modelState === "needs_model") {
+      modelPill = `<span class="modules-pill modules-pill-warn" title="Run mc_voice_check after the model is downloaded.">whisper model missing</span>`;
+    } else if (m.modelState === "ready") {
+      modelPill = `<span class="modules-pill modules-pill-ok" title="Whisper model is loaded and ready.">whisper ready</span>`;
+    }
+  }
+
   return `
     <article class="modules-card modules-card-${escapeHtml(status)}"
              data-module-id="${escapeHtml(m.id)}"
@@ -443,6 +514,8 @@ function renderCard(m, ctx) {
       </div>
 
       <p class="modules-card-desc">${escapeHtml(m.description)}</p>
+
+      ${modelPill ? `<div class="modules-card-pills">${modelPill}</div>` : ""}
 
       <div class="modules-card-meta muted small">
         <span class="modules-version">v${escapeHtml(m.version)}</span>
@@ -468,6 +541,8 @@ function wireCardButtons(grid, ctx) {
         await handleInstall(btn, id, ctx);
       } else if (action === "open") {
         handleOpen(ctx, btn.dataset.hookLocation || "settings");
+      } else if (action === "download-model") {
+        await handleDownloadModel(btn, id, ctx);
       }
     });
   });
@@ -545,6 +620,41 @@ async function handleInstall(btn, id, ctx) {
  * module so they can actually use it. Falls back to Settings → Modules
  * when no hook location is known.
  */
+/**
+ * Lesson 581 (2026-08-25 16:25 MDT, David): Voice module needs a
+ * separately-downloaded whisper model. The Download model CTA on the
+ * Voice card invokes mc_voice_download_model, then invalidates the
+ * model-health cache and re-renders so the pill flips to "ready".
+ */
+async function handleDownloadModel(btn, id, ctx) {
+  btn.disabled = true;
+  const oldLabel = btn.textContent;
+  btn.textContent = "Downloading…";
+  try {
+    const ok = await ensureVoiceModel((status) => {
+      btn.textContent = status.startsWith("Downloading") ? "Downloading (~75 MB)…" : "Checking…";
+    });
+    if (ok) {
+      toast("Whisper model downloaded — voice is ready.", { kind: "success" });
+      invalidateModelHealth("voice");
+    } else {
+      toast("Whisper model download failed. Check network + retry, or set MILAGRO_VOICE_MODEL_PATH.", {
+        kind: "error",
+        duration: 10000,
+      });
+    }
+  } catch (e) {
+    toast(`Model download failed: ${e}`, { kind: "error", duration: 10000 });
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldLabel;
+    // Re-render the grid to flip the model-state pill to "ready"
+    // (or keep it as "needs_model" on failure).
+    const root = btn.closest('[data-page="modules"]') || document;
+    renderGrid(root, ctx);
+  }
+}
+
 function handleOpen(ctx, location) {
   if (!ctx) return;
   switch (location) {

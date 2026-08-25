@@ -235,3 +235,112 @@ function activateUiHooks(moduleId, live) {
 // (so uninstall still flips elements even though we removed the
 // entry from `installed`).
 const uninstalledHooksCache = new Map();
+
+/**
+ * Re-apply `data-module-<id>-installed="true|false"` to every
+ * currently mounted DOM element that has a `uiHooks` selector.
+ *
+ * WHY this exists (Lesson 581, 2026-08-25 16:25 MDT, David):
+ *   `activateUiHooks()` runs once at boot, BEFORE lazily-mounted
+ *   pages (Terminal, Files) are navigated to. Their buttons render
+ *   with the template's hardcoded `data-module-voice-installed="false"`
+ *   and never get flipped — the click handler returns early because
+ *   `pointer-events: none` (CSS), so the button feels dead even
+ *   though voice IS installed.
+ *
+ *   Calling this after every page mount fixes it: the buttons now
+ *   re-sync with the JS-side `installed` Map at mount time.
+ *
+ *   Also dispatches a `mc:ui-hooks-applied` event so individual
+ *   pages can run per-module logic (e.g. update voice module card
+ *   status pill from "needs model" to "ready").
+ *
+ * Safe to call repeatedly — idempotent.
+ */
+export function reapplyAllUiHooks() {
+  for (const id of installed.keys()) {
+    activateUiHooks(id, true);
+  }
+  // Also flip uninstalled hooks back to false in case they got
+  // rendered between uninstall + page-mount.
+  for (const id of uninstalledHooksCache.keys()) {
+    activateUiHooks(id, false);
+  }
+  window.dispatchEvent(new CustomEvent("mc:ui-hooks-applied"));
+  console.log(
+    `[modules] ui-hooks reapplied (${installed.size} installed, ${uninstalledHooksCache.size} uninstalled caches)`
+  );
+}
+/**
+ * Module-asset health — generic "does this module have its required
+ * model/files?" query.
+ *
+ * Today: hardcoded for voice (mc_voice_check returns
+ * { model_loaded, model_path, audio_host, input_device }).
+ * Future: dispatcher grows a generic mc_module_check that returns
+ * each module's full status payload, and individual modules decide
+ * what's "missing".
+ *
+ * @param {string} moduleId — currently only "voice" is supported.
+ * @returns {Promise<{ok: boolean, model_loaded: boolean, model_path: string|null, raw: object}>}
+ */
+export async function checkModuleHealth(moduleId) {
+  if (moduleId !== "voice") {
+    return { ok: false, model_loaded: null, model_path: null, raw: { reason: "unsupported" } };
+  }
+  try {
+    const raw = await invokeModule("mc_voice_check", {});
+    return {
+      ok: !!raw?.model_loaded,
+      model_loaded: !!raw?.model_loaded,
+      model_path: raw?.model_path || null,
+      raw,
+    };
+  } catch (e) {
+    return { ok: false, model_loaded: false, model_path: null, raw: { error: String(e) } };
+  }
+}
+
+/**
+ * Ensure the voice whisper model is downloaded. Idempotent.
+ * Returns true if model is now available (either pre-existing or
+ * freshly downloaded), false if download failed.
+ *
+ * Triggers a toast notification via the caller-supplied onStatus
+ * callback (e.g. "Downloading model…", "Ready", "Failed").
+ *
+ * Lesson 581 (2026-08-25 16:25 MDT, David): Voice binary ships with
+ * `mc_voice_download_model` action that downloads
+ * ggml-base.en.bin (~75MB) from huggingface.co/.../whisper.cpp/ with
+ * SHA256 verification. This helper wires it into the JS flow so
+ * users get a button instead of a cryptic binary error.
+ *
+ * @param {(status: string) => void} onStatus — UI status callback
+ * @returns {Promise<boolean>}
+ */
+export async function ensureVoiceModel(onStatus) {
+  const setStatus = (s) => { try { onStatus?.(s); } catch {} };
+
+  setStatus("Checking whisper model…");
+  const health = await checkModuleHealth("voice");
+  if (health.model_loaded) {
+    setStatus("Whisper model ready");
+    return true;
+  }
+
+  setStatus("Downloading whisper model (~75MB)…");
+  try {
+    await invokeModule("mc_voice_download_model", {});
+    // Verify the download succeeded.
+    const recheck = await checkModuleHealth("voice");
+    if (recheck.model_loaded) {
+      setStatus("Whisper model ready");
+      return true;
+    }
+    setStatus("Whisper model download did not complete");
+    return false;
+  } catch (e) {
+    setStatus(`Whisper model download failed: ${e}`);
+    return false;
+  }
+}
