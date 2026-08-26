@@ -80,9 +80,8 @@ const MODULE_CATALOG = [
     icon: "🌍",
     name: "Translation for MiracleClaw",
     description:
-      "Translate text between 30+ languages using your MAIC account. " +
-      "Routes through your MAIC tenant — no training data leaves the " +
-      "model. Source language auto-detected, target language picked per call.",
+      "Translate text or web pages between 100+ languages. " +
+      "Drop-in tool for MAIC chat.",
     publisher: "Milagro Claw",
     version: "0.1.0",
     status: "available",
