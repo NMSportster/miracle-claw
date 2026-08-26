@@ -94,6 +94,198 @@ function renderModulesButton() {
     </button>`;
 }
 
+// =============================================================================
+// Voice transcription preview modal (rc53.29, David 2026-08-26 16:33 MDT)
+//
+// Lesson 596: every sidecar returning text needs a visible UI surface,
+// not just a clipboard fallback. The dashboard has no chat input, so
+// the old code copied the transcript to clipboard and toa "Copied to
+// clipboard". David reported "hears the speech but doesn't write to
+// the input area" — he assumed it failed because there was no
+// visible result.
+//
+// This modal shows:
+//   - The captured transcript text in an editable textarea
+//   - Copy / Try again / Send to OpenClaw buttons
+//   - A collapsible Diagnostics section with the v0.1.8 fields so
+//     we can debug "No Speech Detected" failures
+// =============================================================================
+
+let voiceModalEl = null;
+
+function buildDiagnosticsHtml(result) {
+  if (!result || !result.diagnostics) return "";
+  const d = result.diagnostics;
+  const vadStats = d.vadStats || {};
+  const rows = [
+    ["Peak amplitude", typeof d.peakAmplitude === "number" ? d.peakAmplitude.toFixed(4) : "—"],
+    ["RMS", typeof d.rms === "number" ? d.rms.toFixed(4) : "—"],
+    ["VAD enabled", d.vadEnabled ? "yes" : "no"],
+    ["Total frames", vadStats.totalFrames ?? "—"],
+    ["Speech frames", vadStats.speechFrames ?? "—"],
+    ["Speech ratio", typeof vadStats.speechRatio === "number" ? vadStats.speechRatio.toFixed(2) : "—"],
+    ["Silence tripped", vadStats.silenceTripped ? "yes" : "no"],
+    ["Duration (ms)", result.duration_ms ?? "—"],
+    ["Transcribe (ms)", result.transcribe_ms ?? "—"],
+  ];
+  return `
+    <dl class="voice-modal-diag">
+      ${rows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(String(v))}</dd>`).join("")}
+    </dl>
+  `;
+}
+
+function interpretDiagnostics(result) {
+  // Lesson 592 (rc53.28, voice v0.1.8): turn raw diagnostics into a
+  // plain-language hint about WHY transcription might have failed.
+  const d = result?.diagnostics;
+  if (!d) return "";
+  const peak = d.peakAmplitude ?? 0;
+  const speechFrames = d.vadStats?.speechFrames ?? 0;
+  if (result.text && result.text.trim()) return "";
+  if (peak < 0.001) {
+    return "Your microphone looks silent — peak amplitude is near zero. Check that the mic is plugged in, not muted, and that the right input device is selected in your system sound settings.";
+  }
+  if (d.vadEnabled && speechFrames === 0) {
+    return "Sound is reaching the mic, but the Voice Activity Detector didn't classify any of it as speech. Try speaking louder, getting closer to the mic, or disabling VAD in Settings → Modules → Voice.";
+  }
+  if (result.warning) return result.warning;
+  return "Whisper heard audio but didn't transcribe any words. Try speaking more clearly, or check that you're on the latest voice module (v0.1.8).";
+}
+
+function openVoiceResultModal(result, opts = {}) {
+  // Close any existing voice modal first.
+  if (voiceModalEl) {
+    voiceModalEl._cleanup?.();
+    voiceModalEl.remove();
+    voiceModalEl = null;
+  }
+  const text = (result && result.text ? String(result.text) : "").trim();
+  const hasText = !!text;
+  const warning = (result && result.warning) || "";
+  const hint = interpretDiagnostics(result);
+
+  const overlay = document.createElement("div");
+  overlay.className = "voice-modal-overlay";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", "Voice transcription result");
+  overlay.innerHTML = `
+    <div class="voice-modal-backdrop" data-close="1"></div>
+    <div class="voice-modal-panel">
+      <header class="voice-modal-header">
+        <span class="voice-modal-icon" aria-hidden="true">🎙</span>
+        <div class="voice-modal-titles">
+          <h1 class="voice-modal-title">${hasText ? "Voice transcript" : (warning || hint ? "No transcript captured" : "Voice transcript")}</h1>
+          <span class="voice-modal-subtitle">${hasText ? "Edit if needed, then choose where to send it." : "What the mic heard."}</span>
+        </div>
+        <button class="voice-modal-close" type="button" aria-label="Close" data-close="1">✕</button>
+      </header>
+      <div class="voice-modal-body">
+        ${hasText ? `
+          <textarea class="voice-modal-text"
+                    id="voice-modal-text"
+                    rows="6"
+                    spellcheck="true"
+                    aria-label="Voice transcript (editable)">${escapeHtml(text)}</textarea>
+        ` : `
+          <div class="voice-modal-empty">
+            <div class="voice-modal-empty-msg">
+              ${escapeHtml(hint || warning || "The mic didn't capture any speech this time.")}
+            </div>
+            <button type="button" class="voice-modal-cta primary" data-action="retry">
+              🎙 Try again
+            </button>
+          </div>
+        `}
+        ${hint && hasText ? `
+          <div class="voice-modal-hint muted small">${escapeHtml(hint)}</div>
+        ` : ""}
+        <details class="voice-modal-diag-details">
+          <summary>Diagnostics</summary>
+          ${buildDiagnosticsHtml(result)}
+        </details>
+      </div>
+      ${hasText ? `
+        <footer class="voice-modal-footer">
+          <button type="button" class="voice-modal-cta secondary" data-action="copy">
+            📋 Copy
+          </button>
+          <button type="button" class="voice-modal-cta secondary" data-action="retry">
+            🎙 Record again
+          </button>
+          <button type="button" class="voice-modal-cta primary" data-action="send-chat">
+            💬 Send to OpenClaw chat
+          </button>
+        </footer>
+      ` : ""}
+    </div>
+  `;
+
+  // Escape key + backdrop close.
+  const onKey = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeVoiceResultModal();
+    }
+  };
+  overlay.addEventListener("click", (e) => {
+    if (e.target.dataset?.close === "1") {
+      closeVoiceResultModal();
+    } else if (e.target.dataset?.action === "copy") {
+      const ta = overlay.querySelector("#voice-modal-text");
+      const value = ta ? ta.value : text;
+      navigator.clipboard
+        .writeText(value)
+        .then(() => toast("Transcript copied to clipboard", { kind: "success" }))
+        .catch(() => writeText(value).then(() => toast("Transcript copied to clipboard", { kind: "success" })));
+    } else if (e.target.dataset?.action === "retry") {
+      closeVoiceResultModal();
+      opts.onRetry?.();
+    } else if (e.target.dataset?.action === "send-chat") {
+      const ta = overlay.querySelector("#voice-modal-text");
+      const value = ta ? ta.value : text;
+      Promise.resolve()
+        .then(async () => {
+          try {
+            await writeText(value);
+          } catch {
+            // ignore — we'll still open the window
+          }
+          try {
+            await invoke("openclaw_open_window");
+            toast("OpenClaw chat opened — press Ctrl+V in the chat input to paste.", { kind: "info", duration: 6000 });
+          } catch (err) {
+            toast(`Could not open OpenClaw chat: ${escapeHtml(String(err))}`, { kind: "error" });
+          }
+        });
+    }
+  });
+  document.addEventListener("keydown", onKey);
+  overlay._cleanup = () => {
+    document.removeEventListener("keydown", onKey);
+  };
+
+  document.body.appendChild(overlay);
+  voiceModalEl = overlay;
+
+  // Focus the textarea (or retry button) for natural keyboard flow.
+  const ta = overlay.querySelector("#voice-modal-text");
+  if (ta) {
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  } else {
+    overlay.querySelector("[data-action='retry']")?.focus();
+  }
+}
+
+function closeVoiceResultModal() {
+  if (!voiceModalEl) return;
+  voiceModalEl._cleanup?.();
+  voiceModalEl.remove();
+  voiceModalEl = null;
+}
+
 export const dashboardPage = {
   label: "Dashboard",
   icon: null,
@@ -353,81 +545,72 @@ export const dashboardPage = {
         cmdKBtn.addEventListener("click", () => openCmdKPalette());
       }
 
-      // Lesson 571: dashboard voice FAB. Same handler shape as the
-      // terminal toolbar voice button — capture + transcribe + drop
-      // result into the dashboard's chat input (or alert if no chat
-      // surface is mounted). v0.1.0 uses alert() as the result sink;
-      // Lesson 572 will route the transcript to the active chat
-      // surface via the host bridge.
+      // Lesson 571: dashboard voice FAB. Capture + transcribe + show
+      // the result in a preview modal (rc53.29, David 2026-08-26
+      // 16:33 MDT: "hears the speech but doesn't write to the input
+      // area" — clipboard fallback was invisible to him). The modal
+      // shows the transcript, has Copy / Re-record / Send-to-chat
+      // buttons, and surfaces v0.1.8 diagnostics so we can debug
+      // "No Speech Detected" failures (Lesson 592).
       const voiceFab = document.getElementById("mc-voice-fab");
-      if (voiceFab) {
-        voiceFab.addEventListener("click", async () => {
-          if (!isModuleInstalled("voice")) {
-            toast("Voice module not installed. Install via Settings → Modules.", { kind: "warn" });
+      const runVoiceFab = async () => {
+        if (!isModuleInstalled("voice")) {
+          toast("Voice module not installed. Install via Settings → Modules.", { kind: "warn" });
+          return;
+        }
+        voiceFab.disabled = true;
+        const orig = voiceFab.textContent;
+        voiceFab.textContent = "🎙…";
+        try {
+          // Lesson 581 (2026-08-25 16:25 MDT, David): ensure whisper
+          // model is present before transcribing. If missing,
+          // auto-download (~75MB) so the user gets a working mic
+          // without having to dig into the binary's env vars.
+          const ready = await ensureVoiceModel((status) => {
+            voiceFab.textContent = status.startsWith("Downloading") ? "📥…" : "🎙…";
+          });
+          if (!ready) {
+            toast(
+              "🎙 whisper model missing. Run Settings → Modules → Voice → \"Download model\".",
+              { kind: "error", duration: 10000 }
+            );
             return;
           }
-          voiceFab.disabled = true;
-          const orig = voiceFab.textContent;
-          voiceFab.textContent = "🎙…";
-          try {
-            // Lesson 581 (2026-08-25 16:25 MDT, David): ensure whisper
-            // model is present before transcribing. If missing,
-            // auto-download (~75MB) so the user gets a working mic
-            // without having to dig into the binary's env vars.
-            const ready = await ensureVoiceModel((status) => {
-              voiceFab.textContent = status.startsWith("Downloading") ? "📥…" : "🎙…";
-            });
-            if (!ready) {
-              toast(
-                "🎙 whisper model missing. Run Settings → Modules → Voice → \"Download model\".",
-                { kind: "error", duration: 10000 }
-              );
-              return;
-            }
-            const result = await invokeModule("mc_voice_transcribe", {
-              seconds: 30,
-              vad_enabled: true,
-              silence_ms: 1500,
-            });
-            const text = (result && result.text) || "";
-            if (text.trim()) {
-              // Try to land the transcript in the dashboard's chat
-              // input if one exists. Falls back to clipboard + toast.
-              const chatInput =
-                document.querySelector("#dashboard-chat-input") ||
-                document.querySelector("textarea[name='message']");
-              if (chatInput) {
-                chatInput.value = text.trim();
-                chatInput.focus();
-                toast(`Transcript: "${text.trim().slice(0, 60)}${text.trim().length > 60 ? "…" : ""}"`, { kind: "success" });
-              } else {
-                try {
-                  await writeText(text.trim());
-                  toast(`Copied to clipboard: "${text.trim().slice(0, 60)}${text.trim().length > 60 ? "…" : ""}"`, { kind: "info" });
-                } catch (e) {
-                  toast(`Transcript: "${text.trim()}"`, { kind: "info", sticky: true });
-                }
-              }
-            } else if (result && result.warning) {
-              toast(`🎙 ${result.warning}`, { kind: "warn" });
-            } else {
-              toast("🎙 (no speech detected)", { kind: "info" });
-            }
-          } catch (e) {
-            const msg = String(e);
-            if (/no whisper model|MILAGRO_VOICE_MODEL/i.test(msg)) {
-              toast(
-                "🎙 whisper model missing. Run Settings → Modules → Voice → \"Download model\".",
-                { kind: "error", duration: 10000 }
-              );
-            } else {
-              toast(`🎙 transcription failed: ${msg}`, { kind: "error" });
-            }
-          } finally {
-            voiceFab.disabled = false;
-            voiceFab.textContent = orig;
+          const result = await invokeModule("mc_voice_transcribe", {
+            seconds: 30,
+            vad_enabled: true,
+            silence_ms: 1500,
+          });
+          // rc53.29: always show the preview modal so David can SEE
+          // what was captured. The textarea is editable; Copy / Re-
+          // record / Send-to-chat buttons give him control over
+          // where it goes. (Lesson 596)
+          openVoiceResultModal(result || { text: "", diagnostics: null }, {
+            onRetry: runVoiceFab,
+          });
+        } catch (e) {
+          const msg = String(e);
+          if (/no whisper model|MILAGRO_VOICE_MODEL/i.test(msg)) {
+            toast(
+              "🎙 whisper model missing. Run Settings → Modules → Voice → \"Download model\".",
+              { kind: "error", duration: 10000 }
+            );
+          } else {
+            // Surface the error in the modal so it's visible — not
+            // buried in a 3-second toast.
+            openVoiceResultModal({
+              text: "",
+              warning: `transcription failed: ${msg}`,
+              diagnostics: null,
+            }, { onRetry: runVoiceFab });
           }
-        });
+        } finally {
+          voiceFab.disabled = false;
+          voiceFab.textContent = orig;
+        }
+      };
+      if (voiceFab) {
+        voiceFab.addEventListener("click", runVoiceFab);
       }
 
       // Lesson 574 (2026-08-25 08:19 MDT, David): Files page "Add to
@@ -542,6 +725,9 @@ export const dashboardPage = {
     // appends overlays to document.body (not root), so they survive a
     // re-mount and look like ghosts. Tear them down here.
     document.querySelectorAll(".modal-overlay").forEach((el) => el.remove());
+    // rc53.29: also tear down the voice preview modal (uses .voice-
+    // modal-overlay, not .modal-overlay — keeps its own scoped class).
+    closeVoiceResultModal();
   },
 };
 

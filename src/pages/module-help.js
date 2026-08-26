@@ -1,7 +1,12 @@
-// src/pages/module-help.js — Add-On Module help overlay (rc53.28, 2026-08-26)
+// src/pages/module-help.js — Add-On Module help overlay (rc53.28, 2026-08-26;
+// enriched for non-CLI users in rc53.29, 2026-08-26, per David:
 //
-// Renders a full-screen overlay with Terminal + Windows UI examples for
-// the clicked module. Content comes from src/data/module-help.js.
+//   "have to do a good job of explaining these programs for the newer
+//    type user that has never used commands, veteran cli users should
+//    have no trouble"
+//
+// Renders a full-screen overlay with plain-language framing for every
+// Add-On Module card. Content comes from src/data/module-help.js.
 //
 // Usage:
 //   import { openModuleHelp } from "./module-help.js";
@@ -10,6 +15,27 @@
 // The overlay is a single root div appended to <body> and removed on
 // close (Escape key, click backdrop, click close button). Re-opening
 // the same module reuses no state — each open() builds a fresh tree.
+//
+// Schema (each module can use any subset of these):
+//   whoFor        — one-line audience tag, e.g. "Anyone who types
+//                    faster than they talk"
+//   whyUseIt      — one-line value prop in plain English, no jargon
+//   whatItDoes    — one-liner shown as the overlay's subtitle
+//   windowsUI     — list of {surface, steps} for the Tauri desktop UI
+//                    surfaces (Dashboard / Terminal / Files / Settings /
+//                    Chat / Extras hub). Each surface = a clickable flow.
+//   examples      — list of natural-language prompts a user can paste
+//                    into MAIC chat. The most important section for
+//                    newer users — shows what the AI can actually do.
+//   terminal      — list of {cmd, desc} of mc-* slash commands or
+//                    invokeModule calls usable in the Terminal page.
+//   chat          — list of @module-slash commands usable in MAIC chat.
+//                    Empty if the module has no chat-side surface.
+//   troubleshooting — list of {problem, fix} for the most common gotchas.
+//
+// All content is plain text — no markdown, no HTML. The renderer escapes
+// it for safety. Keep examples concrete (real commands, real expected
+// outputs) so the user can copy-paste-test.
 import { getModuleHelp } from "../data/module-help.js";
 
 function escapeHtml(s) {
@@ -25,10 +51,26 @@ function escapeHtml(s) {
 function renderSections(help) {
   const blocks = [];
 
+  // rc53.29: plain-language framing for newer / non-CLI users
+  // (David 2026-08-26 16:33 MDT: "have to do a good job of explaining
+  // these programs for the newer type user that has never used
+  // commands, veteran cli users should have no trouble"). whoFor and
+  // whyUseIt are short, human-readable intros that set context
+  // BEFORE the technical sections.
+  if (help.whoFor || help.whyUseIt) {
+    const who = help.whoFor
+      ? `<div class="mhelp-intro-who"><span class="mhelp-intro-label">Who's it for:</span> ${escapeHtml(help.whoFor)}</div>`
+      : "";
+    const why = help.whyUseIt
+      ? `<div class="mhelp-intro-why"><span class="mhelp-intro-label">Why you'd use it:</span> ${escapeHtml(help.whyUseIt)}</div>`
+      : "";
+    blocks.push(`<section class="mhelp-section mhelp-intro">${who}${why}</section>`);
+  }
+
   if (help.windowsUI && help.windowsUI.length) {
     blocks.push(`
       <section class="mhelp-section">
-        <h2 class="mhelp-h2">🖥️ Windows UI</h2>
+        <h2 class="mhelp-h2">🖥️ Using it in MiracleClaw</h2>
         ${help.windowsUI
           .map(
             (s) => `
@@ -45,12 +87,25 @@ function renderSections(help) {
     `);
   }
 
+  if (help.examples && help.examples.length) {
+    blocks.push(`
+      <section class="mhelp-section">
+        <h2 class="mhelp-h2">💡 Example things to ask MAIC</h2>
+        <ul class="mhelp-examples">
+          ${help.examples
+            .map((ex) => `<li><span class="mhelp-example-prompt">${escapeHtml(ex)}</span></li>`)
+            .join("")}
+        </ul>
+      </section>
+    `);
+  }
+
   if (help.terminal && help.terminal.length) {
     blocks.push(`
       <section class="mhelp-section">
-        <h2 class="mhelp-h2">⌨️ Terminal</h2>
+        <h2 class="mhelp-h2">⌨️ Command-line reference <span class="mhelp-tag">for power users</span></h2>
         <table class="mhelp-cmd-table">
-          <thead><tr><th>Command</th><th>Description</th></tr></thead>
+          <thead><tr><th>Command</th><th>What it does</th></tr></thead>
           <tbody>
             ${help.terminal
               .map(
@@ -71,9 +126,9 @@ function renderSections(help) {
   if (help.chat && help.chat.length) {
     blocks.push(`
       <section class="mhelp-section">
-        <h2 class="mhelp-h2">💬 MAIC Chat</h2>
+        <h2 class="mhelp-h2">💬 Slash commands in MAIC Chat <span class="mhelp-tag">for power users</span></h2>
         <table class="mhelp-cmd-table">
-          <thead><tr><th>Command</th><th>Description</th></tr></thead>
+          <thead><tr><th>Command</th><th>What it does</th></tr></thead>
           <tbody>
             ${help.chat
               .map(
@@ -94,7 +149,7 @@ function renderSections(help) {
   if (help.troubleshooting && help.troubleshooting.length) {
     blocks.push(`
       <section class="mhelp-section">
-        <h2 class="mhelp-h2">🔧 Troubleshooting</h2>
+        <h2 class="mhelp-h2">🔧 If something goes wrong</h2>
         <dl class="mhelp-ts">
           ${help.troubleshooting
             .map(

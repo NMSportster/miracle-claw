@@ -177,9 +177,11 @@ const MODULE_CATALOG = [
     icon: "🔗",
     name: "CRM Sync",
     description: "Push enriched contacts and lead status to HubSpot, Pipedrive, Notion, and other CRMs.",
-    publisher: "Miracle Claw",
+    publisher: "Milagro Claw",
     version: "0.1.0",
-    status: "coming_soon",
+    status: "available",
+    downloadUrl: "https://milagrocloud.com/downloads/miracle-claw-crm-0.1.0.tar.gz",
+    hookLocation: "Extras",
     tags: ["business", "integration"],
   },
   {
@@ -196,11 +198,13 @@ const MODULE_CATALOG = [
     id: "tts",
     icon: "🔊",
     name: "Text-to-Speech",
-    description: "Read MAIC's responses aloud in chat. Multiple voices, configurable speed.",
+    description: "Read MAIC's responses aloud in chat. Two providers: bundled eSpeak NG (offline, free) or MAIC cloud TTS (natural voices via OpenAI TTS-1, $15 per 1M characters, free tier gets 25K chars per 30 days, Pro is unlimited).",
     publisher: "Miracle Claw",
-    version: "0.1.0",
-    status: "coming_soon",
+    version: "0.2.0",
+    status: "available",
     tags: ["voice", "output"],
+    downloadUrl: "https://milagrocloud.com/downloads/miracle-claw-tts-0.2.0.tar.gz",
+    hookLocation: "Extras",
   },
   {
     id: "ocr",
@@ -564,7 +568,14 @@ function renderCard(m, ctx) {
 }
 
 function wireCardButtons(grid, ctx) {
-  grid.querySelectorAll(".modules-cta").forEach((btn) => {
+  // rc53.29 (David 2026-08-26 16:33 MDT): broaden selector to ALL buttons
+  // inside .modules-card-actions, not just .modules-cta. The previous
+  // selector only matched the main Install/Open CTA — .modules-help-btn
+  // silently had no click handler, so clicking Help did nothing.
+  // Lesson 595: always include every interactive child button in the
+  // selector. (Lesson 595 was confirmed by David's "Help button does
+  // nothing" feedback on rc53.28.)
+  grid.querySelectorAll(".modules-card-actions button").forEach((btn) => {
     if (btn.disabled) return; // coming_soon — no handler
     btn.addEventListener("click", async () => {
       const action = btn.dataset.action;
