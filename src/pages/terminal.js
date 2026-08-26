@@ -182,7 +182,7 @@ export const terminalPage = {
         appendSystem(`Started ${shell} session (id ${sessionId.slice(0, 8)}…)`);
         setStatus("alive", shell);
         // rc53.8 (feature/extras-hub): if the caller passed an initial
-        // command (e.g. extras hub launches us with "mlg-doctor"), wait
+        // command (e.g. extras hub launches us with "mc-doctor"), wait
         // briefly for the shell to settle and then write + enter it.
         // The 350ms delay gives cmd.exe / bash time to print its first
         // prompt before we send input — otherwise some shells swallow

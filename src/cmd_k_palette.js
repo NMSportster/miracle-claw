@@ -27,7 +27,7 @@
 // stays snappy even with hundreds of commands.
 
 import { invoke } from "@tauri-apps/api/core";
-// rc53.8 (feature/extras-hub): palette actions for mlg-* commands.
+// rc53.8 (feature/extras-hub): palette actions for mc-* commands.
 // Each action opens the Terminal page with the command pre-filled,
 // matching the "Run in Terminal" button on the Extras hub page.
 import { extrasPaletteActions } from "./pages/extras.js";
@@ -403,9 +403,9 @@ function buildCommands() {
       },
     },
   ];
-  // rc53.8 (feature/extras-hub): append one palette action per mlg-*
+  // rc53.8 (feature/extras-hub): append one palette action per mc-*
   // command. Filtered by fuzzy match on label/keywords so users can
-  // type "mlg-doc" or just "doctor" to find it.
+  // type "mc-doc" or just "doctor" to find it.
   cmds.push(...extrasPaletteActions);
   return cmds;
 }

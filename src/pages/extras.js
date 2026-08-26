@@ -1,6 +1,6 @@
 // src/pages/extras.js — Extras hub (rc53.8, feature/extras-hub)
 //
-// A single page listing all `mlg-*` commands shipped by
+// A single page listing all `mc-*` commands shipped by
 // `miracle-claw-extras` (pip-installed). Each card has:
 //   - icon + command name
 //   - 1-line description
@@ -20,63 +20,63 @@
 
 import { navigate } from "../navigation.js";
 
-const MLG_COMMANDS = [
+const MC_COMMANDS = [
   {
-    name: "mlg-doctor",
+    name: "mc-doctor",
     icon: "🩺",
     blurb: "Check that your Miracle Claw install is healthy — config, paths, dependencies, network.",
     tags: ["diagnostics", "first run"],
   },
   {
-    name: "mlg-stats",
+    name: "mc-stats",
     icon: "📊",
     blurb: "Show usage statistics from local session history — token counts, top models, peak hours.",
     tags: ["analytics", "history"],
   },
   {
-    name: "mlg-cost",
+    name: "mc-cost",
     icon: "💵",
     blurb: "Token cost analytics from local history. Per-day, per-model, per-session dollar estimates.",
     tags: ["analytics", "billing"],
   },
   {
-    name: "mlg-diff",
+    name: "mc-diff",
     icon: "🔍",
     blurb: "Diff history entries, configs, or snapshots. Useful to see what changed between sessions.",
     tags: ["history", "compare"],
   },
   {
-    name: "mlg-export",
+    name: "mc-export",
     icon: "📤",
     blurb: "Render session history to shareable formats — Markdown, HTML, JSON.",
     tags: ["history", "share"],
   },
   {
-    name: "mlg-share",
+    name: "mc-share",
     icon: "🤝",
-    blurb: "Bundle a session snapshot for sharing with collaborators. Produces a .mlgsnap file.",
+    blurb: "Bundle a session snapshot for sharing with collaborators. Produces a .mcsnap file.",
     tags: ["share", "snapshot"],
   },
   {
-    name: "mlg-restore",
+    name: "mc-restore",
     icon: "📥",
-    blurb: "Import a .mlgsnap bundle as a local snapshot. Inverse of mlg-share.",
+    blurb: "Import a .mcsnap bundle as a local snapshot. Inverse of mc-share.",
     tags: ["share", "snapshot"],
   },
   {
-    name: "mlg-template",
+    name: "mc-template",
     icon: "🧱",
     blurb: "Scaffold a new project from a built-in or custom template (Python, Tauri, MCP server, etc.).",
     tags: ["scaffold", "new project"],
   },
   {
-    name: "mlg-bench",
+    name: "mc-bench",
     icon: "⏱️",
     blurb: "Benchmark prompt latency against local models. Stub in v0.3 — full impl in a later week.",
     tags: ["benchmark", "latency"],
   },
   {
-    name: "mlg-config",
+    name: "mc-config",
     icon: "⚙️",
     blurb: "Interactive config generator. Walks you through the most useful extras.json settings.",
     tags: ["config", "setup"],
@@ -133,7 +133,7 @@ export const extrasPage = {
     // Render cards.
     const grid = root.querySelector("#extras-grid");
     if (grid) {
-      for (const cmd of MLG_COMMANDS) {
+      for (const cmd of MC_COMMANDS) {
         grid.appendChild(renderCard(cmd, shell, ctx));
       }
     }
@@ -175,7 +175,7 @@ function renderCard(cmd, shell, ctx) {
     runBtn.addEventListener("click", () => {
       // Hand off to the Terminal page with initialCommand ctx.
       // The terminal will spawn cmd/bash, wait ~350ms for the
-      // prompt, then write `mlg-...` + newline — and the user
+      // prompt, then write `mc-...` + newline — and the user
       // sees the output stream live.
       if (ctx && typeof ctx.onOpenTerminalWithCommand === "function") {
         ctx.onOpenTerminalWithCommand(cmd.name, shell);
@@ -204,13 +204,13 @@ function escapeHtml(s) {
   });
 }
 
-// Cmd-K palette integration: each mlg-* command is registered as a
-// top-level palette action ("Run mlg-doctor", etc.) so users who know
+// Cmd-K palette integration: each mc-* command is registered as a
+// top-level palette action ("Run mc-doctor", etc.) so users who know
 // the exact command can launch it without opening the hub first.
 //
 // rc53.8: field name must be `category` to match the palette's
 // groupBy/sort logic (was originally `section` — caught at compile).
-export const extrasPaletteActions = MLG_COMMANDS.map((cmd) => ({
+export const extrasPaletteActions = MC_COMMANDS.map((cmd) => ({
   id: `extras-${cmd.name}`,
   label: `Run ${cmd.name}`,
   hint: cmd.blurb,

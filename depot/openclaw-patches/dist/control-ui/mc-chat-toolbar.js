@@ -26,10 +26,10 @@
 // routes straight to Terminal with extras; terminal.js consumes the
 // hash, opens the matching overlay, and strips the hash from the URL.
 //
-// Why no Extras hub / mlg-* dropdown here:
+// Why no Extras hub / mc-* dropdown here:
 // David said "I think the way it is in that small terminal window is
 // perfect" — meaning the small terminal toolbar (just 🔑 + 📎) is the
-// desired density for an in-chat overlay too. mlg-* lives in the
+// desired density for an in-chat overlay too. mc-* lives in the
 // Extras hub on the dashboard, accessed by explicit navigation there.
 //
 // Idempotent: detects existing toolbar by ID and skips re-mount.

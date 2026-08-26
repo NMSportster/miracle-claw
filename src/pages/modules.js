@@ -134,11 +134,18 @@ const MODULE_CATALOG = [
     id: "pdf",
     icon: "📕",
     name: "PDF & Document Parser",
-    description: "Upload PDF, DOCX, or PPTX files. Extract clean text, tables, and document structure.",
+    description:
+      "Drop a PDF or DOCX into MAIC chat — get clean text, a summary, or " +
+      "ask any question about the document. Supports PDF, DOCX, TXT, MD, RTF, " +
+      "and HTML. v0.1.0 ships text extraction + MAIC bridge; OCR for scanned " +
+      "PDFs lands in v0.2.",
     publisher: "Miracle Claw",
     version: "0.1.0",
-    status: "coming_soon",
-    tags: ["files", "docs"],
+    status: "available",
+    downloadUrl:
+      "https://milagrocloud.com/downloads/miracle-claw-pdf-0.1.0-r2.tar.gz",
+    hookLocation: "chat",
+    tags: ["files", "docs", "ai"],
   },
   {
     id: "youtube",

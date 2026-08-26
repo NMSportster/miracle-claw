@@ -253,7 +253,7 @@ export const dashboardPage = {
               </div>
             </button>
             <!-- rc53.8 (feature/extras-hub): tile linking to the
-                 Extras hub page. Lists all mlg-* commands with one-click
+                 Extras hub page. Lists all mc-* commands with one-click
                  "Run in Terminal" actions. -->
             <button class="tile" id="extras-tile" type="button">
               <div class="tile-icon">🛠️</div>

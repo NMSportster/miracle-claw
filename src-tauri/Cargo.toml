@@ -1,6 +1,6 @@
 [package]
 name = "miracle-claw"
-version = "1.1.0-rc53.26"
+version = "1.1.0-rc53.27"
 description = "Miracle Claw — ADeal Auto Repair's desktop chat client for MAIC models"
 authors = ["ADeal Auto Repair"]
 edition = "2021"

@@ -28,7 +28,7 @@ import { terminalPage } from "./pages/terminal.js";
 import { filesPage } from "./pages/files.js";
 import { notebookPage } from "./pages/notebook.js";
 import { secretsPage } from "./pages/secrets.js";
-// rc53.8 (feature/extras-hub): hub page listing all mlg-* commands
+// rc53.8 (feature/extras-hub): hub page listing all mc-* commands
 // with a "Run in Terminal" action per card. Also exposes a palette
 // action per command for keyboard-driven access.
 import { extrasPage, extrasPaletteActions } from "./pages/extras.js";
@@ -69,7 +69,7 @@ register("notebook", notebookPage);
 // rc53.5: secrets page registered for palette use; toolbar in
 // terminal page opens it as an overlay. Not in main nav (yet).
 register("secrets", secretsPage);
-// rc53.8 (feature/extras-hub): Extras hub — mlg-* companion CLIs.
+// rc53.8 (feature/extras-hub): Extras hub — mc-* companion CLIs.
 // Reachable via dashboard tile or Cmd-K palette.
 register("extras", extrasPage);
 // Lesson 564: in-app Plans & Pricing page. Reachable via the small
@@ -250,7 +250,7 @@ function pageCtx() {
     onOpenModules: () => navigate("modules"),
     // rc53.8 (feature/extras-hub): hand off to Terminal with a
     // pre-filled command + the right shell for the OS. cmd on
-    // Windows, bash on Linux/macOS — both can resolve mlg-* from
+    // Windows, bash on Linux/macOS — both can resolve mc-* from
     // PATH.
     onOpenTerminalWithCommand: (command, shell) =>
       navigate("terminal", { defaultShell: shell, initialCommand: command }),
