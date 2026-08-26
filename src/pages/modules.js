@@ -66,14 +66,30 @@ const MODULE_CATALOG = [
     id: "voice",
     icon: "🎙",
     name: "Voice for MiracleClaw",
-    description: "Capture your voice and drop clean transcripts directly into any chat surface. Works on dashboard, terminal, fullscreen, and the OpenClaw overlay.",
+    description: "Capture your voice and drop clean transcripts directly into any chat surface. v0.1.7: faster tiny.en model + improved VAD. Works on dashboard, terminal, fullscreen, and the OpenClaw overlay.",
     publisher: "Miracle Claw",
-    version: "0.1.6",
+    version: "0.1.7",
     status: "available",
     downloadUrl:
-      "https://milagrocloud.com/downloads/miracle-claw-voice-0.1.6.tar.gz",
+      "https://milagrocloud.com/downloads/miracle-claw-voice-0.1.7.tar.gz",
     hookLocation: "dashboard",
     tags: ["voice", "input"],
+  },
+  {
+    id: "translate",
+    icon: "🌍",
+    name: "Translation for MiracleClaw",
+    description:
+      "Translate text between 30+ languages using your MAIC account. " +
+      "Routes through your MAIC tenant — no training data leaves the " +
+      "model. Source language auto-detected, target language picked per call.",
+    publisher: "Milagro Claw",
+    version: "0.1.0",
+    status: "available",
+    downloadUrl:
+      "https://milagrocloud.com/downloads/miracle-claw-translate-0.1.0.tar.gz",
+    hookLocation: "chat",
+    tags: ["translate", "language", "ai"],
   },
   {
     id: "firecrawl",
