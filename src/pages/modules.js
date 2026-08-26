@@ -68,10 +68,10 @@ const MODULE_CATALOG = [
     name: "Voice for MiracleClaw",
     description: "Capture your voice and drop clean transcripts directly into any chat surface. Works on dashboard, terminal, fullscreen, and the OpenClaw overlay.",
     publisher: "Miracle Claw",
-    version: "0.1.5",
+    version: "0.1.6",
     status: "available",
     downloadUrl:
-      "https://milagrocloud.com/downloads/miracle-claw-voice-0.1.5.tar.gz",
+      "https://milagrocloud.com/downloads/miracle-claw-voice-0.1.6.tar.gz",
     hookLocation: "dashboard",
     tags: ["voice", "input"],
   },
