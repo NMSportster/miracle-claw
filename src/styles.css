@@ -3278,3 +3278,202 @@ kbd {
   padding-top: 16px;
   border-top: 1px solid var(--border);
 }
+
+/* ============================================================================
+ * Module Help Overlay (rc53.28, 2026-08-26)
+ * ============================================================================
+ * Help button on every Add-On card opens a full-screen overlay showing
+ * Terminal + Chat + Windows UI examples for that module. Triggered by
+ * the ❔ Help button in modules.js → openModuleHelp(id).
+ */
+
+.modules-help-btn {
+  flex: 0 0 auto;
+  background: transparent;
+  color: var(--muted, #888);
+  border: 1px solid var(--border, #333);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.modules-help-btn:hover {
+  background: rgba(99, 102, 241, 0.08);
+  color: var(--accent, #6366f1);
+  border-color: var(--accent, #6366f1);
+}
+
+.mhelp-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mhelp-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+}
+.mhelp-panel {
+  position: relative;
+  background: var(--bg-elev, #1e1e24);
+  color: var(--text, #e5e5e5);
+  border-radius: 12px;
+  border: 1px solid var(--border, #333);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.4);
+  max-width: 720px;
+  width: calc(100vw - 32px);
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mhelp-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border, #333);
+}
+.mhelp-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+.mhelp-titles {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.mhelp-title {
+  margin: 0 0 4px 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+.mhelp-subtitle {
+  font-size: 13px;
+  color: var(--muted, #888);
+  line-height: 1.4;
+}
+.mhelp-close {
+  background: transparent;
+  border: 0;
+  color: var(--muted, #888);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.mhelp-close:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text, #e5e5e5);
+}
+
+.mhelp-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 16px 20px;
+}
+
+.mhelp-section {
+  margin-bottom: 20px;
+}
+.mhelp-h2 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted, #888);
+}
+.mhelp-h3 {
+  margin: 12px 0 6px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent, #6366f1);
+}
+.mhelp-steps {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.mhelp-steps li {
+  margin-bottom: 4px;
+}
+
+.mhelp-cmd-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 8px;
+}
+.mhelp-cmd-table th,
+.mhelp-cmd-table td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border, #2a2a30);
+  vertical-align: top;
+}
+.mhelp-cmd-table th {
+  font-weight: 600;
+  color: var(--muted, #888);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.mhelp-cmd {
+  background: rgba(99, 102, 241, 0.10);
+  color: var(--accent, #6366f1);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mhelp-ts {
+  margin: 0;
+}
+.mhelp-ts-q {
+  font-weight: 600;
+  margin-top: 10px;
+  font-size: 13px;
+}
+.mhelp-ts-a {
+  margin: 4px 0 0 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--border, #333);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted, #ccc);
+}
+
+.mhelp-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border, #333);
+}
+.mhelp-meta {
+  font-size: 11px;
+  color: var(--muted, #888);
+}
+.mhelp-ok {
+  background: var(--accent, #6366f1);
+  color: white;
+  border: 0;
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.mhelp-ok:hover { opacity: 0.9; }

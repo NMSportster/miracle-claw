@@ -43,6 +43,7 @@ import {
   checkModuleHealth,
 } from "../modules-runtime.js";
 import { toast } from "../toast.js";
+import { openModuleHelp } from "./module-help.js";
 
 // ============================================================================
 // Catalog
@@ -66,12 +67,12 @@ const MODULE_CATALOG = [
     id: "voice",
     icon: "🎙",
     name: "Voice for MiracleClaw",
-    description: "Capture your voice and drop clean transcripts directly into any chat surface. v0.1.7: faster tiny.en model + improved VAD. Works on dashboard, terminal, fullscreen, and the OpenClaw overlay.",
+    description: "Capture your voice and drop clean transcripts directly into any chat surface. v0.1.8: per-transcript diagnostics (VAD speech-frames, peak amplitude, RMS, silence-tripped) so the JS layer can disambiguate \"No Speech Detected\" failures. v0.1.7: faster tiny.en model + improved VAD. Works on dashboard, terminal, fullscreen, and the OpenClaw overlay.",
     publisher: "Miracle Claw",
-    version: "0.1.7",
+    version: "0.1.8",
     status: "available",
     downloadUrl:
-      "https://milagrocloud.com/downloads/miracle-claw-voice-0.1.7.tar.gz",
+      "https://milagrocloud.com/downloads/miracle-claw-voice-0.1.8.tar.gz",
     hookLocation: "dashboard",
     tags: ["voice", "input"],
   },
@@ -151,21 +152,25 @@ const MODULE_CATALOG = [
     id: "youtube",
     icon: "🎥",
     name: "YouTube Transcript",
-    description: "Paste a YouTube URL to get the full transcript, a summary, and chapter breakdowns.",
+    description: "Paste a YouTube URL into MAIC chat — get the full transcript with timestamps, an AI-generated summary, and chapter breakdown. Uses yt-dlp (or YouTube's timedtext fallback) for caption extraction. v0.1.0 ships transcript + summary + chapters.",
     publisher: "Miracle Claw",
     version: "0.1.0",
-    status: "coming_soon",
-    tags: ["video", "transcript"],
+    status: "available",
+    downloadUrl: "https://milagrocloud.com/downloads/miracle-claw-youtube-0.1.0.tar.gz",
+    hookLocation: "chat",
+    tags: ["video", "transcript", "ai"],
   },
   {
     id: "email",
     icon: "📧",
     name: "Email Writer",
-    description: "Guided cold outreach, follow-ups, and reply drafting. Tone and channel are configurable.",
+    description: "Drop a few bullet points into MAIC chat and get a complete email — cold outreach, follow-up, or reply. Pick a tone (formal / friendly / direct / casual) and the channel (email / LinkedIn). v0.1.0 ships draft + reply templates routed through MAIC.",
     publisher: "Miracle Claw",
     version: "0.1.0",
-    status: "coming_soon",
-    tags: ["writing", "business"],
+    status: "available",
+    downloadUrl: "https://milagrocloud.com/downloads/miracle-claw-email-0.1.0.tar.gz",
+    hookLocation: "chat",
+    tags: ["writing", "business", "ai"],
   },
   {
     id: "crm",
@@ -546,6 +551,13 @@ function renderCard(m, ctx) {
 
       <div class="modules-card-actions">
         ${cta}
+        <button class="modules-help-btn" type="button"
+                data-action="help"
+                data-module-id="${escapeHtml(m.id)}"
+                aria-label="Help for ${escapeHtml(m.name)}"
+                title="Show usage help (Terminal, Chat, Windows UI)">
+          ❔ Help
+        </button>
       </div>
     </article>
   `;
@@ -565,6 +577,8 @@ function wireCardButtons(grid, ctx) {
         handleOpen(ctx, btn.dataset.hookLocation || "settings");
       } else if (action === "download-model") {
         await handleDownloadModel(btn, id, ctx);
+      } else if (action === "help") {
+        openModuleHelp(id);
       }
     });
   });
