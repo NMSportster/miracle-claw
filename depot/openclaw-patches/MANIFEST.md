@@ -95,6 +95,38 @@ by `scripts/patch-openclaw-dist.sh` as part of `build-windows-docker.sh`.
   - Second line must be `// INSERT-BEFORE: <text>` (regex enforces single
     space separator so tabs in sentinel are preserved).
 
+### dist/session-log-runtime-BUZsJRws.js (WRITE) — added for rc53.23
+
+- **Source**: `depot/openclaw-patches/dist/session-log-runtime-BUZsJRws.js`
+- **Target**: `src-tauri/resources/dist/session-log-runtime-BUZsJRws.js`
+- **Effect**: Replaces the three `throw new Error(...)` messages inside
+  `resolveConfiguredRealtimeVoiceProvider` (the function that the Discord
+  realtime voice stack calls when connecting). Original messages are
+  terse ("Realtime voice provider 'X' is not configured") and don't tell
+  the user what subsystem failed or where to look. New messages:
+  - `missing-configured-provider`: tells user the realtime voice stack
+    (Discord/voice-call) needs `voice.realtime.provider` set to a
+    registered id, and points at the MC voice module for push-to-talk.
+  - `no-registered-provider` (default fallback): same MC voice module hint.
+  - generic "not configured": tells user to fix the provider block in
+    `voice.realtime.providers` or switch `voice.realtime.provider`.
+- **Why**: Users (incl. David) saw the bare "Realtime voice provider 'openai'
+  is not configured" toast and had no idea whether it was a config bug,
+  a missing plugin, or a MC-specific issue. The new messages give them
+  three actionable next steps. They also point at the MC voice module so
+  users who wanted push-to-talk chat don't waste time debugging the
+  Discord realtime-voice stack.
+- **Idempotent**: skipped if `cmp -s` finds the target already matches
+  the patch source (WRITE mode).
+- **Bundle hash drift**: file hash `BUZsJRws` is part of the filename —
+  if openclaw bumps it, rename this patch file to match the new target
+  hash. The three throw lines are likely stable across refactors but if
+  upstream changes them substantially, re-export and re-patch.
+- **Scope note**: this is Phase 2a — friendlier error message only. It
+  does NOT register the `openai` realtime provider or make MC voice
+  work in Discord voice mode. MC voice remains a push-to-talk chat module
+  (the 🎙 button), not a Discord realtime streaming provider.
+
 ## Adding a new patch
 
 1. Drop the patch file under `depot/openclaw-patches/<subpath>/` matching
