@@ -40,9 +40,9 @@
 //!     {
 //!       "name": "ggml-base.en.bin",
 //!       "kind": "model",
-//!       "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
-//!       "sizeBytes": 75000000,
-//!       "sha256": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin.sha256"
+//!       "downloadUrl": "https://milagrocloud.com/downloads/miracle-claw-voice-model-base-en.bin",
+//!       "sizeBytes": 147964211,
+//!       "sha256": "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"
 //!     }
 //!   ]
 //! }
@@ -231,8 +231,8 @@ mod tests {
                 {
                     "name": "ggml-base.en.bin",
                     "kind": "model",
-                    "downloadUrl": "https://example.com/model.bin",
-                    "sizeBytes": 75000000
+                    "downloadUrl": "https://milagrocloud.com/downloads/miracle-claw-voice-model-base-en.bin",
+                    "sizeBytes": 147964211
                 }
             ],
             "author": "Milagro Cloud",

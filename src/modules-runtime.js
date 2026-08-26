@@ -328,7 +328,7 @@ export async function ensureVoiceModel(onStatus) {
     return true;
   }
 
-  setStatus("Downloading whisper model (~75MB)…");
+  setStatus("Downloading whisper model (~141 MB)…");
   try {
     await invokeModule("mc_voice_download_model", {});
     // Verify the download succeeded.
@@ -340,7 +340,13 @@ export async function ensureVoiceModel(onStatus) {
     setStatus("Whisper model download did not complete");
     return false;
   } catch (e) {
-    setStatus(`Whisper model download failed: ${e}`);
+    // Surface the actual sidecar error so the user can act on it.
+    // Lesson 583 (2026-08-26 07:34 MDT, David): the previous
+    // generic "Check network + retry, or set MILAGRO_VOICE_MODEL_PATH"
+    // toast hid every real cause (HTTP errors, TLS, SHA mismatch,
+    // container rebuild missing, etc.) behind a single message.
+    const msg = String(e);
+    setStatus(`Whisper model download failed: ${msg}`);
     return false;
   }
 }

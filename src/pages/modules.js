@@ -454,7 +454,7 @@ function renderCard(m, ctx) {
                 class="modules-cta modules-cta-secondary modules-cta-download-model"
                 data-action="download-model"
                 data-module-id="voice"
-                title="Download the whisper model (~75 MB) so voice transcription works.">
+                title="Download the whisper model (~141 MB) so voice transcription works.">
           Download model
         </button>`;
     }
@@ -630,21 +630,28 @@ async function handleDownloadModel(btn, id, ctx) {
   btn.disabled = true;
   const oldLabel = btn.textContent;
   btn.textContent = "Downloading…";
+  // Lesson 583 (2026-08-26 07:34 MDT, David): capture the last
+  // status reported by ensureVoiceModel so the failure toast can
+  // show the real sidecar error instead of the generic network hint.
+  let lastStatus = "";
   try {
     const ok = await ensureVoiceModel((status) => {
-      btn.textContent = status.startsWith("Downloading") ? "Downloading (~75 MB)…" : "Checking…";
+      lastStatus = status;
+      btn.textContent = status.startsWith("Downloading") ? "Downloading (~141 MB)…" : status;
     });
     if (ok) {
       toast("Whisper model downloaded — voice is ready.", { kind: "success" });
       invalidateModelHealth("voice");
     } else {
-      toast("Whisper model download failed. Check network + retry, or set MILAGRO_VOICE_MODEL_PATH.", {
-        kind: "error",
-        duration: 10000,
-      });
+      toast(
+        lastStatus && lastStatus !== "Checking whisper model…"
+          ? `Whisper model download failed: ${lastStatus}`
+          : "Whisper model download failed. Click again to retry, or check Settings → Modules → Voice logs.",
+        { kind: "error", duration: 12000 }
+      );
     }
   } catch (e) {
-    toast(`Model download failed: ${e}`, { kind: "error", duration: 10000 });
+    toast(`Model download failed: ${e}`, { kind: "error", duration: 12000 });
   } finally {
     btn.disabled = false;
     btn.textContent = oldLabel;
