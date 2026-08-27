@@ -155,39 +155,22 @@ Var VoiceClarityOptIn
   ; the registry flags for our diagnostics UI.
 
   DetailPrint "Miracle Claw: installing Windows speech recognition language data..."
-  ; Iterate the user's preferred UI languages (top 3) and install matching
-  ; offline speech recognition FODs. Languages we can't resolve are skipped.
-  ; Each FOD is ~30-60MB; total install time budget: 5 minutes max.
-  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$$ErrorActionPreference = ''SilentlyContinue''; ^
-     try { ^
-       $$langs = @(Get-WinUserLanguageList).LanguageTag | Select-Object -First 3; ^
-       foreach ($$l in $$langs) { ^
-         $$bcp = $$l -replace ''-'', ''_''; ^
-         $$cap = ''Language.Speech~~~und-SPEECH~~'' + $$bcp; ^
-         $$state = (Get-WindowsCapability -Online -Name $$cap -ErrorAction SilentlyContinue).State; ^
-         if ($$state -ne ''Installed'') { ^
-           Write-Host ''[MC-Voice] Adding speech FOD: '' $$cap; ^
-           $$p = Start-Process -FilePath ''dism'' -ArgumentList @(''/Online'',''/Add-Capability'',''/CapabilityName:''+$$cap,''/NoRestart'') -Wait -PassThru -WindowStyle Hidden; ^
-           if ($$p.ExitCode -ne 0) { Write-Host ''[MC-Voice] FOD install failed (code '' $$p.ExitCode '') for '' $$cap } ^
-         } else { ^
-           Write-Host ''[MC-Voice] Speech FOD already installed: '' $$cap ^
-         } ^
-       } ^
-     } catch { Write-Host ''[MC-Voice] FOD enumeration failed: '' $$_.Exception.Message }"'
+  ; Lesson TBD (2026-08-27, NSIS string escape limitation):
+  ; NSIS single-quoted strings have NO escape mechanism for embedded
+  ; single quotes. PowerShell -Command scripts that contain
+  ; single-quoted strings (e.g. '-eq', 'Installed') break makensis
+  ; with "unterminated string parsing line at macro:...". Solution:
+  ; bundle the PS1 as a separate installer resource (declared in
+  ; tauri.conf.json -> bundle.resources) and invoke with
+  ; powershell -File "$INSTDIR\resources\mc-voice-setup.ps1".
+  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\resources\mc-voice-setup.ps1"'
 
   DetailPrint "Miracle Claw: verifying Windows speech components..."
-  ; Verify SAPI 5 (System.Speech) is present. SAPI is built into Windows
-  ; 10/11 by default but is stripped from N/KN editions (Europe/Korea).
-  ; If missing, enable via DISM Optional Feature. Failure is non-fatal —
-  ; we just log and continue (Whisper.cpp still works).
-  nsExec::ExecToLog 'powershell -NoProfile -Command ^
-    "if (-not (Test-Path $$env:windir\System32\Speech\Common\sapi.dll)) { ^
-       Write-Host ''[MC-Voice] SAPI missing, attempting install via DISM''; ^
-       dism /Online /Enable-Feature /FeatureName:SpeechRec /All /NoRestart | Out-Null ^
-     } else { ^
-       Write-Host ''[MC-Voice] SAPI present'' ^
-     }"'
+  ; SAPI 5 is built into Windows 10/11 by default but stripped from
+  ; N/KN editions (Europe/Korea). If missing, enable via DISM Optional
+  ; Feature. Failure is non-fatal — we just log and continue
+  ; (Whisper.cpp still works for offline STT).
+  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\resources\mc-voice-sapi.ps1"'
 
   ; If user opted into Voice Clarity on the installer page, record the flag.
   ; The actual DSP mode is applied at app runtime via WASAPI stream category

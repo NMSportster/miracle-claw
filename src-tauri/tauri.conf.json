@@ -42,7 +42,9 @@
       "resources/maic-plugin",
       "resources/src/agents/templates",
       "resources/docs/reference/templates",
-      "resources/miracle-claw-tools.exe"
+      "resources/miracle-claw-tools.exe",
+      "resources/mc-voice-setup.ps1",
+      "resources/mc-voice-sapi.ps1"
     ],
     "windows": {
       "nsis": {
