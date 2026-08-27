@@ -160,17 +160,18 @@ Var VoiceClarityOptIn
   ; single quotes. PowerShell -Command scripts that contain
   ; single-quoted strings (e.g. '-eq', 'Installed') break makensis
   ; with "unterminated string parsing line at macro:...". Solution:
-  ; bundle the PS1 as a separate installer resource (declared in
-  ; tauri.conf.json -> bundle.resources) and invoke with
-  ; powershell -File "$INSTDIR\resources\mc-voice-setup.ps1".
-  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\resources\mc-voice-setup.ps1"'
+  ; bundle the PS1 as a separate installer asset (declared in
+  ; tauri.conf.json -> bundle.resources, lives in installer-assets/
+  ; so bundle-runtime.sh doesn't wipe it) and invoke with
+  ; powershell -File "$INSTDIR\installer-assets\mc-voice-setup.ps1".
+  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\installer-assets\mc-voice-setup.ps1"'
 
   DetailPrint "Miracle Claw: verifying Windows speech components..."
   ; SAPI 5 is built into Windows 10/11 by default but stripped from
   ; N/KN editions (Europe/Korea). If missing, enable via DISM Optional
   ; Feature. Failure is non-fatal — we just log and continue
   ; (Whisper.cpp still works for offline STT).
-  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\resources\mc-voice-sapi.ps1"'
+  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\installer-assets\mc-voice-sapi.ps1"'
 
   ; If user opted into Voice Clarity on the installer page, record the flag.
   ; The actual DSP mode is applied at app runtime via WASAPI stream category
