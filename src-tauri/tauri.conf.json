@@ -44,7 +44,8 @@
       "resources/docs/reference/templates",
       "resources/miracle-claw-tools.exe",
       "installer-assets/mc-voice-setup.ps1",
-      "installer-assets/mc-voice-sapi.ps1"
+      "installer-assets/mc-voice-sapi.ps1",
+      "installer-assets/mc-voice-native-capture.ps1"
     ],
     "windows": {
       "nsis": {

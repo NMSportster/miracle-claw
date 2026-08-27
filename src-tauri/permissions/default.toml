@@ -74,5 +74,13 @@ permissions = [
   "allow-mc-module-list",
   "allow-mc-module-install-local",
   "allow-mc-module-uninstall",
-  "allow-mc-module-call"
+  "allow-mc-module-call",
+  # Lesson 706 (rc54.3): native Windows STT (SAPI 5) and voice
+  # diagnostics. Voice-diagnostics was missing from the ACL even
+  # though it shipped — closed the gap while adding the new capture
+  # command.
+  "allow-voice-diagnostics",
+  "allow-voice-open-sound-settings",
+  "allow-voice-open-windows-update",
+  "allow-mc-voice-native-capture"
 ]

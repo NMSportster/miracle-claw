@@ -72,6 +72,10 @@
     "allow-mc-module-install-local",
     "allow-mc-module-install-url",
     "allow-mc-module-uninstall",
-    "allow-mc-module-call"
+    "allow-mc-module-call",
+    "allow-voice-diagnostics",
+    "allow-voice-open-sound-settings",
+    "allow-voice-open-windows-update",
+    "allow-mc-voice-native-capture"
   ]
 }

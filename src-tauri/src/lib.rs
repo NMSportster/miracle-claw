@@ -2509,6 +2509,155 @@ fn voice_open_windows_update() -> Result<(), String> {
 }
 
 // ----------------------------------------------------------------------------
+// Voice actions (Lesson 706, rc54.3)
+//
+// Native Windows STT via SAPI 5 (System.Speech.Recognition). Replaces
+// the whisper.cpp sidecar path for the OpenClaw chat voice button —
+// 10-50x faster (200-500ms vs 2-6s), zero model download, fully offline.
+//
+// The Rust side just spawns the bundled PS1 helper script and pipes
+// JSON back to JS. We use PowerShell instead of the `windows` crate
+// because:
+//   - The `windows` crate's SAPI 5 COM bindings add ~6 MB to the
+//     installer. PowerShell is already on every Windows install.
+//   - System.Speech.Recognition is a stable .NET API that's been
+//     available since Windows Vista — no new surface area to maintain.
+//   - We already spawn PowerShell for voice_diagnostics, so this is
+//     a familiar pattern.
+//
+// Privacy line: SAPI 5 never sends audio off the device. The PS1
+// helper does not invoke any network code; users who want offline
+// voice get offline voice by default.
+// ----------------------------------------------------------------------------
+
+/// Response payload from `mc_voice_native_capture`. Mirrors the JSON
+/// shape the PS1 helper emits on stdout so the JS side can read
+/// `result.text`, `result.confidence`, `result.engine` directly.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct VoiceNativeCaptureResult {
+    text: String,
+    confidence: f64,
+    engine: String,
+}
+
+/// Locate the bundled `mc-voice-native-capture.ps1` helper. The script
+/// ships as a `tauri.conf.json` resource and lives next to the .exe
+/// under `resources/` in production, or under `installer-assets/` in
+/// dev builds. We try both locations.
+#[cfg(windows)]
+fn find_voice_native_capture_script() -> std::path::PathBuf {
+    use std::path::PathBuf;
+
+    // Production: <install_dir>/resources/mc-voice-native-capture.ps1
+    // (Tauri copies resources[] into a sibling resources/ dir at install.)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let candidate = parent.join("resources").join("mc-voice-native-capture.ps1");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    // Dev / cross-build: src-tauri/installer-assets/...
+    let candidates = [
+        PathBuf::from("src-tauri/installer-assets/mc-voice-native-capture.ps1"),
+        PathBuf::from("installer-assets/mc-voice-native-capture.ps1"),
+    ];
+    for c in candidates {
+        if c.exists() {
+            return c;
+        }
+    }
+
+    // Fall back to the most likely path so the error message points
+    // somewhere useful. The caller will fail on spawn anyway.
+    PathBuf::from("resources/mc-voice-native-capture.ps1")
+}
+
+/// Native Windows STT capture using SAPI 5. Called from the patched
+/// OpenClaw voice button on the cross-origin chat page.
+///
+/// Args:
+///   - `timeout_ms`: max time to wait for the user to finish speaking.
+///     Defaults to 15000 (15s). Hard-capped at 60000 (60s) in the PS1.
+///
+/// Returns:
+///   - JSON object with `text`, `confidence`, `engine`.
+///
+/// Errors:
+///   - SAPI 5 missing (rc54.x setup didn't run) — friendly hint
+///   - Default mic unavailable — hint to check Sound settings
+///   - No speech detected within timeout — empty `text` field is
+///     NOT an error; caller decides whether to treat it as one.
+#[cfg(windows)]
+#[tauri::command]
+fn mc_voice_native_capture(
+    app: tauri::AppHandle,
+    timeout_ms: Option<u64>,
+) -> Result<VoiceNativeCaptureResult, String> {
+    use std::process::Command;
+
+    let timeout = timeout_ms.unwrap_or(15_000).clamp(1_000, 60_000);
+    let script = find_voice_native_capture_script();
+
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy", "Bypass",
+            "-File", script.to_string_lossy().as_ref(),
+            &timeout.to_string(),
+        ])
+        .output()
+        .map_err(|e| format!(
+            "Could not launch PowerShell for native voice capture: {e}. \
+             PowerShell is required for SAPI 5 — verify it's installed \
+             (it ships with every Windows 10/11 by default)."
+        ))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        // Exit codes from the PS1 helper:
+        //   2 = SAPI missing, 3 = mic unavailable, 4 = RecognizeAsync
+        //       failed, 5 = timeout
+        let code = output.status.code().unwrap_or(-1);
+        let hint = match code {
+            2 => "Run Settings → Voice → Re-install voice components to enable SAPI 5.",
+            3 => "Check that a microphone is plugged in and set as the default recording device in Windows Sound settings.",
+            4 => "Windows speech engine failed to start. Try restarting the app.",
+            5 => "No speech detected within the timeout window. Click the mic and speak sooner.",
+            _ => "See Settings → Voice → Diagnostics for more details.",
+        };
+        return Err(format!(
+            "Native voice capture failed (code {code}): {stderr}. {hint}"
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    serde_json::from_str::<VoiceNativeCaptureResult>(trimmed).map_err(|e| {
+        format!(
+            "Could not parse native voice capture output: {e}. Raw: {trimmed}"
+        )
+    })
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn mc_voice_native_capture(
+    _app: tauri::AppHandle,
+    _timeout_ms: Option<u64>,
+) -> Result<VoiceNativeCaptureResult, String> {
+    Err(
+        "Native Windows voice capture is only available on Windows. \
+         Install the Voice module from the Modules catalog for cross-platform \
+         whisper.cpp STT instead."
+            .to_string(),
+    )
+}
+
+// ----------------------------------------------------------------------------
 // Tauri command: maic_login (Lesson 444, fixed endpoint)
 //
 // Called by the first-run login modal. POSTs {email, password} to
@@ -6747,6 +6896,12 @@ pub fn run() {
             voice_diagnostics,
             voice_open_sound_settings,
             voice_open_windows_update,
+            // Lesson 706 (rc54.3): native Windows SAPI 5 STT for the
+            // OpenClaw chat voice button. 10-50x faster than whisper.cpp,
+            // zero model download, fully offline. Replaces the sidecar
+            // path the Voice module uses so users don't need to install
+            // Voice for chat voice input anymore.
+            mc_voice_native_capture,
             maic_login,
             maic_logout,
             silent_relogin,
