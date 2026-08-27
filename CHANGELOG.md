@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.0.1 polish queue
 
+### v1.1.0-rc54.2 — 2026-08-27 10:50 MDT (module install version-check fix)
+
+- **Fix: module install blocked across rc-major boundary.** The
+  `parse_rc_trailer` function in `src-tauri/src/auth/tier.rs` extracted
+  only the hotfix integer from `1.1.0-rc<n>.<m>`, so `1.1.0-rc54.1`
+  parsed as `1` and `1.1.0-rc53.28` parsed as `28`. Comparing integers
+  gave `1 < 28` = "version too old", even though `rc54.1` is obviously
+  newer than `rc53.28` because rc-major takes priority. Symptom: any
+  module with `minMcVersion: 1.1.0-rc53.x` failed to install on
+  `1.1.0-rc54.1`. Reported by David 2026-08-27 10:45 MDT while
+  installing Voice v0.1.8 (minMcVersion=rc53.28) on rc54.1.
+- **Fix: parse `(rc_major, hotfix)` tuples, compare lexicographically.**
+  `rc54.1` ≥ `rc53.28` correctly now. Added two unit tests
+  (`parse_rc_version_basic`, `parse_rc_version_ordering_across_rc_boundary`)
+  to lock in the behavior. See Lesson 705 in MEMORY.md.
+
 ### v1.1.0-rc54.1 — 2026-08-27 10:35 MDT (dashboard hotfix)
 
 - **Fix: dashboard hung on "Loading dashboard…" after login.** The
