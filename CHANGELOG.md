@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.0.1 polish queue
 
+### v1.1.0-rc54.1 — 2026-08-27 10:35 MDT (dashboard hotfix)
+
+- **Fix: dashboard hung on "Loading dashboard…" after login.** The
+  rc54.0 voice banner IIFE inside `root.innerHTML = \`...\`` referenced
+  `voiceStatus`, but the variable from `Promise.allSettled` was named
+  `voiceStatusResult`. The template-literal evaluation threw
+  `ReferenceError: voiceStatus is not defined` at runtime, which
+  aborted the `root.innerHTML` assignment before any event listeners
+  were wired. Dashboard looked blank. Now renders immediately on
+  login.
+- **Belt-and-suspenders: dashboard mount wrapped in try/catch.** Any
+  future template-literal or IIFE failure now renders an inline error
+  card with the stack trace + "Reload dashboard" button. No more
+  silent blank screens. See Lesson 704 in MEMORY.md.
+
 ### v1.1.0-rc54.0 — 2026-08-27 (voice stack leverage)
 
 - **New: NSIS installer hook for Windows speech stack.** The installer
