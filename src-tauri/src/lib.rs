@@ -2634,13 +2634,15 @@ fn mc_voice_native_capture(
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         // Exit codes from the PS1 helper:
         //   2 = SAPI missing, 3 = mic unavailable, 4 = RecognizeAsync
-        //       failed, 5 = timeout
+        //       failed, 5 = timeout, 6 = grammar/recognizer not installed
+        //       for current culture
         let code = output.status.code().unwrap_or(-1);
         let hint = match code {
             2 => "Run Settings → Voice → Re-install voice components to enable SAPI 5.",
             3 => "Check that a microphone is plugged in and set as the default recording device in Windows Sound settings.",
             4 => "Windows speech engine failed to start. Try restarting the app.",
             5 => "No speech detected within the timeout window. Click the mic and speak sooner.",
+            6 => "A speech recognizer for your Windows display language isn't installed. Install one via Settings → Time & language → Language & region (e.g. English (United States) Speech).",
             _ => "See Settings → Voice → Diagnostics for more details.",
         };
         return Err(format!(

@@ -63,8 +63,22 @@ try {
 # Load a free-text dictation grammar. No need for grammar files — the
 # DictationGrammar() class handles arbitrary English (and any other
 # installed language) text. Users get full STT without configuration.
-$grammar = New-Object System.Speech.Recognition.DictationGrammar
-$engine.LoadGrammar($grammar)
+#
+# Lesson 709 (rc54.4.1): wrapping New-Object + LoadGrammar in try/catch
+# so we surface a clean exit code (6) instead of letting PS die with an
+# unhandled PlatformNotSupportedException on systems where the speech
+# recognizer for the current culture isn't installed. Previously this
+# was a silent script crash — the Rust side saw "non-zero exit" but
+# couldn't distinguish "no recognizer installed" from "PS bug".
+$grammar = $null
+try {
+    $grammar = New-Object System.Speech.Recognition.DictationGrammar
+    $engine.LoadGrammar($grammar) | Out-Null
+} catch {
+    [Console]::Error.WriteLine("Could not load dictation grammar: $($_.Exception.Message). A speech recognizer for the current culture may not be installed.")
+    $engine.Dispose()
+    exit 6
+}
 
 # ---- Configure wait ---------------------------------------------------------
 # RecognizeAsync() returns after the user pauses (~700ms silence) by
@@ -77,18 +91,29 @@ $done = New-Object System.Threading.AutoResetEvent($false)
 # closure captures them by reference (PS closures are late-bound).
 $script:resultText = ''
 $script:resultConfidence = 0.0
+# Lesson 709 (rc54.4.1): assign $script:doneEvent BEFORE registering the
+# handler. The closure references $script:doneEvent.Set(); if the
+# engine fires RecognizeCompleted synchronously (it can, on internal
+# state transitions like grammar load completion), the handler would
+# see $null and throw. Order matters.
+$script:doneEvent = $done
 
 $engine.add_RecognizeCompleted({
     param($sender, $e)
     $script:resultText = $e.Result.Text
     $script:resultConfidence = [double]$e.Result.Confidence
-    $script:doneEvent.Set() | Out-Null
+    if ($script:doneEvent) { $script:doneEvent.Set() | Out-Null }
 })
-$script:doneEvent = $done
 
 # ---- Start recognition ------------------------------------------------------
+# Lesson 709 (rc54.4.1): use parameterless RecognizeAsync() instead of
+# RecognizeAsync($null). The latter has overloaded signatures and PowerShell
+# can pass $null ambiguously, surfacing a generic COMException that masks
+# the real underlying cause (audio device format negotiation, recognizer
+# state, etc.). The parameterless overload is unambiguous and picks the
+# default RecognizeMode.Single.
 try {
-    $engine.RecognizeAsync($null) | Out-Null
+    $engine.RecognizeAsync() | Out-Null
 } catch {
     [Console]::Error.WriteLine("RecognizeAsync failed: $($_.Exception.Message)")
     $engine.Dispose()

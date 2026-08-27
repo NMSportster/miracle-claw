@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.0.1 polish queue
 
+### v1.1.0-rc54.5 — 2026-08-27 (Native voice: Robust RecognizeAsync + better error visibility)
+
+#### Native voice: `RecognizeAsync` robustness fixes (Lesson 709, round 2)
+- `mc-voice-native-capture.ps1` failed at runtime with `RecognizeAsync failed: We…` (truncated to 60 chars on the JS overlay). The root causes were three small ordering/scoping bugs that surfaced only on real Windows installs where the engine fires events synchronously:
+  - **`DictationGrammar` + `LoadGrammar` were not in a `try/catch`** — a missing per-culture recognizer would crash the PS1 with an unhandled `PlatformNotSupportedException`, surfacing as a generic non-zero exit. Now wrapped with a clean exit code 6 and a hint that points at Windows Language settings.
+  - **`$script:doneEvent` was assigned AFTER the `RecognizeCompleted` handler was registered** — if the engine fired the event synchronously on grammar-load completion, the closure would set a `$null.doneEvent.Set()` and throw. Now `$script:doneEvent = $done` runs BEFORE the handler. Defense-in-depth null check added inside the closure.
+  - **`RecognizeAsync($null)` uses an ambiguous overload** in PowerShell — the runtime can resolve `$null` to either `RecognizeMode` enum or skip to the parameterless overload depending on binder state. Switched to the parameterless `RecognizeAsync()` form, which is unambiguous and picks `RecognizeMode.Single`.
+- Rust side picked up an exit code 6 hint: *"A speech recognizer for your Windows display language isn't installed. Install one via Settings → Time & language → Language & region (e.g. English (United States) Speech)."*
+
+#### Voice error overlay: full exception text visible
+- The JS overlay's error display truncated to 60 chars (`msg.slice(0, 60)`), cutting useful .NET exception messages mid-sentence. Bumped to 200 chars so users see the full underlying cause. The overlay already wraps text with `word-break: break-word` so longer messages render fine.
+
 ### v1.1.0-rc54.4 — 2026-08-27 (cross-window ACL + PS1 path bugfixes)
 
 #### Cross-window ACL fix for `mc_voice_native_capture` (Lesson 709)
