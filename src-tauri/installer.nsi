@@ -139,8 +139,22 @@ Var VoiceClarityOptIn
 ; fails the build with `macro "_If" requires 4 parameter(s), passed 2`.
 ; ============================================================================
 !macro NSIS_HOOK_POSTINSTALL
-  ${If} ${AtLeastWin10}
-    DetailPrint "Miracle Claw: installing Windows speech recognition language data..."
+  ; The voice-stack work (DISM FODs + SAPI verify) runs on Windows 10+.
+  ; On older Windows, DISM commands will simply fail silently (nsExec
+  ; swallows the error code) and we proceed — Whisper.cpp still works.
+  ;
+  ; Lesson TBD (2026-08-27, ${If} + ${AtLeastWin10} pitfall):
+  ; LogicLib ${If} counts arguments at parse time, and ${AtLeastWin10}
+  ; expands to a 4-token expression. Putting complex multi-line bodies
+  ; (esp. long PowerShell scripts) inside ${If} ${AtLeastWin10} ...
+  ; ${EndIf} breaks makensis's argument parser:
+  ;   "macro \"_If\" requires 4 parameter(s), passed 2"
+  ; Workaround: just run the body unconditionally. nsExec::ExecToLog
+  ; swallows DISM errors on older Windows, and MC requires WebView2
+  ; which needs Win10+, so this is moot in practice. We still record
+  ; the registry flags for our diagnostics UI.
+
+  DetailPrint "Miracle Claw: installing Windows speech recognition language data..."
   ; Iterate the user's preferred UI languages (top 3) and install matching
   ; offline speech recognition FODs. Languages we can't resolve are skipped.
   ; Each FOD is ~30-60MB; total install time budget: 5 minutes max.
@@ -161,7 +175,7 @@ Var VoiceClarityOptIn
          } ^
        } ^
      } catch { Write-Host ''[MC-Voice] FOD enumeration failed: '' $$_.Exception.Message }"'
-  
+
   DetailPrint "Miracle Claw: verifying Windows speech components..."
   ; Verify SAPI 5 (System.Speech) is present. SAPI is built into Windows
   ; 10/11 by default but is stripped from N/KN editions (Europe/Korea).
@@ -175,9 +189,6 @@ Var VoiceClarityOptIn
        Write-Host ''[MC-Voice] SAPI present'' ^
      }"'
 
-  voice_setup_done:
-  ${EndIf}
-
   ; If user opted into Voice Clarity on the installer page, record the flag.
   ; The actual DSP mode is applied at app runtime via WASAPI stream category
   ; (see Rust audio_speech_mode.rs), NOT as a system-wide policy.
@@ -187,7 +198,6 @@ Var VoiceClarityOptIn
   ${EndIf}
 
   ; Always: write the voice-stack-installed flag so the first-run wizard knows
-  ; (even on Win7/8 the flag is meaningful for our diagnostics UI)
   WriteRegDWORD HKLM "SOFTWARE\MiracleClaw" "VoiceStackInstalled" 1
   WriteRegDWORD HKLM "SOFTWARE\MiracleClaw" "VoiceStackBuild" ${VERSIONWITHBUILD}
   WriteRegStr HKLM "SOFTWARE\MiracleClaw" "VoiceStackInstalledAt" "$(%datetime%)"
