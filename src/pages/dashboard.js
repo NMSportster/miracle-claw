@@ -294,7 +294,45 @@ export const dashboardPage = {
   mount(root, ctx = {}) {
     const { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules } = ctx;
 
+    // Lesson 704 (2026-08-27 10:05 MDT, David): wrap the whole mount
+    // body in try/catch so a single ReferenceError or template-literal
+    // evaluation failure can't leave the dashboard stuck on the
+    // "Loading dashboard" button text forever. We render an error
+    // card with the message instead, plus a "Reload" button that
+    // re-mounts. This is the belt-and-suspenders complement to
+    // fixing the voiceStatus variable-name typo.
     (async () => {
+      try {
+        await this._doMount(root, ctx, { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules });
+      } catch (err) {
+        console.error("[dashboard.mount] failed:", err);
+        try {
+          root.innerHTML = `
+            <div class="dashboard">
+              <header class="dashboard-header">
+                <h1 class="logo">MiracleClaw</h1>
+              </header>
+              <div class="dashboard-error" role="alert">
+                <strong>Dashboard failed to load.</strong>
+                <pre class="dashboard-error-detail">${escapeHtml(String(err && err.stack || err))}</pre>
+                <button type="button" class="primary" id="dashboard-reload">Reload dashboard</button>
+              </div>
+            </div>
+          `;
+          const reloadBtn = document.getElementById("dashboard-reload");
+          if (reloadBtn) {
+            reloadBtn.addEventListener("click", () => this.mount(root, ctx));
+          }
+        } catch (innerErr) {
+          console.error("[dashboard.mount] error-card render failed:", innerErr);
+          root.textContent = `Dashboard failed to load: ${String(err)}`;
+        }
+      }
+    })();
+  },
+
+  async _doMount(root, ctx, { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules }) {
+
       // Lesson 561 (2026-08-24 16:08 MDT, David): the dashboard's usage
       // line used to render only an em-dash below threshold because
       // `mc_get_nudge` returns null-ish when the user hasn't hit a
@@ -389,8 +427,15 @@ export const dashboardPage = {
             // shows on Windows when the installer's voice stack flag is
             // missing. Quietly dismissed via localStorage so it doesn't
             // nag returning users.
-            if (!voiceStatus || voiceStatus.status !== "fulfilled") return "";
-            const voiceReport = voiceStatus.value;
+            //
+            // Lesson 704 (2026-08-27 10:05 MDT, David): the IIFE
+            // originally referenced `voiceStatus` (without the
+            // `Result` suffix), which threw ReferenceError at runtime
+            // and prevented root.innerHTML from being assigned — the
+            // dashboard got stuck on "Loading dashboard" forever. The
+            // variable from Promise.allSettled is `voiceStatusResult`.
+            if (!voiceStatusResult || voiceStatusResult.status !== "fulfilled") return "";
+            const voiceReport = voiceStatusResult.value;
             if (!voiceReport || voiceReport.voice_stack_installed) return "";
             const dismissedKey = "mc-voice-banner-dismissed-v1";
             try {
@@ -738,7 +783,6 @@ export const dashboardPage = {
 
       if (tier?.tier_changed) showTierChangedModal(tier);
       if (nudge && nudge.text && nudge.text.length > 0) showNudgeModal(nudge);
-    })();
   },
 
   async refreshTier(root, ctx) {
