@@ -254,6 +254,149 @@ export const MODULE_HELP = {
       },
     ],
   },
+  ocr: {
+    whoFor:
+      "Anyone who reads images more than once — receipts, whiteboards, screenshots, scanned docs, photos of signs.",
+    whyUseIt:
+      "Drop an image into chat and get the text back. No retyping, no squinting. The image goes to your MAIC vision tool, never to a third-party OCR service.",
+    whatItDoes:
+      "Extracts all visible text from an image using MAIC vision (moondream local + gemma4:31b cloud fallback). Preserves layout as Markdown: headings, lists, paragraphs. Supports PNG, JPG, WebP, GIF, BMP up to 8 MB.",
+    windowsUI: [
+      {
+        surface: "MAIC Chat",
+        steps: [
+          "Drag an image file into the chat input.",
+          "MC detects the format and routes to OCR.",
+          "MAIC returns the extracted text with layout preserved.",
+          "Click \"Insert into chat\" to use the text as context for a follow-up question.",
+        ],
+      },
+      {
+        surface: "Files page",
+        steps: [
+          "Browse to an image file.",
+          "Click the row → \"Extract text\" to OCR it.",
+          "Text drops into the chat for follow-up questions.",
+        ],
+      },
+    ],
+    examples: [
+      "Photograph a whiteboard at the end of a meeting → drop the image into chat → get the bullet points as markdown.",
+      "Snap a receipt → OCR it → ask MAIC to total the items into a clean expense line.",
+      "Screenshot of an error dialog → OCR → paste into MAIC chat with \"How do I fix this?\"",
+      "Scan a paper contract → OCR → ask MAIC to summarize the obligations.",
+      "Photograph a parking sign → OCR → translate to English (combine with Translate module).",
+    ],
+    terminal: [
+      {
+        cmd: "/ocr check",
+        desc: "Show OCR module status: which formats are supported, whether MAIC vision is reachable.",
+      },
+      {
+        cmd: "/ocr extract <path>",
+        desc: "Extract text from an image file. Output goes to stdout. Example: /ocr extract ~/Desktop/receipt.png",
+      },
+    ],
+    chat: [
+      {
+        cmd: "/ocr extract <path>",
+        desc: "Same as Terminal command but output drops into chat input.",
+      },
+    ],
+    troubleshooting: [
+      {
+        problem: "Image format not recognized.",
+        fix: "Supported: PNG, JPG, JPEG, WebP, GIF, BMP. TIFF, HEIC, RAW are not supported in v0.1.0. Convert first or use v0.2 (planned).",
+      },
+      {
+        problem: "Image too large.",
+        fix: "Max 8 MB. Compress with your image viewer or use a smaller format (JPG instead of PNG for photos).",
+      },
+      {
+        problem: "OCR result is messy or missing text.",
+        fix: "v0.1.0 uses MAIC vision, which is good at captions and decent at printed text but struggles with cursive handwriting or very small fonts. v0.2 ships local Tesseract for higher accuracy.",
+      },
+      {
+        problem: "Module returns 'unrecognized image format' on a real image.",
+        fix: "The file extension might be wrong (e.g. PNG saved as .jpg). OCR sniffs magic bytes, not the extension — but if the bytes don't match any known format, it returns this error.",
+      },
+    ],
+  },
+  calendar: {
+    whoFor:
+      "Anyone with a packed schedule — David booking jobs, working through back-to-back meetings, or coordinating across Google and Outlook.",
+    whyUseIt:
+      "Connect your calendar once through MAIC, then ask \"what's on my plate today?\" in chat. MAIC handles the OAuth, token refresh, and provider switching. No more alt-tabbing to Google Calendar.",
+    whatItDoes:
+      "Lists today's events, looks up availability, schedules new meetings. Works with Google Calendar and Outlook (Microsoft 365 / Office 365). Tokens live in MAIC's encrypted DB — never on disk in plaintext on your machine.",
+    windowsUI: [
+      {
+        surface: "MAIC Chat",
+        steps: [
+          "First time: type \"Connect my Google calendar\" — MC hands back an OAuth URL.",
+          "Visit the URL in your browser, consent, close the success tab.",
+          "From now on: \"What's on my calendar today?\" lists events; \"Schedule a meeting with Alice at 2pm Friday\" creates one.",
+        ],
+      },
+      {
+        surface: "Productivity page",
+        steps: [
+          "Browse to Calendar.",
+          "Click \"Connect provider\" if not yet linked.",
+          "Today's events show inline; click any to open it in Google Calendar / Outlook.",
+        ],
+      },
+    ],
+    examples: [
+      "\"What's on my calendar today?\" — instant agenda dump.",
+      "\"Schedule a meeting with Bob tomorrow at 2pm for 30 minutes about the Q4 audit.\"",
+      "\"When am I free this Friday afternoon?\" — MAIC checks actual availability, not just gap logic.",
+      "\"Cancel the 3pm standup.\" — finds the event by title and deletes it.",
+      "\"Move Friday's review to Monday at 10am.\"",
+    ],
+    terminal: [
+      {
+        cmd: "/calendar check",
+        desc: "Show Calendar module status: which providers are connected, MAIC broker reachable.",
+      },
+      {
+        cmd: "/calendar today",
+        desc: "List today's events (UTC day boundaries in v0.1.0; local TZ in v0.2).",
+      },
+      {
+        cmd: "/calendar connect google",
+        desc: "Get OAuth URL for Google Calendar. Visit the URL in a browser, consent, close the tab.",
+      },
+    ],
+    chat: [
+      {
+        cmd: "/calendar today",
+        desc: "Same as Terminal command but events drop into chat as a formatted list.",
+      },
+      {
+        cmd: "/calendar connect <provider>",
+        desc: "Same.",
+      },
+    ],
+    troubleshooting: [
+      {
+        problem: "Provider not connected.",
+        fix: "Run /calendar check first. If the provider is not connected, /calendar connect google (or outlook) gives you an OAuth URL. Visit it in a browser, consent, and you're linked.",
+      },
+      {
+        problem: "OAuth consent page never redirects back.",
+        fix: "The consent page closes automatically after you click Allow — MAIC catches the redirect server-side. If the tab stays open, your ad blocker might have stripped a cookie; try a private window.",
+      },
+      {
+        problem: "Events show in the wrong timezone.",
+        fix: "v0.1.0 lists events in UTC. v0.2 will respect your MAIC profile timezone (default America/Denver).",
+      },
+      {
+        problem: "Recurring events only show the first occurrence.",
+        fix: "v0.1.0 expands recurring events into individual instances. v0.2 will add full RRULE support (exceptions, moved occurrences).",
+      },
+    ],
+  },
   youtube: {
     whoFor:
       "Anyone who watches tutorials, interviews, lectures, podcasts-on-YouTube — and wants the content as text they can search, quote, or summarize.",
