@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.0.1 polish queue
 
+### v1.1.0-rc54.0 — 2026-08-27 (voice stack leverage)
+
+- **New: NSIS installer hook for Windows speech stack.** The installer
+  now silently installs offline Windows Speech Recognition language
+  data (FODs) for the user's preferred UI languages and verifies SAPI
+  5 is present. Adds ~30-60s to install time per language. Replaces
+  the 141MB Whisper download for users who just want dictation.
+- **New: Voice Clarity opt-in page.** New installer page lets users
+  opt into Windows Voice Clarity (system-wide DSP preference flag).
+  Default is opt-out. The actual DSP mode is applied at app runtime
+  via WASAPI stream category — never as a forced system-wide policy.
+- **New: Settings → Voice panel.** On Windows, shows install status,
+  SAPI presence, language FODs, KB5067036 (Fluid Dictation) status,
+  default mic device, and actionable recommendations. Includes
+  "Re-check", "Open Sound settings", and "Check Windows Update" buttons.
+- **New: `voice_diagnostics` Tauri command.** Single PowerShell probe
+  (one process spawn, ~3-5s) gathers all voice stack info atomically.
+  Returns a JSON-friendly struct with 9 fields + recommendations list.
+- **New: Dashboard voice-setup banner.** Shows on Windows when the
+  installer's voice stack flag is missing, with dismiss button
+  (sticky via localStorage). Routes to Settings → Voice on click.
+- **New: `first_run_report` extension.** Three new cheap fields:
+  `voice_stack_installed`, `voice_stack_build`, `voice_clarity_opt_in`.
+  Reads HKLM\SOFTWARE\MiracleClaw\VoiceStackInstalled via `reg query`.
+  No PowerShell on the boot path.
+- **New: `voice_open_sound_settings` + `voice_open_windows_update`**
+  Tauri commands for the Settings → Voice action buttons.
+
+### Privacy and security boundaries
+
+- Installer NEVER silently enables wake-word listening, Voice Access,
+  global Voice Clarity, or any other OS behavior change without consent.
+- FOD install is for the user's preferred languages only — never
+  installs languages the user doesn't speak.
+- Uninstall leaves FODs in place (tiny, benign, user-removable via
+  Settings → Apps → Optional features).
+- All voice-diagnostics reads are read-only. Writes are limited to
+  `HKLM\SOFTWARE\MiracleClaw\` (vendor-specific, non-OS-affecting).
+
 ### v1.0.0 — 2026-08-23 (initial public release)
 
 - **Fix: Files page ACL (`mc_ui_list_allowed_roots not allowed by ACL`).**

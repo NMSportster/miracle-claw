@@ -99,6 +99,10 @@ export const settingsPage = {
     loadUserInfo(this, root, ctx);
     loadMemoryFiles(this, root, ctx);
     loadModules(this, root, ctx);
+    // Lesson TBD (2026-08-27): voice stack diagnostics. PowerShell probe,
+    // ~3-5 seconds on first call. Cache result so navigating away and back
+    // doesn't re-run unless user clicks "Re-check".
+    loadVoiceDiagnostics(this, root, ctx);
   },
 
   unmount() {
@@ -198,6 +202,151 @@ async function loadModules(page, root, ctx) {
   } catch (err) {
     slot.innerHTML = renderError(`Could not list modules: ${escapeHtml(err)}`);
   }
+}
+
+// ============================================================================
+// Voice diagnostics (Lesson TBD, 2026-08-27)
+//
+// Calls the Rust voice_diagnostics command, which spawns PowerShell to
+// probe the Windows speech stack. First call takes ~3-5s; we cache the
+// result in this closure so navigating away and back doesn't re-probe.
+// Click "Re-check" to force a refresh.
+// ============================================================================
+let _voiceDiagCache = null;
+async function loadVoiceDiagnostics(page, root, ctx) {
+  const slot = document.getElementById("voice-slot");
+  if (!slot) return;
+  if (_voiceDiagCache) {
+    slot.innerHTML = renderVoiceDiagnostics(_voiceDiagCache);
+    wireVoiceActions(ctx);
+    return;
+  }
+  try {
+    const diag = await invoke("voice_diagnostics");
+    _voiceDiagCache = diag;
+    slot.innerHTML = renderVoiceDiagnostics(diag);
+    wireVoiceActions(ctx);
+  } catch (err) {
+    slot.innerHTML = renderError(
+      `Voice diagnostics not available on this platform: ${escapeHtml(err)}`
+    );
+  }
+}
+
+function wireVoiceActions(ctx) {
+  const recheck = document.getElementById("voice-recheck-btn");
+  if (recheck) {
+    recheck.addEventListener("click", async () => {
+      _voiceDiagCache = null;
+      const slot = document.getElementById("voice-slot");
+      if (slot) slot.innerHTML = "Re-checking voice setup…";
+      await loadVoiceDiagnostics(null, null, ctx);
+    });
+  }
+  const openSound = document.getElementById("voice-open-sound-btn");
+  if (openSound) {
+    openSound.addEventListener("click", async () => {
+      try {
+        await invoke("voice_open_sound_settings");
+      } catch (err) {
+        toast(`Could not open Sound settings: ${err}`, { kind: "error" });
+      }
+    });
+  }
+  const openUpdate = document.getElementById("voice-open-update-btn");
+  if (openUpdate) {
+    openUpdate.addEventListener("click", async () => {
+      try {
+        await invoke("voice_open_windows_update");
+      } catch (err) {
+        toast(`Could not open Windows Update: ${err}`, { kind: "error" });
+      }
+    });
+  }
+}
+
+function statusPill(ok, label) {
+  const cls = ok === true ? "pill-ok" : ok === false ? "pill-warn" : "pill-info";
+  const icon = ok === true ? "✓" : ok === false ? "✗" : "ℹ";
+  return `<span class="voice-pill ${cls}">${icon} ${escapeHtml(label)}</span>`;
+}
+
+function renderVoiceDiagnostics(diag) {
+  // Non-Windows path: show a friendly empty state.
+  if (!diag || (!diag.windows_build && !diag.windows_build_number)) {
+    return `
+      <div class="voice-diag">
+        <p class="muted small">
+          Voice diagnostics are Windows-only. On macOS and Linux, MC uses the
+          local Whisper model for voice input.
+        </p>
+      </div>
+    `;
+  }
+  const isWin11 = diag.windows_build_number >= 22000;
+  const isWin1124H2 = diag.windows_build_number >= 26100;
+  const fodOk = diag.speech_fod_status.every(([, s]) => s === "Installed");
+  const kbOk = diag.kb5067036_installed !== false; // null = unknown, treat as ok
+  return `
+    <div class="voice-diag">
+      <div class="voice-diag-row">
+        <div class="voice-diag-label">Windows build</div>
+        <div class="voice-diag-value">
+          ${escapeHtml(diag.windows_build || "Unknown")}
+          ${isWin1124H2 ? statusPill(true, "Voice Clarity supported") : isWin11 ? statusPill(false, "Older Windows 11") : statusPill(false, "Windows 10 (consider upgrading)")}
+        </div>
+      </div>
+      <div class="voice-diag-row">
+        <div class="voice-diag-label">MC voice stack</div>
+        <div class="voice-diag-value">
+          ${statusPill(diag.mc_voice_stack_installed, diag.mc_voice_stack_installed ? `Installed (build ${escapeHtml(diag.mc_voice_stack_build || "?")})` : "Not installed")}
+        </div>
+      </div>
+      <div class="voice-diag-row">
+        <div class="voice-diag-label">SAPI 5 (offline dictation)</div>
+        <div class="voice-diag-value">
+          ${statusPill(diag.sapi_present, diag.sapi_present ? "Present" : "Missing")}
+        </div>
+      </div>
+      <div class="voice-diag-row">
+        <div class="voice-diag-label">Speech language data</div>
+        <div class="voice-diag-value">
+          ${diag.speech_fod_status.length === 0
+            ? '<span class="muted small">No languages detected</span>'
+            : diag.speech_fod_status.map(([lang, state]) =>
+                statusPill(state === "Installed", `${lang}: ${state}`)
+              ).join(" ")}
+        </div>
+      </div>
+      <div class="voice-diag-row">
+        <div class="voice-diag-label">Microsoft voice updates</div>
+        <div class="voice-diag-value">
+          ${statusPill(kbOk, diag.kb5067036_installed === false ? "KB5067036 (Fluid Dictation) not installed" : kbOk ? "Up to date" : "Unknown")}
+        </div>
+      </div>
+      <div class="voice-diag-row">
+        <div class="voice-diag-label">Default microphone</div>
+        <div class="voice-diag-value">
+          ${escapeHtml(diag.default_mic_name || "Unknown")}
+        </div>
+      </div>
+
+      ${diag.recommendations && diag.recommendations.length > 0 ? `
+        <div class="voice-diag-recos">
+          <strong>Recommendations:</strong>
+          <ul>
+            ${diag.recommendations.map(r => `<li>${escapeHtml(r)}</li>`).join("")}
+          </ul>
+        </div>
+      ` : ""}
+
+      <div class="voice-diag-actions">
+        <button type="button" id="voice-recheck-btn" class="link-button">↻ Re-check</button>
+        <button type="button" id="voice-open-sound-btn" class="link-button">🔊 Open Sound settings</button>
+        ${kbOk === false || diag.kb5067036_installed === false ? `<button type="button" id="voice-open-update-btn" class="link-button">⬇ Check Windows Update</button>` : ""}
+      </div>
+    </div>
+  `;
 }
 
 function renderModulesList(modules) {
@@ -327,6 +476,18 @@ function renderSkeleton() {
       <section class="settings-section">
         <h2>About</h2>
         <div id="about-slot">${renderAbout()}</div>
+      </section>
+
+      <section class="settings-section">
+        <h2>Voice (Windows)</h2>
+        <p class="muted small">
+          MC's voice input uses Windows Speech Recognition on Windows 11 24H2+ for
+          fast, accurate streaming dictation. The installer sets up the speech
+          recognition language data automatically. Use this panel to verify
+          everything is working, or to check for Microsoft KB updates that
+          improve voice quality.
+        </p>
+        <div id="voice-slot" class="loading-slot">Checking voice setup…</div>
       </section>
 
       <section class="settings-section">

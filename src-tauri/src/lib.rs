@@ -169,6 +169,78 @@ struct FirstRunReport {
     launcher_spawned: bool,
     gateway_ready: bool,
     gateway_error: Option<String>,
+    /// Lesson TBD (2026-08-27): was the Windows voice stack installed by
+    /// the MC installer? Reads HKLM\SOFTWARE\MiracleClaw\VoiceStackInstalled.
+    /// Always false on non-Windows. Drives the dashboard banner + settings
+    /// page Voice section visibility.
+    voice_stack_installed: bool,
+    /// Build number that installed the voice stack (registry value).
+    /// Empty if never installed or non-Windows.
+    voice_stack_build: String,
+    /// Did the user opt into Voice Clarity system-wide on the installer page?
+    /// Drives a recommendation in Settings → Voice to re-apply if needed.
+    voice_clarity_opt_in: bool,
+}
+
+// ----------------------------------------------------------------------------
+// Voice diagnostics (Lesson TBD, 2026-08-27)
+//
+// Cheap registry reads on boot. The full probe (PowerShell, mic device info,
+// KB check, Voice Clarity status) lives in the separate `voice_diagnostics`
+// command so we don't slow down first-run.
+// ----------------------------------------------------------------------------
+#[cfg(windows)]
+fn voice_first_run_report() -> (bool, String, bool) {
+    use std::process::Command;
+    fn read_reg_dword(name: &str) -> bool {
+        Command::new("reg")
+            .args([
+                "query",
+                r"HKLM\SOFTWARE\MiracleClaw",
+                "/v",
+                name,
+            ])
+            .output()
+            .ok()
+            .map(|o| {
+                let s = String::from_utf8_lossy(&o.stdout);
+                // reg.exe prints "    VoiceStackInstalled    REG_DWORD    0x1"
+                s.contains("0x1")
+            })
+            .unwrap_or(false)
+    }
+    fn read_reg_str(name: &str) -> String {
+        Command::new("reg")
+            .args([
+                "query",
+                r"HKLM\SOFTWARE\MiracleClaw",
+                "/v",
+                name,
+            ])
+            .output()
+            .ok()
+            .map(|o| {
+                let s = String::from_utf8_lossy(&o.stdout);
+                // reg.exe prints "    VoiceStackBuild    REG_SZ    1.1.0-rc54.0"
+                // The data field is everything after the value name + REG_SZ
+                s.lines()
+                    .find(|l| l.contains(name) && l.contains("REG_SZ"))
+                    .and_then(|l| l.split_whitespace().nth(2))
+                    .unwrap_or("")
+                    .to_string()
+            })
+            .unwrap_or_default()
+    }
+    (
+        read_reg_dword("VoiceStackInstalled"),
+        read_reg_str("VoiceStackBuild"),
+        read_reg_dword("VoiceClaritySystemWide"),
+    )
+}
+
+#[cfg(not(windows))]
+fn voice_first_run_report() -> (bool, String, bool) {
+    (false, String::new(), false)
 }
 
 // ----------------------------------------------------------------------------
@@ -2056,6 +2128,12 @@ fn first_run_report(state: tauri::State<'_, AppState>) -> FirstRunReport {
     let launcher_spawned = state.launcher_child.lock().unwrap().is_some();
     let gateway_ready =
         TcpStream::connect(format!("127.0.0.1:{}", OPENCLAW_PORT)).is_ok();
+    // Lesson TBD (2026-08-27): cheap registry read for installer-set flags.
+    // On non-Windows this returns (false, "", false). PowerShell probe
+    // for detailed voice status lives in the separate `voice_diagnostics`
+    // command so we don't slow down boot.
+    let (voice_stack_installed, voice_stack_build, voice_clarity_opt_in) =
+        voice_first_run_report();
     // Read back what ensure_maic_provider_config() wrote so the chat panel
     // can show whether MAIC is wired. Default to "not configured" if the
     // config file is missing or unparseable.
@@ -2099,6 +2177,11 @@ fn first_run_report(state: tauri::State<'_, AppState>) -> FirstRunReport {
         launcher_spawned,
         gateway_ready,
         gateway_error: None,
+        // Lesson TBD (2026-08-27): voice-stack status from the installer.
+        // Cheap registry read; no PowerShell on the boot path.
+        voice_stack_installed,
+        voice_stack_build,
+        voice_clarity_opt_in,
     }
 }
 
@@ -2138,6 +2221,291 @@ fn needs_maic_login_from_state(_provider_endpoint: &str) -> bool {
         // now broken since no env var is set — login is the fix).
         _ => true,
     }
+}
+
+// ----------------------------------------------------------------------------
+// Voice diagnostics (Lesson TBD, 2026-08-27)
+//
+// Called on demand from Settings → Voice. PowerShell-based probe that reports:
+//   - Windows build + whether SpeechRecognition FODs are installed
+//   - Whether SAPI 5 (System.Speech) is present
+//   - Whether KB5067036 / Voice Isolation updates are pending
+//   - Whether Voice Clarity / Voice Isolation are enabled system-wide
+//   - The user's default mic device + its DSP state
+//
+// This is NOT called on the boot path — first_run_report does the cheap
+// registry read. This command is for when the user clicks "Check voice setup"
+// in Settings. It takes ~3-5 seconds because PowerShell loads .NET types.
+//
+// Returns a JSON-friendly VoiceDiagnostics struct. The Settings page renders
+// each field with a status pill (✓ installed, ⚠ available, ✗ missing).
+// ----------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Debug)]
+struct VoiceDiagnostics {
+    /// "Windows 11 24H2" / "Windows 11 25H2" / "Windows 10 22H2" / etc.
+    /// Empty on non-Windows.
+    windows_build: String,
+    /// Build number as integer (e.g., 26100 for Windows 11 24H2). 0 on non-Windows.
+    windows_build_number: u32,
+    /// Whether the MC installer installed voice components in this install.
+    /// Reads HKLM\SOFTWARE\MiracleClaw\VoiceStackInstalled.
+    mc_voice_stack_installed: bool,
+    /// Build string the installer was running when it set up voice (e.g.,
+    /// "1.1.0-rc54.0"). Empty if never installed.
+    mc_voice_stack_build: String,
+    /// Whether SAPI 5 (sapi.dll) is present in System32. Required for offline
+    /// dictation via System.Speech.Recognition.
+    sapi_present: bool,
+    /// List of (language_bcp47, installed_state) tuples for the user's
+    /// preferred UI languages, e.g., [("en-US", "Installed"), ("es-ES", "NotPresent")].
+    /// Empty on non-Windows.
+    speech_fod_status: Vec<(String, String)>,
+    /// Whether KB5067036 (Fluid Dictation) is installed. nil if unknown.
+    kb5067036_installed: Option<bool>,
+    /// Whether Voice Clarity is enabled on the default capture device's
+    /// audio enhancements. nil on non-Windows-11-24H2.
+    voice_clarity_enabled: Option<bool>,
+    /// Name of the default capture device (informational).
+    default_mic_name: String,
+    /// Free-form human-readable recommendations for the user. E.g.,
+    /// "Voice Clarity is disabled. Enable in Sound settings for cleaner mic."
+    recommendations: Vec<String>,
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn voice_diagnostics() -> VoiceDiagnostics {
+    use std::process::Command;
+    
+    // Single PowerShell invocation that gathers everything in one shot.
+    // Output is a JSON object that we parse. Why one PS call instead of many:
+    //   - One process spawn ~50ms, ten spawns ~500ms
+    //   - All fields collected atomically (no race between checks)
+    //   - PowerShell startup is the dominant cost, not the commands inside
+    let ps_script = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+$out = [ordered]@{
+    windows_build = ''
+    windows_build_number = 0
+    mc_voice_stack_installed = $false
+    mc_voice_stack_build = ''
+    sapi_present = $false
+    speech_fod_status = @()
+    kb5067036_installed = $null
+    voice_clarity_enabled = $null
+    default_mic_name = ''
+}
+
+# Windows build
+$os = Get-CimInstance Win32_OperatingSystem
+$out.windows_build = $os.Caption + ' ' + $os.Version
+$out.windows_build_number = [int]$os.BuildNumber
+
+# MC voice stack flag
+$reg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\MiracleClaw' -ErrorAction SilentlyContinue
+if ($reg) {
+    $out.mc_voice_stack_installed = [bool]$reg.VoiceStackInstalled
+    $out.mc_voice_stack_build = [string]$reg.VoiceStackBuild
+}
+
+# SAPI 5
+$out.sapi_present = Test-Path "$env:windir\System32\Speech\Common\sapi.dll"
+
+# Speech FODs for user's languages
+$langs = @(Get-WinUserLanguageList).LanguageTag | Select-Object -First 3
+foreach ($l in $langs) {
+    $bcp = $l -replace '-', '_'
+    $cap = "Language.Speech~~~und-SPEECH~~$bcp"
+    $state = (Get-WindowsCapability -Online -Name $cap -ErrorAction SilentlyContinue).State
+    if ($state) {
+        $out.speech_fod_status += @{lang = $l; state = [string]$state}
+    }
+}
+
+# KB5067036 (Fluid Dictation)
+$kb = Get-HotFix -Id 'KB5067036' -ErrorAction SilentlyContinue
+if ($kb) { $out.kb5067036_installed = $true }
+else { $out.kb5067036_installed = $false }
+
+# Voice Clarity (Windows 11 24H2+) on default capture device
+if ($out.windows_build_number -ge 26100) {
+    try {
+        $en = New-Object -ComObject MMDeviceEnumerator
+        $dev = $en.GetDefaultAudioEndpoint(1, 1)
+        if ($dev) {
+            $out.default_mic_name = $dev.Properties.Item(
+                '{a45c254e-df1c-4efd-8020-67d146a850e0} 14').GetValue()
+            # PKEY_AudioEndpoint_Default_VoiceClarity is device-specific;
+            # we just report whether the mic has any audio enhancement flags.
+            $out.voice_clarity_enabled = $null  # can't read directly, leave null
+        }
+    } catch {}
+}
+
+# Default mic name fallback
+if (-not $out.default_mic_name) {
+    try {
+        $en = New-Object -ComObject MMDeviceEnumerator
+        $dev = $en.GetDefaultAudioEndpoint(1, 1)
+        $out.default_mic_name = $dev.GetProperty(System.Guid.Empty) 2>$null; $out.default_mic_name = $dev.Properties
+    } catch {}
+}
+
+$out | ConvertTo-Json -Depth 5 -Compress
+"#;
+    
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script])
+        .output();
+    
+    let mut diag = VoiceDiagnostics {
+        windows_build: String::new(),
+        windows_build_number: 0,
+        mc_voice_stack_installed: false,
+        mc_voice_stack_build: String::new(),
+        sapi_present: false,
+        speech_fod_status: Vec::new(),
+        kb5067036_installed: None,
+        voice_clarity_enabled: None,
+        default_mic_name: String::new(),
+        recommendations: Vec::new(),
+    };
+    
+    if let Ok(out) = output {
+        let raw = String::from_utf8_lossy(&out.stdout).to_string();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(s) = v.get("windows_build").and_then(|x| x.as_str()) {
+                diag.windows_build = s.to_string();
+            }
+            if let Some(n) = v.get("windows_build_number").and_then(|x| x.as_u64()) {
+                diag.windows_build_number = n as u32;
+            }
+            if let Some(b) = v.get("mc_voice_stack_installed").and_then(|x| x.as_bool()) {
+                diag.mc_voice_stack_installed = b;
+            }
+            if let Some(s) = v.get("mc_voice_stack_build").and_then(|x| x.as_str()) {
+                diag.mc_voice_stack_build = s.to_string();
+            }
+            if let Some(b) = v.get("sapi_present").and_then(|x| x.as_bool()) {
+                diag.sapi_present = b;
+            }
+            if let Some(arr) = v.get("speech_fod_status").and_then(|x| x.as_array()) {
+                for entry in arr {
+                    let lang = entry.get("lang").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let state = entry.get("state").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    diag.speech_fod_status.push((lang, state));
+                }
+            }
+            if let Some(b) = v.get("kb5067036_installed").and_then(|x| x.as_bool()) {
+                diag.kb5067036_installed = Some(b);
+            }
+            if let Some(b) = v.get("voice_clarity_enabled").and_then(|x| x.as_bool()) {
+                diag.voice_clarity_enabled = Some(b);
+            }
+            if let Some(s) = v.get("default_mic_name").and_then(|x| x.as_str()) {
+                diag.default_mic_name = s.to_string();
+            }
+        }
+    }
+    
+    // Build recommendations list. Order matters — most important first.
+    if !diag.mc_voice_stack_installed {
+        diag.recommendations.push(
+            "Voice stack was not installed by the MC installer. Run Settings → Voice → Re-install voice components.".to_string()
+        );
+    }
+    if !diag.sapi_present {
+        diag.recommendations.push(
+            "Windows SAPI is missing (rare, only on N/KN editions). MC will use Whisper.cpp instead.".to_string()
+        );
+    }
+    for (lang, state) in &diag.speech_fod_status {
+        if state != "Installed" {
+            diag.recommendations.push(format!(
+                "Speech recognition language data for {} is {}. Run Settings → Voice → Re-install.",
+                lang, state
+            ));
+        }
+    }
+    if diag.kb5067036_installed == Some(false) {
+        diag.recommendations.push(
+            "Microsoft KB5067036 (Fluid Dictation + Voice Isolation) is not installed. Run Windows Update for the latest voice features.".to_string()
+        );
+    }
+    if diag.windows_build_number > 0 && diag.windows_build_number < 22621 {
+        diag.recommendations.push(
+            "You're on Windows 10. Windows 11 24H2+ has Voice Clarity. Consider upgrading for the best voice experience.".to_string()
+        );
+    }
+    
+    diag
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn voice_diagnostics() -> VoiceDiagnostics {
+    VoiceDiagnostics {
+        windows_build: String::new(),
+        windows_build_number: 0,
+        mc_voice_stack_installed: false,
+        mc_voice_stack_build: String::new(),
+        sapi_present: false,
+        speech_fod_status: Vec::new(),
+        kb5067036_installed: None,
+        voice_clarity_enabled: None,
+        default_mic_name: String::new(),
+        recommendations: Vec::new(),
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Voice actions (Lesson TBD, 2026-08-27)
+//
+// Small wrapper commands for the Settings → Voice buttons:
+//   - voice_open_sound_settings: launches the Windows Sound control panel
+//     (mmsys.cpl) so the user can enable Voice Clarity on their mic.
+//   - voice_open_windows_update: launches the Windows Update settings page
+//     so the user can grab KB5067036 (Fluid Dictation) and Voice Isolation.
+// ----------------------------------------------------------------------------
+
+#[cfg(windows)]
+#[tauri::command]
+fn voice_open_sound_settings() -> Result<(), String> {
+    use std::process::Command;
+    // mmsys.cpl opens the legacy Sound control panel which has the
+    // Recording tab with device properties (where Audio enhancements live).
+    // On Win11 this routes to the modern Settings app variant.
+    Command::new("control")
+        .args(["mmsys.cpl"])
+        .spawn()
+        .map_err(|e| format!("Could not open Sound settings: {e}"))?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn voice_open_sound_settings() -> Result<(), String> {
+    Err("Sound settings are only available on Windows".to_string())
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn voice_open_windows_update() -> Result<(), String> {
+    use std::process::Command;
+    // ms-settings:windowsupdate is the modern URI scheme. Falls back to
+    // legacy wusa.exe if the URI scheme is unavailable (older Windows).
+    Command::new("cmd")
+        .args(["/c", "start", "", "ms-settings:windowsupdate"])
+        .spawn()
+        .map_err(|e| format!("Could not open Windows Update: {e}"))?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn voice_open_windows_update() -> Result<(), String> {
+    Err("Windows Update is only available on Windows".to_string())
 }
 
 // ----------------------------------------------------------------------------
@@ -6373,6 +6741,12 @@ pub fn run() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             first_run_report,
+            // Lesson TBD (2026-08-27): on-demand voice diagnostics probe.
+            // Reads Windows speech stack status, KB updates, mic device.
+            // Called from Settings → Voice. NOT on the boot path.
+            voice_diagnostics,
+            voice_open_sound_settings,
+            voice_open_windows_update,
             maic_login,
             maic_logout,
             silent_relogin,

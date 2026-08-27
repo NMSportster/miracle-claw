@@ -302,10 +302,14 @@ export const dashboardPage = {
       // from `mc_get_quota` and use it to ALWAYS render
       // "X / Y tokens this period" + a progress bar. `mc_get_nudge`
       // stays in the request so the existing nudge modal still fires.
-      const [tierResult, nudgeResult, quotaResult] = await Promise.allSettled([
+      const [tierResult, nudgeResult, quotaResult, voiceStatusResult] = await Promise.allSettled([
         invoke("mc_get_tier"),
         invoke("mc_get_nudge"),
         invoke("mc_get_quota"),
+        // Lesson TBD (2026-08-27): cheap registry read, returns whether
+        // the installer set up the Windows voice stack. Drives the
+        // dashboard banner that nudges users to install voice FODs.
+        invoke("first_run_report"),
       ]);
 
       // If the tier fetch failed with "not logged in", bounce back to login.
@@ -379,6 +383,33 @@ export const dashboardPage = {
               ? `<button type="button" class="usage-cta" id="usage-cta">${escapeHtml(nudge.text.split('.')[0])} → Upgrade</button>`
               : ""}
           </div>
+
+          ${(() => {
+            // Lesson TBD (2026-08-27): voice-setup nudge banner. Only
+            // shows on Windows when the installer's voice stack flag is
+            // missing. Quietly dismissed via localStorage so it doesn't
+            // nag returning users.
+            if (!voiceStatus || voiceStatus.status !== "fulfilled") return "";
+            const voiceReport = voiceStatus.value;
+            if (!voiceReport || voiceReport.voice_stack_installed) return "";
+            const dismissedKey = "mc-voice-banner-dismissed-v1";
+            try {
+              if (window.localStorage.getItem(dismissedKey) === "1") return "";
+            } catch {}
+            return `
+              <div class="voice-banner" id="voice-banner" role="status">
+                <span class="voice-banner-icon" aria-hidden="true">🎙</span>
+                <div class="voice-banner-body">
+                  <strong>Get the most out of voice input.</strong>
+                  <p>MC's installer can set up Windows offline speech recognition for faster, more accurate dictation. Open Settings → Voice to verify your setup.</p>
+                </div>
+                <div class="voice-banner-actions">
+                  <button type="button" class="link-button" id="voice-banner-open">Open Voice settings</button>
+                  <button type="button" class="link-button" id="voice-banner-dismiss" aria-label="Dismiss">✕</button>
+                </div>
+              </div>
+            `;
+          })()}
 
           ${renderLinkButtons()}
 
@@ -543,6 +574,22 @@ export const dashboardPage = {
       const cmdKBtn = document.getElementById("cmd-k-open");
       if (cmdKBtn) {
         cmdKBtn.addEventListener("click", () => openCmdKPalette());
+      }
+
+      // Lesson TBD (2026-08-27): voice-setup banner dismiss + open.
+      // Dismiss is sticky via localStorage so it doesn't nag returning
+      // users. Open routes to Settings → Voice section.
+      const voiceBannerDismiss = document.getElementById("voice-banner-dismiss");
+      if (voiceBannerDismiss) {
+        voiceBannerDismiss.addEventListener("click", () => {
+          try { window.localStorage.setItem("mc-voice-banner-dismissed-v1", "1"); } catch {}
+          const banner = document.getElementById("voice-banner");
+          if (banner) banner.remove();
+        });
+      }
+      const voiceBannerOpen = document.getElementById("voice-banner-open");
+      if (voiceBannerOpen && onOpenSettings) {
+        voiceBannerOpen.addEventListener("click", () => onOpenSettings());
       }
 
       // Lesson 571: dashboard voice FAB. Capture + transcribe + show

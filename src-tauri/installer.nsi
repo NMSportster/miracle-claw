@@ -71,6 +71,12 @@ ${StrLoc}
 !define STARTMENUFOLDER "{{start_menu_folder}}"
 
 ; ============================================================================
+; Voice Clarity installer-page state (Lesson TBD, 2026-08-27).
+; Read by NSIS_HOOK_POSTINSTALL. Default 0 = user did not opt in.
+; ============================================================================
+Var VoiceClarityOptIn
+
+; ============================================================================
 ; Lesson 430 — NSIS_HOOK_PREINSTALL hook
 ;
 ; Tauri 2's default installer already calls `CheckIfAppIsRunning
@@ -94,6 +100,108 @@ ${StrLoc}
   nsExec::ExecToLog 'taskkill /F /IM node.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM miracle-claw.exe /T'
   Sleep 2000
+!macroend
+
+; ============================================================================
+; Lesson TBD (2026-08-27, voice-stack installer hook)
+;
+; Installs the Windows speech stack so MC's voice input works without
+; requiring users to dig through "Windows Optional Features" themselves.
+;
+; What this hook does (Tier 1, silent, safe):
+;   1. Installs Windows Speech Recognition FOD (offline dictation data)
+;      for each language in the user's preferred language list, capped at 3.
+;   2. Verifies SAPI 5 / System.Speech is present; installs via DISM if
+;      missing (rare, only on N/KN SKUs).
+;   3. If user opted into Voice Clarity on the installer page, writes
+;      HKLM\SOFTWARE\MiracleClaw\VoiceClaritySystemWide=1 (system-wide DSP
+;      preference flag, applied at MC app runtime via WASAPI stream category).
+;   4. Always: writes HKLM\SOFTWARE\MiracleClaw\VoiceStackInstalled=<build>
+;      so the first-run wizard knows the voice stack was set up by us.
+;
+; What this hook does NOT do:
+;   - No silent wake-word activation (Cortana/Voice Access hotword)
+;   - No Voice Access global on/off toggle
+;   - No forced Windows Update KB install
+;   - No microphone permission grants (handled by app first-launch)
+;   - No registry settings outside HKLM\SOFTWARE\MiracleClaw\ and per-device
+;     Voice Clarity DSP toggles (and only those, only with opt-in)
+;
+; Runs only on Windows 10 1809+ (build 17763+). Non-Windows is a no-op.
+; ============================================================================
+!macro NSIS_HOOK_POSTINSTALL
+  ${IfNot} ${AtLeastWin10}
+    Goto voice_setup_done
+  ${EndIf}
+  
+  DetailPrint "Miracle Claw: installing Windows speech recognition language data..."
+  ; Iterate the user's preferred UI languages (top 3) and install matching
+  ; offline speech recognition FODs. Languages we can't resolve are skipped.
+  ; Each FOD is ~30-60MB; total install time budget: 5 minutes max.
+  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$$ErrorActionPreference = ''SilentlyContinue''; ^
+     try { ^
+       $$langs = @(Get-WinUserLanguageList).LanguageTag | Select-Object -First 3; ^
+       foreach ($$l in $$langs) { ^
+         $$bcp = $$l -replace ''-'', ''_''; ^
+         $$cap = ''Language.Speech~~~und-SPEECH~~'' + $$bcp; ^
+         $$state = (Get-WindowsCapability -Online -Name $$cap -ErrorAction SilentlyContinue).State; ^
+         if ($$state -ne ''Installed'') { ^
+           Write-Host ''[MC-Voice] Adding speech FOD: '' $$cap; ^
+           $$p = Start-Process -FilePath ''dism'' -ArgumentList @(''/Online'',''/Add-Capability'',''/CapabilityName:''+$$cap,''/NoRestart'') -Wait -PassThru -WindowStyle Hidden; ^
+           if ($$p.ExitCode -ne 0) { Write-Host ''[MC-Voice] FOD install failed (code '' $$p.ExitCode '') for '' $$cap } ^
+         } else { ^
+           Write-Host ''[MC-Voice] Speech FOD already installed: '' $$cap ^
+         } ^
+       } ^
+     } catch { Write-Host ''[MC-Voice] FOD enumeration failed: '' $$_.Exception.Message }"'
+  
+  DetailPrint "Miracle Claw: verifying Windows speech components..."
+  ; Verify SAPI 5 (System.Speech) is present. SAPI is built into Windows
+  ; 10/11 by default but is stripped from N/KN editions (Europe/Korea).
+  ; If missing, enable via DISM Optional Feature. Failure is non-fatal —
+  ; we just log and continue (Whisper.cpp still works).
+  nsExec::ExecToLog 'powershell -NoProfile -Command ^
+    "if (-not (Test-Path $$env:windir\System32\Speech\Common\sapi.dll)) { ^
+       Write-Host ''[MC-Voice] SAPI missing, attempting install via DISM''; ^
+       dism /Online /Enable-Feature /FeatureName:SpeechRec /All /NoRestart | Out-Null ^
+     } else { ^
+       Write-Host ''[MC-Voice] SAPI present'' ^
+     }"'
+  
+  ; If user opted into Voice Clarity on the installer page, record the flag.
+  ; The actual DSP mode is applied at app runtime via WASAPI stream category
+  ; (see Rust audio_speech_mode.rs), NOT as a system-wide policy.
+  ${If} $VoiceClarityOptIn == 1
+    DetailPrint "Miracle Claw: recording Voice Clarity opt-in for app runtime..."
+    WriteRegDWORD HKLM "SOFTWARE\MiracleClaw" "VoiceClaritySystemWide" 1
+  ${EndIf}
+  
+  ; Always: write the voice-stack-installed flag so the first-run wizard knows
+  WriteRegDWORD HKLM "SOFTWARE\MiracleClaw" "VoiceStackInstalled" 1
+  WriteRegDWORD HKLM "SOFTWARE\MiracleClaw" "VoiceStackBuild" ${VERSIONWITHBUILD}
+  WriteRegStr HKLM "SOFTWARE\MiracleClaw" "VoiceStackInstalledAt" "$(%datetime%)"
+  
+  voice_setup_done:
+!macroend
+
+; ============================================================================
+; Lesson TBD — uninstall mirror (2026-08-27)
+;
+; Removes the HKLM\MiracleClaw\VoiceStackInstalled flag we wrote on install.
+; We deliberately do NOT remove the speech FODs — they're tiny (~50MB each),
+; they're benign system components the user might use elsewhere, and removing
+; them via DISM during uninstall is slow + can fail on locked files.
+;
+; If the user wants them gone, they can remove via:
+;   Settings → Apps → Optional features → Speech recognition language data
+; ============================================================================
+!macro NSIS_HOOK_POSTUNINSTALL
+  DeleteRegValue HKLM "SOFTWARE\MiracleClaw" "VoiceStackInstalled"
+  DeleteRegValue HKLM "SOFTWARE\MiracleClaw" "VoiceStackBuild"
+  DeleteRegValue HKLM "SOFTWARE\MiracleClaw" "VoiceStackInstalledAt"
+  DeleteRegValue HKLM "SOFTWARE\MiracleClaw" "VoiceClaritySystemWide"
+  DeleteRegKey /ifempty HKLM "SOFTWARE\MiracleClaw"
 !macroend
 
 Var PassiveMode
@@ -423,6 +531,48 @@ Var AppStartMenuFolder
   !define MUI_PAGE_CUSTOMFUNCTION_PRE Skip
 !endif
 !insertmacro MUI_PAGE_STARTMENU Application $AppStartMenuFolder
+
+; 6.5. Voice setup page (Lesson TBD, 2026-08-27).
+; Lets the user opt into Windows Voice Clarity (system-wide DSP preference
+; flag). Skipped in passive/silent mode — defaults to opt-out then, since
+; we won't have a chance to show the page. The auto-install of speech
+; recognition FODs always runs regardless of this page.
+Var VoiceClarityCheckbox
+!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipVoicePageIfPassive
+Page custom PageVoiceSetup PageLeaveVoiceSetup
+Function SkipVoicePageIfPassive
+  ${IfThen} $PassiveMode = 1 ${|} Abort ${|}
+FunctionEnd
+Function PageVoiceSetup
+  ${IfThen} $(^RTL) = 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
+  nsDialogs::Create 1018
+  Pop $0
+
+  ${NSD_CreateLabel} 0 0 100% 12u "Miracle Claw voice setup"
+  Pop $1
+
+  ${NSD_CreateLabel} 0 16u 100% 32u "Miracle Claw will install offline speech recognition language data for your Windows display languages. This is what powers voice typing on Windows.$\r$\n$\r$\nOptional: enable Windows Voice Clarity for clearer mic input in noisy environments. This applies to all apps on this device."
+  Pop $2
+
+  ${NSD_CreateCheckbox} 0 64u 100% 12u "Enable Windows Voice Clarity (recommended for noisy environments)"
+  Pop $VoiceClarityCheckbox
+
+  ; Default unchecked — the user has to opt in. Show recommended hint.
+  ; ${NSD_Check} $VoiceClarityCheckbox  ; intentionally OFF by default
+
+  ${NSD_CreateLabel} 0 82u 100% 30u "If unchecked, you can enable Voice Clarity later from Settings → Sound → your microphone → Audio enhancements."
+  Pop $3
+
+  nsDialogs::Show
+FunctionEnd
+Function PageLeaveVoiceSetup
+  ${NSD_GetState} $VoiceClarityCheckbox $0
+  ${If} $0 == ${BST_CHECKED}
+    StrCpy $VoiceClarityOptIn 1
+  ${Else}
+    StrCpy $VoiceClarityOptIn 0
+  ${EndIf}
+FunctionEnd
 
 ; 7. Installation page
 !insertmacro MUI_PAGE_INSTFILES
