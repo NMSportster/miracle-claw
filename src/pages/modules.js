@@ -237,10 +237,8 @@ const MODULE_CATALOG = [
     description: "Read issues, summarize PRs, search code across your repositories. Works with public and private repos.",
     publisher: "Miracle Claw",
     version: "0.1.0",
-    status: "available",
+    status: "coming_soon",
     tags: ["developer", "code"],
-    downloadUrl: "https://milagrocloud.com/downloads/miracle-claw-github-0.1.0.tar.gz",
-    hookLocation: "Developer",
   },
   {
     id: "sql",
@@ -249,10 +247,8 @@ const MODULE_CATALOG = [
     description: "Connect to Postgres, MySQL, or SQLite. Ask questions about your data in plain English.",
     publisher: "Miracle Claw",
     version: "0.1.0",
-    status: "available",
+    status: "coming_soon",
     tags: ["developer", "data"],
-    downloadUrl: "https://milagrocloud.com/downloads/miracle-claw-sql-0.1.0.tar.gz",
-    hookLocation: "Developer",
   },
   {
     id: "abtest",

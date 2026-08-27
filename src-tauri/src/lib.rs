@@ -2542,19 +2542,33 @@ struct VoiceNativeCaptureResult {
 
 /// Locate the bundled `mc-voice-native-capture.ps1` helper. The script
 /// ships as a `tauri.conf.json` resource and lives next to the .exe
-/// under `resources/` in production, or under `installer-assets/` in
-/// dev builds. We try both locations.
+/// under `installer-assets/` in production (NSIS places resources
+/// declared as `installer-assets/*` at the install root, NOT under
+/// `resources/`). In dev builds it lives under
+/// `src-tauri/installer-assets/`. We try every plausible location.
+///
+/// Lesson 709 (rc54.4): the production install layout drops PS1 files
+/// into `<install_dir>/installer-assets/`, NOT `resources/`. Pre-rc54.4
+/// the find function only checked `resources/`, causing a confusing
+/// "Could not launch PowerShell" runtime error on first click. Adding
+/// the installer-assets sibling path was enough to fix it.
 #[cfg(windows)]
 fn find_voice_native_capture_script() -> std::path::PathBuf {
     use std::path::PathBuf;
 
-    // Production: <install_dir>/resources/mc-voice-native-capture.ps1
-    // (Tauri copies resources[] into a sibling resources/ dir at install.)
+    // Production: <install_dir>/installer-assets/mc-voice-native-capture.ps1
+    // (NSIS_HOOK_POSTINSTALL copies `installer-assets/*` to a sibling
+    // dir at install time — see installer.nsi line 132.)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            let candidate = parent.join("resources").join("mc-voice-native-capture.ps1");
+            let candidate = parent.join("installer-assets").join("mc-voice-native-capture.ps1");
             if candidate.exists() {
                 return candidate;
+            }
+            // Legacy location (older rc54.x builds used resources/):
+            let legacy = parent.join("resources").join("mc-voice-native-capture.ps1");
+            if legacy.exists() {
+                return legacy;
             }
         }
     }
@@ -2572,7 +2586,7 @@ fn find_voice_native_capture_script() -> std::path::PathBuf {
 
     // Fall back to the most likely path so the error message points
     // somewhere useful. The caller will fail on spawn anyway.
-    PathBuf::from("resources/mc-voice-native-capture.ps1")
+    PathBuf::from("installer-assets/mc-voice-native-capture.ps1")
 }
 
 /// Native Windows STT capture using SAPI 5. Called from the patched

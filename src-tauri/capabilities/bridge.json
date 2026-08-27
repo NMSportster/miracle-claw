@@ -16,6 +16,7 @@
     "allow-mc-module-install-local",
     "allow-mc-module-install-url",
     "allow-mc-module-uninstall",
-    "allow-mc-module-call"
+    "allow-mc-module-call",
+    "allow-mc-voice-native-capture"
   ]
 }

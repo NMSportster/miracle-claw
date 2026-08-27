@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.0.1 polish queue
 
+### v1.1.0-rc54.4 — 2026-08-27 (cross-window ACL + PS1 path bugfixes)
+
+#### Cross-window ACL fix for `mc_voice_native_capture` (Lesson 709)
+- The chat UI hosted at `http://127.0.0.1:28789/` activates the `bridge.json` capability (remote URL pattern, local-only false), NOT the `main.json` capability. Previous rc54.x had `bridge.json` scoped to 9 commands: `allow-back-to-dashboard`, `allow-mc-open-overlay`, `allow-mc-close-overlay`, `allow-mc-module-list`, `allow-mc-module-install-local`, `allow-mc-module-install-url`, `allow-mc-module-uninstall`, `allow-mc-module-call`. The new `allow-mc-voice-native-capture` was missing from that list, so the runtime ACL check fired "not allowed by ACL" even though the command was registered in `app_commands.toml` and the binary's compiled ACL registry.
+- Fix: add `"allow-mc-voice-native-capture"` to `bridge.json` permissions. One-line patch, no Rust changes required. Verified via regenerated `gen/schemas/capabilities.json` (bridge-capability now includes the new permission).
+
+#### PS1 helper path resolution (Lesson 709)
+- `find_voice_native_capture_script()` looked for the bundled PS1 helper under `<install_dir>/resources/` but NSIS places resources declared as `installer-assets/*` at the install root (`<install_dir>/installer-assets/`), NOT inside `resources/`. Pre-rc54.4 this caused "Could not launch PowerShell" runtime errors on first click.
+- Fix: production layout check now looks in `installer-assets/` first, then `resources/` as legacy fallback. Dev-build fallback paths unchanged.
+
+#### GitHub Helper + SQL Buddy temporarily reverted to `coming_soon`
+- Both modules were flipped to `available` in rc54.3 but the actual `miracle-claw-github-0.1.0.tar.gz` and `miracle-claw-sql-0.1.0.tar.gz` tarballs were never built or uploaded to `/opt/maic/dist/`. Users got `HTTP 404 Not Found` on install.
+- Reverted both to `status: "coming_soon"` in `src/pages/modules.js` until the modules are actually built and published per the Lesson 708 three-step manual publish flow. Will re-flip once tarballs exist.
+
 ### v1.1.0-rc54.3 — 2026-08-27 (native Windows voice + module catalog expansion)
 
 #### Native Windows STT for the OpenClaw voice button (Lesson 706)
