@@ -128,13 +128,19 @@ Var VoiceClarityOptIn
 ;     Voice Clarity DSP toggles (and only those, only with opt-in)
 ;
 ; Runs only on Windows 10 1809+ (build 17763+). Non-Windows is a no-op.
+;
+; Lesson TBD (2026-08-27, ${IfNot} macro pitfall): The LogicLib
+; `${IfNot}` macro takes 4 params (condition + THEN + ELSE + end-of-line
+; markers) — it expands to `!insertmacro _If` which requires all 4.
+; But `${If} ${AtLeastWin10}` already encapsulates the version test,
+; so the correct pattern is just `${If} ${AtLeastWin10} ... ${EndIf}`
+; with no outer `${IfNot}`. The WinVer.nsh docs only show `If` usage,
+; not `IfNot`, for version macros. Using `${IfNot} ${AtLeastWin10}`
+; fails the build with `macro "_If" requires 4 parameter(s), passed 2`.
 ; ============================================================================
 !macro NSIS_HOOK_POSTINSTALL
-  ${IfNot} ${AtLeastWin10}
-    Goto voice_setup_done
-  ${EndIf}
-  
-  DetailPrint "Miracle Claw: installing Windows speech recognition language data..."
+  ${If} ${AtLeastWin10}
+    DetailPrint "Miracle Claw: installing Windows speech recognition language data..."
   ; Iterate the user's preferred UI languages (top 3) and install matching
   ; offline speech recognition FODs. Languages we can't resolve are skipped.
   ; Each FOD is ~30-60MB; total install time budget: 5 minutes max.
@@ -168,7 +174,10 @@ Var VoiceClarityOptIn
      } else { ^
        Write-Host ''[MC-Voice] SAPI present'' ^
      }"'
-  
+
+  voice_setup_done:
+  ${EndIf}
+
   ; If user opted into Voice Clarity on the installer page, record the flag.
   ; The actual DSP mode is applied at app runtime via WASAPI stream category
   ; (see Rust audio_speech_mode.rs), NOT as a system-wide policy.
@@ -176,13 +185,12 @@ Var VoiceClarityOptIn
     DetailPrint "Miracle Claw: recording Voice Clarity opt-in for app runtime..."
     WriteRegDWORD HKLM "SOFTWARE\MiracleClaw" "VoiceClaritySystemWide" 1
   ${EndIf}
-  
+
   ; Always: write the voice-stack-installed flag so the first-run wizard knows
+  ; (even on Win7/8 the flag is meaningful for our diagnostics UI)
   WriteRegDWORD HKLM "SOFTWARE\MiracleClaw" "VoiceStackInstalled" 1
   WriteRegDWORD HKLM "SOFTWARE\MiracleClaw" "VoiceStackBuild" ${VERSIONWITHBUILD}
   WriteRegStr HKLM "SOFTWARE\MiracleClaw" "VoiceStackInstalledAt" "$(%datetime%)"
-  
-  voice_setup_done:
 !macroend
 
 ; ============================================================================
