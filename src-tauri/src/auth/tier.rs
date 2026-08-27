@@ -326,10 +326,15 @@ pub fn tier_default_fallbacks(tier: Tier) -> &'static [&'static str] {
 /// `minMcVersion` constraint.
 ///
 /// MC versions look like `"1.1.0-rc53.15"`. For v1 we compare the
-/// release-trailer integer (the `15` in `rc53.15`) — same scheme
-/// miracle-claw-tauri-rebuild uses. If parsing fails on either side,
-/// we FAIL OPEN (return Ok) so a module built against a future version
-/// string doesn't block installs of old MC. We log a warning instead.
+/// `(rc_major, hotfix)` tuple — same scheme miracle-claw-tauri-rebuild
+/// uses. **Important**: the hotfix alone is NOT a total order. Once
+/// we cross an `rc<n+1>.0` boundary, the hotfix resets to 0 and any
+/// `rc<n>.x` becomes OLDER than any `rc<n+1>.y`. So `rc54.1` is
+/// newer than `rc53.28`, even though `1 < 28`.
+///
+/// If parsing fails on either side, we FAIL OPEN (return Ok) so a
+/// module built against a future version string doesn't block
+/// installs of old MC. We log a warning instead.
 ///
 /// Future: when MC goes 1.0.0 → 2.0.0, switch to semver crate.
 pub fn assert_version_compatible_with_module(
@@ -338,14 +343,14 @@ pub fn assert_version_compatible_with_module(
     let current = env!("CARGO_PKG_VERSION");
     let required = &manifest.min_mc_version;
 
-    let current_n = parse_rc_trailer(current);
-    let required_n = parse_rc_trailer(required);
+    let current_v = parse_rc_version(current);
+    let required_v = parse_rc_version(required);
 
-    match (current_n, required_n) {
+    match (current_v, required_v) {
         (Some(c), Some(r)) if c >= r => Ok(()),
         (Some(c), Some(r)) => Err(format!(
-            "MC base is {} (rc{}), module requires rc{} or higher",
-            current, c, r
+            "MC base is {} (rc{}.{}), module requires rc{}.{} or higher",
+            current, c.0, c.1, r.0, r.1
         )),
         _ => {
             eprintln!(
@@ -357,19 +362,56 @@ pub fn assert_version_compatible_with_module(
     }
 }
 
-/// Extract the integer trailer from a version like `"1.1.0-rc53.15"`.
-/// Returns `Some(15)` for that string. Returns None for any other shape.
-fn parse_rc_trailer(v: &str) -> Option<u64> {
-    // Format: <major>.<minor>.<patch>-rc<n>.<m>
-    // We want the trailing `.m` integer.
+/// Extract `(rc_major, hotfix)` from a version like `"1.1.0-rc53.15"`.
+/// Returns `Some((53, 15))` for that string. `rc54.1` → `Some((54, 1))`.
+/// `rc1` (legacy, no hotfix) → `Some((1, 0))`. Returns None for any
+/// other shape.
+fn parse_rc_version(v: &str) -> Option<(u64, u64)> {
+    // Format: <major>.<minor>.<patch>-rc<rc_major>[.<hotfix>]
     let after_rc = v.split("-rc").nth(1)?;
-    let after_dot = after_rc.split('.').nth(1)?;
-    after_dot.parse::<u64>().ok()
+    let mut parts = after_rc.split('.');
+    let rc_major: u64 = parts.next()?.parse().ok()?;
+    let hotfix: u64 = match parts.next() {
+        Some(h) => h.parse().ok()?,
+        // Legacy "rc<n>" without hotfix = treat as hotfix 0.
+        None => 0,
+    };
+    Some((rc_major, hotfix))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_rc_version_basic() {
+        // Lesson 705 (2026-08-27, David): voice module rc53.28 failed
+        // to install on MC rc54.1 because the old parser extracted
+        // only the hotfix integer, so rc54.1 parsed as 1 vs rc53.28
+        // parsed as 28. Bug: 1 < 28 → "version too old". Fix: compare
+        // (rc_major, hotfix) tuples instead.
+        assert_eq!(parse_rc_version("1.1.0-rc53.28"), Some((53, 28)));
+        assert_eq!(parse_rc_version("1.1.0-rc54.1"), Some((54, 1)));
+        assert_eq!(parse_rc_version("1.1.0-rc54.0"), Some((54, 0)));
+        assert_eq!(parse_rc_version("1.1.0-rc1"), Some((1, 0))); // legacy
+        assert_eq!(parse_rc_version("not-a-version"), None);
+        assert_eq!(parse_rc_version(""), None);
+    }
+
+    #[test]
+    fn parse_rc_version_ordering_across_rc_boundary() {
+        // The bug case: rc54.x must ALWAYS be newer than rc53.x
+        // regardless of hotfix value, because rc-major takes priority.
+        let rc54_0 = parse_rc_version("1.1.0-rc54.0").unwrap();
+        let rc54_1 = parse_rc_version("1.1.0-rc54.1").unwrap();
+        let rc53_28 = parse_rc_version("1.1.0-rc53.28").unwrap();
+        let rc53_30 = parse_rc_version("1.1.0-rc53.30").unwrap();
+
+        assert!(rc54_0 >= rc53_30, "rc54.0 must be >= rc53.30");
+        assert!(rc54_1 >= rc53_28, "rc54.1 must be >= rc53.28");
+        assert!(rc54_1 >= rc54_0, "rc54.1 must be >= rc54.0");
+        assert!(rc53_30 >= rc53_28, "rc53.30 must be >= rc53.28");
+    }
 
     #[test]
     fn tier_from_str_canonicalizes() {
