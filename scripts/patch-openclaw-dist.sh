@@ -136,42 +136,70 @@ while IFS= read -r patch_file; do
             # <script> tag. Append-only patches land AFTER </html>, which
             # is invalid HTML and can fail to load in stricter parsers.
             #
-            # Idempotency: first line must be `<!-- MC-PATCH: <id> -->`.
-            # If that marker is already in the target (anywhere), skip.
-            first_line=$(head -n 1 "$patch_file")
-            marker=""
-            if [[ "$first_line" =~ ^\<!--[[:space:]]*MC-PATCH:[[:space:]]*([^[:space:]]+)[[:space:]]*--\>$ ]]; then
-                marker="<!-- MC-PATCH: ${BASH_REMATCH[1]} -->"
-            fi
-
-            if [[ -z "$marker" ]]; then
-                echo "  SKIP $rel — *.html.insert patches require first line `<!-- MC-PATCH: <id> -->`"
+            # Idempotency (Lesson 706): a single `.html.insert` may carry
+            # several `<!-- MC-PATCH: <id> -->` markers (one per logical
+            # patch). We extract ALL of them, then for each marker check
+            # whether it's already in the target. If ALL markers are
+            # present, skip. Otherwise build a body containing only the
+            # missing-marker sections + their content, and inject that.
+            all_markers=$(grep -oE '^<!--[[:space:]]*MC-PATCH:[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*-->' "$patch_file" || true)
+            if [[ -z "$all_markers" ]]; then
+                echo "  SKIP $rel -- *.html.insert patches require at least one \`<!-- MC-PATCH: <id> -->\` line"
                 skipped=$((skipped + 1))
                 continue
             fi
+            first_marker=$(echo "$all_markers" | head -n 1)
+            marker_count=$(echo "$all_markers" | wc -l | tr -d ' ')
 
-            if grep -qF "$marker" "$target" 2>/dev/null; then
-                echo "  SKIP $rel (marker $marker already present)"
+            # Determine which markers are missing from target.
+            missing_list=""
+            while IFS= read -r m; do
+                [[ -z "$m" ]] && continue
+                if ! grep -qF "$m" "$target" 2>/dev/null; then
+                    missing_list+="$m"$'\n'
+                fi
+            done <<< "$all_markers"
+            if [[ -z "$missing_list" ]]; then
+                echo "  SKIP $rel (all $marker_count markers already present)"
                 skipped=$((skipped + 1))
                 continue
             fi
+            missing_count=$(echo "$missing_list" | grep -c .)
 
             if ! grep -qF '</body>' "$target" 2>/dev/null; then
-                echo "  SKIP $rel — target has no </body> sentinel (openclaw HTML structure changed?)"
+                echo "  SKIP $rel -- target has no </body> sentinel (openclaw HTML structure changed?)"
                 skipped=$((skipped + 1))
                 continue
             fi
 
             if ! $DRY_RUN; then
-                # Strip the leading marker line from the patch file (the
-                # patcher injects it as a marker before insertion).
-                body="$(tail -n +2 "$patch_file")"
+                # Build a synthetic patch body containing only the
+                # sections whose markers are missing. Each section runs
+                # from its `<!-- MC-PATCH: ... -->` marker through the
+                # next blank line / EOF / next marker. We do NOT echo a
+                # synthetic first_marker here -- the awk pass emits every
+                # missing marker's section in order.
                 tmp="$(mktemp)"
-                {
-                    echo "$marker"
-                    echo "<!-- Lesson 511: inserted by scripts/patch-openclaw-dist.sh before </body> -->"
-                    printf '%s\n' "$body"
-                } > "$tmp"
+                echo "<!-- Lesson 511 + 706: inserted by scripts/patch-openclaw-dist.sh before </body> -->" > "$tmp"
+                awk -v missing="$missing_list" '
+                    BEGIN {
+                        n = split(missing, arr, "\n")
+                        for (i = 1; i <= n; i++) if (arr[i] != "") want[arr[i]] = 1
+                    }
+                    /^<!--[[:space:]]*MC-PATCH:[[:space:]]*/ {
+                        line = $0
+                        match(line, /<!--[[:space:]]*MC-PATCH:[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*-->/)
+                        m = substr(line, RSTART, RLENGTH)
+                        keep = (m in want)
+                        # Print the marker line itself when we are
+                        # keeping this section -- the marker must end
+                        # up in target for idempotency to work on the
+                        # next run (Lesson 706).
+                        if (keep) print
+                        next
+                    }
+                    keep { print }
+                ' "$patch_file" >> "$tmp"
                 # Insert before </body>: split target, splice in tmp, recombine.
                 awk -v ins="$tmp" '
                     /<\/body>/ && !inserted {
@@ -182,9 +210,9 @@ while IFS= read -r patch_file; do
                     { print }
                 ' "$target" > "$target.new" && mv "$target.new" "$target"
                 rm -f "$tmp"
-                echo "$rel $marker" >> "$APPLIED_LOG"
+                echo "$rel INSERT-missing" >> "$APPLIED_LOG"
             fi
-            echo "  INSERT $rel (marker $marker, before </body>)"
+            echo "  INSERT $rel (missing $missing_count of $marker_count markers)"
             applied=$((applied + 1))
             ;;
 

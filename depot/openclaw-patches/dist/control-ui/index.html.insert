@@ -5,7 +5,7 @@
      page. Both render the same visual style; click handlers are
      independent. Patch is idempotent: this marker prevents re-applying. -->
 <script type="module" src="./mc-back-button.js"></script>
-<!-- Lesson 243 (rc53.9), Lesson 244 (rc53.10): 🔑 Secrets + 📎 Attach
+<!-- Lesson 243 (rc53.9), Lesson 244 (rc53.10): 🔑 Secrets + � Attach
      floating toolbar at the top-right of the OpenClaw chat page.
      David asked 2026-08-23 for the secrets and dragndrop icons on the
      right side of the chat topbar (which we can't splice into because
@@ -20,3 +20,11 @@
      hash) consume it. URL hash fallback retained for dev/test runs
      without the bridge. mc-chat-toolbar.js has its own idempotent gate. -->
 <script type="module" src="./mc-chat-toolbar.js"></script>
+<!-- MC-PATCH: mc-voice-native -->
+<!-- Lesson 706 (rc54.3): native Windows SAPI 5 STT for the OpenClaw
+     chat voice button. Intercepts clicks on .chat-send-btn--voice /
+     .chat-send-btn--stop BEFORE React's handler runs (capture phase)
+     and routes to the Rust `mc_voice_native_capture` Tauri command
+     instead of the cloud Realtime Talk path. 10-50x faster, offline,
+     free for all users. Idempotent via data-mc-voice-native-patched. -->
+<script type="module" src="./mc-voice-native.js"></script>
