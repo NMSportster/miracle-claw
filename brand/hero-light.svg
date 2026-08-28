@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720">
+  <defs>
+    <style>
+      .word { font-family: "Manrope", "Ubuntu Sans", "Helvetica Neue", system-ui, sans-serif; font-weight: 800; font-size: 220px; letter-spacing: -5px; }
+      .tag  { font-family: "Manrope", "Ubuntu Sans", "Helvetica Neue", system-ui, sans-serif; font-weight: 700; font-size: 44px; letter-spacing: 0; }
+    </style>
+  </defs>
+  <rect width="1280" height="720" fill="#FFFFFF"/>
+  <g transform="translate(160, 120) scale(1.05)">
+    <text x="20" y="190" class="word" fill="#0E5A6A">M</text>
+    <path d="M 275 72 L 185 285 L 245 285 L 225 420 L 315 207 L 255 207 Z" fill="#F5C518"/>
+    <text x="335" y="190" class="word" fill="#000000">racle</text>
+    <text x="20" y="420" class="word" fill="#0E5A6A">C</text>
+    <text x="335" y="420" class="word" fill="#000000">aw</text>
+  </g>
+  <text x="160" y="670" class="tag" fill="#0E5A6A">Miracle Claw is built for You, not for everyone!</text>
+</svg>

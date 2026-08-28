@@ -40,3 +40,15 @@ yarn-debug.log*
 
 # Backup files from edits
 depot/maic-plugin/index.js.bak
+
+# Brand assets — only canonical files in git, intermediates are local-only
+brand/__pycache__/
+brand/variants/
+brand/variants2/
+brand/icon-preview.png
+brand/icon-sizes.png
+brand/master-preview.png
+brand/master-preview@2x.png
+brand/master-sizes.png
+brand/lockup-horizontal-preview.png
+brand/lockup-horizontal.svg

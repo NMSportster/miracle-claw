@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 540" width="920" height="540">
+  <defs>
+    <style>
+      .uc { font-family: "Manrope", "Ubuntu Sans", "Helvetica Neue", system-ui, sans-serif; font-weight: 800; font-size: 180px; letter-spacing: -4px; }
+      .lc { font-family: "Manrope", "Ubuntu Sans", "Helvetica Neue", system-ui, sans-serif; font-weight: 800; font-size: 180px; letter-spacing: -2px; }
+    </style>
+  </defs>
+  <text x="20" y="190" class="uc" fill="#0E5A6A">M</text>
+  <path d="M 275 72 L 185 285 L 245 285 L 225 420 L 315 207 L 255 207 Z" fill="#F5C518"/>
+  <text x="330" y="190" class="lc" fill="#000000">racle</text>
+  <text x="20" y="420" class="uc" fill="#0E5A6A">C</text>
+  <text x="330" y="420" class="lc" fill="#000000">aw</text>
+</svg>

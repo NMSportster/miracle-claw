@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <defs>
+    <style>
+      .word { font-family: "Manrope", "Ubuntu Sans", "Helvetica Neue", system-ui, sans-serif; font-weight: 800; font-size: 220px; letter-spacing: -5px; }
+      .tag  { font-family: "Manrope", "Ubuntu Sans", "Helvetica Neue", system-ui, sans-serif; font-weight: 600; font-size: 38px; letter-spacing: 0; }
+    </style>
+  </defs>
+  <!-- Background: deep teal #0A3A45 -->
+  <rect width="1280" height="640" fill="#0A3A45"/>
+  <!-- Top right: small F icon (white bg + gold border) at 200x200 -->
+  <g transform="translate(1020, 60)">
+    <rect x="0" y="0" width="200" height="200" rx="40" ry="40" fill="#FFFFFF" stroke="#F5C518" stroke-width="6"/>
+    <text x="40" y="92" class="word" font-size="80" fill="#0E5A6A">M</text>
+    <path d="M 22 0 L 4 39 L 14 39 L 10 76 L 28 37 L 18 37 Z" fill="#F5C518" transform="translate(98, 53) scale(0.55)"/>
+    <text x="115" y="178" class="word" font-size="80" fill="#0E5A6A">C</text>
+  </g>
+  <!-- Wordmark, scaled to fit: original 920x540, scale by min(960/920, 480/540) = 0.889 -->
+  <g transform="translate(80, 130) scale(0.96)">
+    <text x="20" y="190" class="word" fill="#0E5A6A">M</text>
+    <!-- Bolt: original 275x72 to 315x420, scaled together -->
+    <path d="M 275 72 L 185 285 L 245 285 L 225 420 L 315 207 L 255 207 Z" fill="#F5C518"/>
+    <text x="335" y="190" class="word" fill="#FFFFFF">racle</text>
+    <text x="20" y="420" class="word" fill="#0E5A6A">C</text>
+    <text x="335" y="420" class="word" fill="#FFFFFF">aw</text>
+  </g>
+  <!-- Tagline below wordmark -->
+  <text x="80" y="600" class="tag" fill="#F5C518">Miracle Claw is built for You, not for everyone!</text>
+</svg>
