@@ -15,7 +15,7 @@
 //   - Modals (now scoped to their owning pages)
 
 import "./styles.css";
-import { register, mount as mountPage } from "./page_registry.js";
+import { register, mount as mountPage, setAuthState } from "./page_registry.js";
 // Lesson 571 (2026-08-25 00:37 MDT, David): MC Module Framework —
 // voice module wires its UI hooks (terminal toolbar, fullscreen
 // overlay, dashboard FAB) to the live `mc:module-installed` event
@@ -28,6 +28,12 @@ import { terminalPage } from "./pages/terminal.js";
 import { filesPage } from "./pages/files.js";
 import { notebookPage } from "./pages/notebook.js";
 import { secretsPage } from "./pages/secrets.js";
+// Lesson 713 (2026-08-28 06:48 MDT, David): BYO provider keys page.
+// Lets users paste their own OpenAI / Anthropic / Ollama Cloud / etc.
+// API key, which gets stored in the encrypted vault and set in the
+// Tauri process env so the openclaw runtime picks it up on the next
+// request. Auth-gated (requiresAuth: true is the default).
+import { providerKeysPage } from "./pages/provider_keys.js";
 // rc53.8 (feature/extras-hub): hub page listing all mc-* commands
 // with a "Run in Terminal" action per card. Also exposes a palette
 // action per command for keyboard-driven access.
@@ -69,6 +75,9 @@ register("notebook", notebookPage);
 // rc53.5: secrets page registered for palette use; toolbar in
 // terminal page opens it as an overlay. Not in main nav (yet).
 register("secrets", secretsPage);
+// Lesson 713: Provider Keys page registered for dashboard tile + Cmd-K
+// palette. Auth-gated — login bounce redirects to login if JWT unset.
+register("provider-keys", providerKeysPage);
 // rc53.8 (feature/extras-hub): Extras hub — mc-* companion CLIs.
 // Reachable via dashboard tile or Cmd-K palette.
 register("extras", extrasPage);
@@ -125,6 +134,13 @@ installNavigation({
       () => modulesCtx(),
     ],
     [
+      "provider-keys",
+      () => ({
+        onBackToDashboard: () => navigate("dashboard"),
+        onNeedsLogin: mountLogin,
+      }),
+    ],
+    [
       "login",
       (extras) => ({
         endpoint: (extras && extras.endpoint) || "https://maicserver.com",
@@ -176,10 +192,12 @@ async function boot() {
     // Not logged in — palette stays disabled (Ctrl+K is a no-op until
     // auth completes). The palette overlay would steal clicks from
     // the login form, so we don't enable it here.
+    setAuthState(false);
     disablePalette();
     mountLogin();
   } else {
     // Already authenticated (returning user). Palette is on.
+    setAuthState(true);
     enablePalette();
     // rc53.9 (Lesson 243): if the page loaded with `#mcAutoOpen=<key>`
     // in the URL hash, route straight to the Terminal page with the
@@ -203,10 +221,19 @@ async function boot() {
 // Disables the palette so the overlay can't steal clicks from the
 // login form (rc49 bug).
 function mountLogin(extras) {
+  // Lesson 713 (2026-08-28, David): flip auth to false so any in-flight
+  // navigate() call bails out instead of mounting a protected page while
+  // the login form is on screen. The login form's onSuccess flips it
+  // back to true before mounting the dashboard.
+  setAuthState(false);
   disablePalette();
   mountPage("login", root, {
     endpoint: (extras && extras.endpoint) || "https://maicserver.com",
     onSuccess: () => {
+      // Login succeeded — JWT is now set in the Tauri process env. Flip
+      // auth on BEFORE mounting the dashboard so the page_registry auth
+      // gate lets it through.
+      setAuthState(true);
       enablePalette();
       mountPage("dashboard", root, pageCtx());
     },
@@ -248,6 +275,10 @@ function pageCtx() {
     // so the in-app catalog hub renders the 15 modules with status
     // pills + install/open CTAs.
     onOpenModules: () => navigate("modules"),
+    // Lesson 713 (2026-08-28, David): dashboard's "Provider Keys"
+    // tile routes here so the BYO provider keys page renders the
+    // 13 supported providers with vault-encrypted storage.
+    onOpenProviderKeys: () => navigate("provider-keys"),
     // rc53.8 (feature/extras-hub): hand off to Terminal with a
     // pre-filled command + the right shell for the OS. cmd on
     // Windows, bash on Linux/macOS — both can resolve mc-* from

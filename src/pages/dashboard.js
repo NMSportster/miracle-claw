@@ -536,6 +536,24 @@ export const dashboardPage = {
                 <div class="tile-cta">Browse extras →</div>
               </div>
             </button>
+            <!-- Lesson 713 (2026-08-28, David): tile linking to the
+                 Provider Keys page. Lets users bring their own
+                 OpenAI / Anthropic / Ollama Cloud / etc. API keys,
+                 stored encrypted in the vault + injected as env vars
+                 for the openclaw runtime. -->
+            <button class="tile" id="provider-keys-tile" type="button">
+              <div class="tile-icon">🔑</div>
+              <div class="tile-body">
+                <div class="tile-title">Provider Keys</div>
+                <div class="tile-description">
+                  Bring your own API key for OpenAI, Anthropic, Ollama Cloud,
+                  Mistral, Cohere, OpenRouter, Groq, xAI, and more. Keys are
+                  stored AES-256-GCM in the local vault and never sent to MAIC.
+                  Use your own quota instead of MAIC's billing.
+                </div>
+                <div class="tile-cta">Manage keys →</div>
+              </div>
+            </button>
           </div>
 
           <!-- feature/drag-drop: file attachment staging zone. Drop a
@@ -605,6 +623,15 @@ export const dashboardPage = {
         const extrasTile = document.getElementById("extras-tile");
         if (extrasTile) {
           extrasTile.addEventListener("click", () => onOpenExtras());
+        }
+      }
+      // Lesson 713 (2026-08-28, David): dashboard tile for the
+      // Provider Keys page. Same defensive pattern as Extras — own
+      // if-block so missing ctx doesn't kill the handler.
+      if (onOpenProviderKeys) {
+        const pkTile = document.getElementById("provider-keys-tile");
+        if (pkTile) {
+          pkTile.addEventListener("click", () => onOpenProviderKeys());
         }
       }
       document.getElementById("tier-badge").addEventListener("click", () => this.refreshTier(root, ctx));

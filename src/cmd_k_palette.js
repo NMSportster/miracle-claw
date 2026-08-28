@@ -301,6 +301,14 @@ function buildCommands() {
       run: () => _deps.navigate("settings"),
     },
     {
+      id: "page.provider-keys",
+      label: "Provider Keys",
+      category: "Page",
+      icon: "🔑",
+      keywords: ["api key", "openai", "anthropic", "ollama", "byo", "bring your own", "secret"],
+      run: () => _deps.navigate("provider-keys"),
+    },
+    {
       id: "page.terminal.local",
       label: "Local Terminal",
       category: "Page",

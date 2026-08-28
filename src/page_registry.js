@@ -25,12 +25,50 @@
 //   4. If a fatal error escapes mount(), registry shows the fatal
 //      overlay and leaves the page mounted (so the error is visible).
 //
+// Auth gating (Lesson 713, 2026-08-28 06:48 MDT, David):
+//   Every page with requiresAuth=true is bounced to the login page
+//   when no JWT is set. The main.js boot path sets `isAuthenticated`
+//   after the first_run_report call; navigate() also re-checks before
+//   mounting any page. This guarantees that even a stale Cmd-K palette
+//   action or deep link can't land on a protected page with no JWT.
+//
 // Future pages (Settings, Terminal) just need to:
 //   1. Add a new file under src/pages/
 //   2. Call register('settings', { mount, unmount, ... }) at boot
 //   3. Done — main.js doesn't change.
 
 export const pages = new Map();
+
+/**
+ * Auth state. main.js calls setAuthState(true) once it sees a valid JWT
+ * (i.e. first_run_report says needs_maic_login=false) and setAuthState(false)
+ * on logout / 401 bounce. page_registry reads this on every mount().
+ *
+ * We intentionally keep this as a tiny module-local signal instead of
+ * importing the Tauri command result — every navigate() call is the
+ * source of truth, and the boot path is the only thing that flips it.
+ */
+let _isAuthenticated = false;
+
+/**
+ * Set the auth state. Called from main.js boot and from the 401 bounce
+ * path (onNeedsLogin). Safe to call multiple times.
+ *
+ * @param {boolean} authed
+ */
+export function setAuthState(authed) {
+  _isAuthenticated = !!authed;
+}
+
+/**
+ * Return the current auth state. Read by page_registry.mount() and by
+ * the Cmd-K palette to decide which actions to surface.
+ *
+ * @returns {boolean}
+ */
+export function isAuthenticated() {
+  return _isAuthenticated;
+}
 
 /**
  * Register a page by id. Idempotent — re-registering the same id
@@ -65,15 +103,41 @@ export function get(id) {
  * Mount the page identified by id into `root`. If a different page
  * is currently mounted, unmount it first.
  *
+ * Auth gate (Lesson 713, 2026-08-28): if the page requires auth and
+ * we don't have a JWT, call the onNeedsLogin callback and DON'T mount.
+ * This catches every path — boot, palette, deep link, back button —
+ * with one check. Login page itself has requiresAuth=false so it
+ * mounts cleanly on the bounce.
+ *
  * @param {string} id
  * @param {HTMLElement} root
  * @param {object} [ctx] — opaque context passed to mount() (auth state, etc.)
- * @returns {boolean} true if mount succeeded, false if page not found / mount threw
+ * @returns {boolean} true if mount succeeded, false if page not found / mount threw / auth gate fired
  */
 export function mount(id, root, ctx = {}) {
   const def = pages.get(id);
   if (!def) {
     console.error(`[page_registry] no page registered for id '${id}'`);
+    return false;
+  }
+
+  // Lesson 713: enforce requiresAuth. Login page is the only one that
+  // passes (its own requiresAuth=false), so the bounce-to-login flow
+  // always finds a valid target. main.js wires onNeedsLogin to mountLogin.
+  if (def.requiresAuth && !_isAuthenticated) {
+    const onNeedsLogin = ctx.onNeedsLogin || (typeof window !== "undefined" && window.__mc_mountLogin);
+    if (typeof onNeedsLogin === "function") {
+      console.warn(`[page_registry] auth gate: blocking mount('${id}') — bouncing to login`);
+      try {
+        onNeedsLogin();
+      } catch (e) {
+        console.error(`[page_registry] onNeedsLogin threw for '${id}':`, e);
+      }
+      return false;
+    }
+    // No onNeedsLogin wired — fail loudly so we never silently mount
+    // a protected page unauthenticated.
+    console.error(`[page_registry] auth gate: '${id}' requires auth but no onNeedsLogin available`);
     return false;
   }
 

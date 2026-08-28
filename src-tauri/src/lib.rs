@@ -60,6 +60,12 @@ mod auto_relogin;
 // src/secrets_encryption.rs.
 mod secrets_encryption;
 mod secrets_friendly;
+// Lesson 713 (2026-08-28 06:48 MDT, David): BYO provider keys — lets
+// users bring their own OpenAI/Anthropic/Ollama Cloud/etc. API key
+// instead of always routing through MAIC's billing. Stores in the
+// encrypted vault + sets process env so the openclaw runtime picks
+// it up at request time.
+mod provider_keys;
 
 // v1.0.7: tier fetching + token-quota nudges.
 pub mod auth;
@@ -79,11 +85,11 @@ pub mod modules;
 /// Default MAIC endpoint. Overridable via MAIC_API_URL env var at runtime;
 /// the login UI shows whatever this resolves to so the customer knows
 /// which server they're signing into. Lesson 444.
-const DEFAULT_ENDPOINT: &str = "https://maicserver.com";
+pub(crate) const DEFAULT_ENDPOINT: &str = "https://maicserver.com";
 
 /// MAIC API key env var. Used by `maic_login`, `needs_maic_login_from_state`,
 /// and the openclaw.json SecretRef path. Lesson 444.
-const ENV_VAR_NAME: &str = "MAIC_API_KEY";
+pub(crate) const ENV_VAR_NAME: &str = "MAIC_API_KEY";
 
 // ----------------------------------------------------------------------------
 // State we hold for the lifetime of the process
@@ -3306,6 +3312,18 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     match check_openclaw_json() {
         Ok(()) => eprintln!("[miracle-claw] openclaw.json: ok"),
         Err(e) => eprintln!("[miracle-claw] openclaw.json read error: {}", e),
+    }
+
+    // 4a. Lesson 713 (2026-08-28, David): restore BYO provider keys
+    //     from the encrypted vault into process env so the openclaw
+    //     runtime can read them on the first chat request. Best-effort:
+    //     if the vault is empty or unreadable, log and continue.
+    match provider_keys::restore_provider_keys_on_boot(&app_handle) {
+        Ok(n) if n > 0 => eprintln!(
+            "[miracle-claw] provider-keys: restored {n} BYO keys from vault into process env"
+        ),
+        Ok(_) => eprintln!("[miracle-claw] provider-keys: no BYO keys in vault"),
+        Err(e) => eprintln!("[miracle-claw] provider-keys restore error: {e}"),
     }
 
     // 5. Spawn launcher sidecar — but ONLY when we have a usable MAIC key.
@@ -6625,7 +6643,7 @@ fn secrets_vault_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-struct SecretEntry {
+pub(crate) struct SecretEntry {
     name: String,
     value: String,
     created_at: String,
@@ -6665,7 +6683,7 @@ fn validate_secret_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn now_iso() -> String {
+pub(crate) fn now_iso() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -6677,7 +6695,7 @@ fn now_iso() -> String {
     format!("epoch:{secs}")
 }
 
-fn read_vault(app: &tauri::AppHandle) -> Result<Vec<SecretEntry>, String> {
+pub(crate) fn read_vault(app: &tauri::AppHandle) -> Result<Vec<SecretEntry>, String> {
     let p = secrets_vault_path(app)?;
     if !p.exists() {
         return Ok(Vec::new());
@@ -6987,6 +7005,14 @@ pub fn run() {
             secrets_friendly::mc_secret_list_ephemerals,
             secrets_friendly::mc_secret_clear_session_ephemerals,
             secrets_friendly::mc_secret_clear_all_ephemerals,
+            // Lesson 713 (2026-08-28, David): BYO provider keys. Three
+            // commands — set/list/clear — all gated behind MAIC_API_KEY
+            // (JWT) in env. Storage: encrypted vault. Runtime injection:
+            // std::env::set_var so the openclaw plugin reads it via
+            // process.env.<KEY>.
+            provider_keys::mc_set_provider_key,
+            provider_keys::mc_list_provider_keys,
+            provider_keys::mc_clear_provider_key,
             // v1.1.0-rc53.15 (Lesson 570): MC Module Framework.
             // Voice is the first module; future modules (OCR, TTS,
             // local search) follow the same pattern.
