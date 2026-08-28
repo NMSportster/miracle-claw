@@ -376,7 +376,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     ```
     If the kill fails (no process running), the install proceeds
     anyway — `nsExec::ExecToLog` swallows the error code.
-- ADeal green branding (splash, theme, system tray icon).
+- Milagro green branding (splash, theme, system tray icon).
   - Tray icon also solves Lesson 430 by giving the user a "Quit" affordance.
 - Code signing (Windows SmartScreen "Unknown publisher" → gone).
 - Auto-updater (manual reinstall for now).
@@ -492,8 +492,8 @@ match the installable state. v5 is the installable state.
 - **Lesson 426:** Verify schema shapes from the bundled validator (zod-schema-*.js), not from memory.
 - **Lesson 428:** Tauri `bundle.resources` is an explicit allowlist, not a directory copy.
 
-[unreleased]: https://github.com/adealauto/miracle-claw/compare/v1.0.0...HEAD
-[v1.0.0]: https://github.com/adealauto/miracle-claw/releases/tag/v1.0.0
+[unreleased]: https://github.com/NMSportster/miracle-claw/compare/v1.0.0...HEAD
+[v1.0.0]: https://github.com/NMSportster/miracle-claw/releases/tag/v1.0.0
 
 ---
 
@@ -532,7 +532,7 @@ match the installable state. v5 is the installable state.
 6. Set `MAIC_API_KEY`, restart, send chat → expect chat to work
 7. If 6 passes, **tag v1.0.1 at commit a5a5ed6**
 
-[v1.0.1-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.0...a5a5ed6
+[v1.0.1-rc1]: https://github.com/NMSportster/miracle-claw/compare/v1.0.0...a5a5ed6
 
 ---
 
@@ -547,7 +547,7 @@ match the installable state. v5 is the installable state.
 - **Frontend stack (vanilla HTML/JS, no framework):**
   - `index.html` — Vite root, ~600 bytes built
   - `src/main.js` — entry logic: `invoke('first_run_report')` → render form OR redirect
-  - `src/styles.css` — vanilla CSS, dark/light via `prefers-color-scheme`, ADeal auto-repair green `#22c55e` accent
+  - `src/styles.css` — vanilla CSS, dark/light via `prefers-color-scheme`, Milagro green `#22c55e` accent
   - `vite.config.js` — port 1420, `strictPort: true`
   - Total Vite output: ~7 KB
 - **Backend:**
@@ -600,7 +600,7 @@ match the installable state. v5 is the installable state.
 9. Modal closes, chat UI loads at `http://localhost:28789/`
 10. Send a chat message → expect response from MAIC (Lesson 432 — actual release gate)
 
-[v1.0.1-rc2]: https://github.com/adealauto/miracle-claw/compare/v1.0.1-rc1...47640b1
+[v1.0.1-rc2]: https://github.com/NMSportster/miracle-claw/compare/v1.0.1-rc1...47640b1
 
 ## [v1.0.2-rc1] — 2026-08-18 21:05 MDT (commit `bbb1ff0`)
 
@@ -636,7 +636,7 @@ match the installable state. v5 is the installable state.
 9. Modal closes, chat UI loads at `http://localhost:28789/`
 10. Send a chat message → expect response from MAIC (Lesson 432 — actual release gate)
 
-[v1.0.2-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.1-rc2...bbb1ff0
+[v1.0.2-rc1]: https://github.com/NMSportster/miracle-claw/compare/v1.0.1-rc2...bbb1ff0
 
 ## [v1.0.3-rc1] — 2026-08-18 21:50 MDT (commit `bdbe2cf`)
 
@@ -736,7 +736,7 @@ match the installable state. v5 is the installable state.
 11. Send a chat message → expect response from MAIC (Lesson 432 — actual
     release gate)
 
-[v1.0.3-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.2-rc1...bdbe2cf
+[v1.0.3-rc1]: https://github.com/NMSportster/miracle-claw/compare/v1.0.2-rc1...bdbe2cf
 
 ## [v1.0.4-rc1] — 2026-08-18 22:55 MDT (commit `63bc70c`)
 
@@ -813,7 +813,7 @@ match the installable state. v5 is the installable state.
 10. Verify the selected model in the response is `milagro-dev` (the
     default in `src/main.js`)
 
-[v1.0.4-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.3-rc1...63bc70c
+[v1.0.4-rc1]: https://github.com/NMSportster/miracle-claw/compare/v1.0.3-rc1...63bc70c
 
 ## [v1.0.5-rc1] — 2026-08-18 23:55 MDT (commit `429ab9e`)
 
@@ -868,7 +868,7 @@ match the installable state. v5 is the installable state.
 8. Modal closes, chat UI loads
 9. **Send a chat message → expect response** (no more "model not found").
 
-[v1.0.5-rc1]: https://github.com/adealauto/miracle-claw/compare/v1.0.4-rc1...593d4d1
+[v1.0.5-rc1]: https://github.com/NMSportster/miracle-claw/compare/v1.0.4-rc1...593d4d1
 
 ## [v1.0.6-rc1] — 2026-08-19 08:04 MDT (commit `39a7917`, installer `48cff6ab9313c17a5442666f95e0e3cf`)
 
@@ -984,12 +984,12 @@ match the installable state. v5 is the installable state.
 4. Launch → login modal appears with the new "Stay signed in" checkbox
 5. Enter `championnm@yahoo.com` + password, **leave checkbox UNCHECKED**
 6. Verify login works, chat works
-7. Log out via Windows Credential Manager (clear `com.adealauto.miracle-claw`)
+7. Log out via Windows Credential Manager (clear `com.milagrocloud.miracle-claw`)
    OR sign out via the upcoming v1.1.0 dashboard
 8. Re-login, this time **CHECK the checkbox**
 9. Verify login works, chat works
 10. **Keychain check**: open Windows Credential Manager → Web Credentials
-    → look for `com.adealauto.miracle-claw` → should see two entries
+    → look for `com.milagrocloud.miracle-claw` → should see two entries
     (`cached-creds-key` + `cached-creds`)
 11. Restart MC → chat should still work (JWT was re-baked on login)
 12. **Known-limitation check**: wait for JWT to expire OR rotate MAIC_API_KEY
@@ -1195,7 +1195,7 @@ match the installable state. v5 is the installable state.
     the `tier_changed` flag is shipped, the modal fires once.
 11. **Logout check**: click "Sign out" in dashboard footer → returns
     to login form. Keychain entries are wiped (Windows Credential
-    Manager → look for `com.adealauto.miracle-claw` after logout).
+    Manager → look for `com.milagrocloud.miracle-claw` after logout).
 12. **Re-login check**: log back in → dashboard appears, no errors.
 
 ### Next
@@ -2031,7 +2031,7 @@ views, this sidesteps the multi-webview init path entirely.
 
 `nuke_webview2_cache_dir()` hardcodes `MiracleClaw\EBWebView` but
 Tauri's WebView2 user-data-dir uses the bundle identifier, so the
-actual path is `com.adealauto.miracle-claw\EBWebView`. The nuke is
+actual path is `com.milagrocloud.miracle-claw\EBWebView`. The nuke is
 a no-op every time on David's system. Lesson 470's
 "cache-poisoning is the root cause" hypothesis was wrong, but the
 nuke-path bug is independently a real bug worth fixing in a future

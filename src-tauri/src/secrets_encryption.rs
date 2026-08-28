@@ -13,7 +13,7 @@
 //! 1. **Generates a per-install 32-byte master key** on first save,
 //!    stored in the **OS keychain** (Windows Credential Manager, macOS
 //!    Keychain, Linux Secret Service) under service
-//!    `com.adealauto.miracle-claw`, user `secrets-vault-v1`.
+//!    `com.milagrocloud.miracle-claw`, user `secrets-vault-v1`.
 //! 2. **Encrypts the entire vault** as a single AES-256-GCM blob.
 //!    On-disk format: `nonce (12B) || ciphertext || tag (16B)` (auto_relogin's
 //!    `encrypt_blob` already produces this shape).
@@ -63,7 +63,7 @@ use std::sync::OnceLock;
 
 /// OS keychain service identifier. Matches `auto_relogin::SERVICE` so the
 /// keychain entry groups with cached creds in Credential Manager.
-const SERVICE: &str = "com.adealauto.miracle-claw";
+const SERVICE: &str = "com.milagrocloud.miracle-claw";
 
 /// Keychain "user" string for the vault master key. Versioned so a future
 /// algorithm migration can read the v1 key without breaking (yet), then

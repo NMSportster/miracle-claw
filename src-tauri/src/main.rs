@@ -2,7 +2,7 @@
 //
 // Starts the OpenClaw gateway as a child process and opens the webview.
 //
-// Architecture (from /home/adeal/.openclaw/workspace/projects/miracle-claw/README.md):
+// Architecture (see ../../README.md for the full picture):
 //   Tauri.exe (Rust)
 //     └─ child process: node openclaw gateway --port 28789
 //     └─ webview: http://localhost:28789/

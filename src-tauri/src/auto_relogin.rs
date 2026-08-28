@@ -15,7 +15,7 @@
 //!
 //! ## Storage layout
 //!
-//! Two keychain entries, both namespaced under `com.adealauto.miracle-claw`:
+//! Two keychain entries, both namespaced under `com.milagrocloud.miracle-claw`:
 //! - `cached-creds`        : JSON envelope containing `endpoint` + base64(
 //!                            nonce (12 bytes) || ciphertext || tag (16) )
 //! - `cached-creds-key`    : base64( 32 random bytes — the AES-256 key )
@@ -65,7 +65,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-const SERVICE: &str = "com.adealauto.miracle-claw";
+const SERVICE: &str = "com.milagrocloud.miracle-claw";
 const KEY_USER: &str = "cached-creds-key";
 const CREDS_USER: &str = "cached-creds";
 
