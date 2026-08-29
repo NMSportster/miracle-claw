@@ -292,7 +292,7 @@ export const dashboardPage = {
   requiresAuth: true,
 
   mount(root, ctx = {}) {
-    const { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules } = ctx;
+    const { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules, onOpenProviderKeys, onOpenTasks } = ctx;
 
     // Lesson 704 (2026-08-27 10:05 MDT, David): wrap the whole mount
     // body in try/catch so a single ReferenceError or template-literal
@@ -303,7 +303,7 @@ export const dashboardPage = {
     // fixing the voiceStatus variable-name typo.
     (async () => {
       try {
-        await this._doMount(root, ctx, { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules });
+        await this._doMount(root, ctx, { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules, onOpenProviderKeys, onOpenTasks });
       } catch (err) {
         console.error("[dashboard.mount] failed:", err);
         try {
@@ -331,7 +331,7 @@ export const dashboardPage = {
     })();
   },
 
-  async _doMount(root, ctx, { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules }) {
+  async _doMount(root, ctx, { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules, onOpenProviderKeys, onOpenTasks }) {
 
       // Lesson 561 (2026-08-24 16:08 MDT, David): the dashboard's usage
       // line used to render only an em-dash below threshold because
@@ -554,6 +554,25 @@ export const dashboardPage = {
                 <div class="tile-cta">Manage keys →</div>
               </div>
             </button>
+            <!-- Lesson 725 (2026-08-28 21:30 MDT, David): MC Tasks
+                 tile — persistent task list that syncs to MAIC. The
+                 Miracle Bot use case (David called it "the foundation
+                 of the agent platform"): the model can read/write the
+                 user's task list across sessions. Paid-tier-gated; free
+                 users see the tile but get an upgrade CTA on click. -->
+            <button class="tile" id="tasks-tile" type="button">
+              <div class="tile-icon">✅</div>
+              <div class="tile-body">
+                <div class="tile-title">Tasks</div>
+                <div class="tile-description">
+                  Persistent task list — adds, edits, and syncs to MAIC so your
+                  agent remembers follow-ups across sessions. Tasks stay on
+                  this machine; MAIC gets the latest copy for cross-device
+                  access. Paid tier only.
+                </div>
+                <div class="tile-cta">Open tasks →</div>
+              </div>
+            </button>
           </div>
 
           <!-- feature/drag-drop: file attachment staging zone. Drop a
@@ -632,6 +651,14 @@ export const dashboardPage = {
         const pkTile = document.getElementById("provider-keys-tile");
         if (pkTile) {
           pkTile.addEventListener("click", () => onOpenProviderKeys());
+        }
+      }
+      // Lesson 725 (2026-08-28 21:30 MDT, David): Tasks tile handler.
+      // Same defensive pattern as Provider Keys above.
+      if (onOpenTasks) {
+        const tasksTile = document.getElementById("tasks-tile");
+        if (tasksTile) {
+          tasksTile.addEventListener("click", () => onOpenTasks());
         }
       }
       document.getElementById("tier-badge").addEventListener("click", () => this.refreshTier(root, ctx));

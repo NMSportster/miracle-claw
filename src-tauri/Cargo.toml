@@ -92,6 +92,15 @@ tar = "0.4"
 flate2 = "1"
 uuid = { version = "1", features = ["v4"] }
 
+# feat/mc-tasks: tasks feature for MC v1.1.0+ (Miracle Bot persistent
+# memory). Adds the on-disk task list, MAIC sync engine, and Tauri commands
+# behind a paid-tier gate. Models + storage + sync reuse the shape proven
+# in the adeal-schedule test program (v0.1.0, Aug 22 2026) — see Lesson
+# 725 (this lesson) for the cut/paste rationale.
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+anyhow = "1"
+
 [dev-dependencies]
 regex = "1.13.1"
 # Test-only dependency for unit tests in src/lib.rs. tempfile is well-

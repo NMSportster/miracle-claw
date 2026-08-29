@@ -70,6 +70,20 @@ impl Tier {
     pub fn has_local_tools(self) -> bool {
         true
     }
+
+    /// Does this tier grant access to Pro-only features (Tasks, custom
+    /// voice, MCP servers, scheduled jobs, etc.)?
+    ///
+    /// **Lesson 725 (NEW 2026-08-28 21:30 MDT, David)**: Tasks feature
+    /// for the Miracle Bot use case is paid-tier only. The gate is the
+    /// upgrade hook for Free users — they can SEE the tile and click
+    /// into it, but the page shows an upgrade CTA instead of the
+    /// editor. Backend commands (`mc_task_add`, `mc_task_sync`, etc.)
+    /// also enforce this gate so a Free user's MAIC chat agent can't
+    /// silently bypass it via tool calls.
+    pub fn is_paid(self) -> bool {
+        matches!(self, Tier::Pro | Tier::ProPlus | Tier::Team | Tier::Enterprise)
+    }
 }
 
 /// What `mc_get_tier` returns to the frontend.
