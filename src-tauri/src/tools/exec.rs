@@ -117,10 +117,43 @@ pub fn normalize_user_path(input: &str) -> Result<PathBuf, String> {
 /// possible (handles `..` and symlinks); falls back to lexical comparison
 /// if canonicalize fails (e.g. file doesn't exist yet for write_file).
 pub fn assert_path_allowed(p: &Path) -> Result<(), String> {
-    let canonical = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    // Lesson 754 (2026-08-29): on Windows, `Path::canonicalize` returns an
+    // extended-length UNC path (\\?\C:\...) when the file exists, but FAILS
+    // when the file doesn't exist (e.g. write_file creating a new file). The
+    // fallback `unwrap_or_else(|_| p.to_path_buf())` keeps the raw input path
+    // without the UNC prefix, so `canonical.starts_with(&root_canon)` fails
+    // because root_canon is UNC-prefixed while canonical is plain.
+    //
+    // Fix: also strip the `\\?\` prefix from any canonicalized path we use
+    // for comparison. This unifies both code paths (file exists or not) so
+    // the prefix check is byte-for-byte the same shape.
+    let strip_unc = |path: PathBuf| -> PathBuf {
+        let s = path.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+        path
+    };
+    let canonical = match p.canonicalize() {
+        Ok(c) => strip_unc(c),
+        Err(_) => {
+            // File doesn't exist (write_file creating new). Canonicalize
+            // the parent dir instead, then append the file name.
+            match p.parent() {
+                Some(parent) => match parent.canonicalize() {
+                    Ok(pcanon) => strip_unc(pcanon).join(p.file_name().unwrap_or_default()),
+                    Err(_) => p.to_path_buf(),
+                },
+                None => p.to_path_buf(),
+            }
+        }
+    };
     let mut allowed = false;
     for root in allowed_roots() {
-        let root_canon = root.canonicalize().unwrap_or(root);
+        let root_canon = match root.canonicalize() {
+            Ok(c) => strip_unc(c),
+            Err(_) => root,
+        };
         if canonical.starts_with(&root_canon) {
             allowed = true;
             break;
