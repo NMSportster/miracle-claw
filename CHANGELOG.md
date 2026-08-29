@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.0.1 polish queue
 
+### v1.1.0-rc55.4 — 2026-08-29 (Re-ship: contracts.tools made it into the bundle)
+
+- **Re-build rc55.3 to re-include the MAIC plugin contracts.tools fix.**
+  First rc55.3 build ran `bundle-runtime.sh` which re-vendored from
+  `$HOME/.openclaw/extensions/maic/openclaw.plugin.json` — that file was
+  the old 769-byte version missing `contracts.tools`. The depot copy had
+  the fix (I patched it directly), but the live install path did not.
+  Result: rc55.3 installer still shipped with the broken manifest.
+  Fix: patched live install path to 949 bytes with `contracts.tools`,
+  re-ran build → rc55.4 now ships the fixed manifest. Lesson: any fix to
+  a gitignored runtime dir (depot, live install) must patch BOTH the
+  depot AND the live install path before re-bundling, otherwise the
+  bundle script will silently re-vendor the old version.
+
+### v1.1.0-rc55.3 — 2026-08-29 (Three bug fixes from David feedback)
+
+- **Installer icons: locked-in F design now baked into the bundle.**
+  rc55.2 was shipping variant H (teal background, no outline) because
+  `brand/build_tauri_icons.py` pointed at `brand/variants2/H-mcle-tight-icon.svg`.
+  Changed to `brand/icon.svg` (variant F: white background, 6px gold outline,
+  M/C teal, gold bolt). Re-rendered all 30+ icon sizes (32x32, 128x128,
+  icon.ico, icon.icns, all Windows Store tiles, Android mipmaps, iOS app icons).
+
+- **Open Tasks button on dashboard now opens the Tasks page.**
+  `installNavigation` builder map in `src/main.js` was missing "tasks".
+  The page registry knew about the page, but `navigate("tasks")` looked up
+  `_builders.get("tasks")` → undefined → silent console.error → no
+  navigation. Fix: added `tasksCtx()` + a "tasks" entry in the builders map.
+
+- **MC-OpenClaw agent tools now register correctly.** The 7 paid-tier
+  local tools failed to register on startup with 7 repeating log lines:
+  `plugin must declare contracts.tools before registering agent tools`.
+  OpenClaw 2026.7.1-2 requires `contracts.tools: ["..."]` in the plugin
+  manifest. Fix: added the array to `depot/maic-plugin/openclaw.plugin.json`
+  and patched the already-deployed copy on David's machine too.
+  (Note: the rc55.3 installer that was first built did NOT actually
+  include this fix because `bundle-runtime.sh` re-vendored the old
+  769-byte manifest from the live install path. rc55.4 has the fix.)
+
 ### v1.1.0-rc55.2 — 2026-08-29 (Local tools wired: 7 paid-tier tools now executable)
 
 Closes the long-standing TODO from 2026-08-28 ("Fix 7 broken local

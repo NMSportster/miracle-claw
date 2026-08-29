@@ -13,7 +13,12 @@ import sys
 import struct
 import zlib
 
-ICON_SVG = '/home/adeal/.openclaw/workspace/projects/miracle-claw/brand/variants2/H-mcle-tight-icon.svg'
+# 2026-08-29 09:43 MDT, David: installer icons were using variant H
+# (mcle-tight-icon, teal background, no outline). The agreed-on final
+# design is variant F (outlinedgold-icon): white background, 6px gold
+# outline, M/C teal, bolt gold. `brand/icon.svg` is the canonical F.
+# Use it. Don't point back at H or any variants2/*.svg.
+ICON_SVG = '/home/adeal/.openclaw/workspace/projects/miracle-claw/brand/icon.svg'
 ICON_DIR = '/home/adeal/.openclaw/workspace/projects/miracle-claw/src-tauri/icons'
 
 # All PNG sizes we need to generate.

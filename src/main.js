@@ -152,6 +152,10 @@ installNavigation({
       }),
     ],
     [
+      "tasks",
+      () => tasksCtx(),
+    ],
+    [
       "login",
       (extras) => ({
         endpoint: (extras && extras.endpoint) || "https://maicserver.com",
@@ -383,6 +387,21 @@ function modulesCtx() {
     onBackToDashboard: () => navigate("dashboard"),
     onNeedsLogin: mountLogin,
     onOpenSettings: () => navigate("settings"),
+  };
+}
+
+// 2026-08-29 09:43 MDT, David: Tasks tile click on dashboard did nothing.
+// Root cause: `installNavigation`'s builder map registered "dashboard",
+// "settings", "files", ..., "provider-keys", "login" — but "tasks" was
+// missing. `tasks.js` self-registers via `register("tasks", ...)` so
+// the page registry knows the page, but `navigate("tasks")` looked up
+// _builders.get("tasks") → undefined → silent fail (console.error only,
+// no navigation). Fix: add a "tasks" builder here with a minimal ctx
+// (back-to-dashboard + onNeedsLogin), same shape as pricingCtx.
+function tasksCtx() {
+  return {
+    onBackToDashboard: () => navigate("dashboard"),
+    onNeedsLogin: mountLogin,
   };
 }
 
