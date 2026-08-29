@@ -605,3 +605,86 @@ commands.allow = ["mc_voice_native_capture"]
 identifier = "deny-mc-voice-native-capture"
 description = "Denies the mc_voice_native_capture command."
 commands.deny = ["mc_voice_native_capture"]
+
+# ----------------------------------------------------------------------------
+# v1.1.0-rc55.5 (Lesson 755): MC Tasks backend (Lesson 725, rc54.6).
+# ----------------------------------------------------------------------------
+# Hand-added because tauri-build's autogeneration step is skipped on this
+# host (Lesson 219 / sccache trap — same fix as voice-diagnostics et al).
+#
+# Tasks JS page invokes mc_tasks_page / mc_task_add / mc_task_update /
+# mc_task_done / mc_task_delete / mc_task_sync / mc_task_login. The Rust
+# side (src/tasks/mod.rs) has had them since rc54.6, but the JS side got
+# "Command mc_tasks_page not allowed by ACL" on every Tasks page mount
+# because none of these permissions existed in the manifest.
+# ----------------------------------------------------------------------------
+
+[[permission]]
+identifier = "allow-mc-tasks-page"
+description = "Enables the mc_tasks_page command without any pre-configured scope."
+commands.allow = ["mc_tasks_page"]
+
+[[permission]]
+identifier = "deny-mc-tasks-page"
+description = "Denies the mc_tasks_page command."
+commands.deny = ["mc_tasks_page"]
+
+[[permission]]
+identifier = "allow-mc-task-add"
+description = "Enables the mc_task_add command without any pre-configured scope."
+commands.allow = ["mc_task_add"]
+
+[[permission]]
+identifier = "deny-mc-task-add"
+description = "Denies the mc_task_add command."
+commands.deny = ["mc_task_add"]
+
+[[permission]]
+identifier = "allow-mc-task-update"
+description = "Enables the mc_task_update command without any pre-configured scope."
+commands.allow = ["mc_task_update"]
+
+[[permission]]
+identifier = "deny-mc-task-update"
+description = "Denies the mc_task_update command."
+commands.deny = ["mc_task_update"]
+
+[[permission]]
+identifier = "allow-mc-task-done"
+description = "Enables the mc_task_done command without any pre-configured scope."
+commands.allow = ["mc_task_done"]
+
+[[permission]]
+identifier = "deny-mc-task-done"
+description = "Denies the mc_task_done command."
+commands.deny = ["mc_task_done"]
+
+[[permission]]
+identifier = "allow-mc-task-delete"
+description = "Enables the mc_task_delete command without any pre-configured scope."
+commands.allow = ["mc_task_delete"]
+
+[[permission]]
+identifier = "deny-mc-task-delete"
+description = "Denies the mc_task_delete command."
+commands.deny = ["mc_task_delete"]
+
+[[permission]]
+identifier = "allow-mc-task-sync"
+description = "Enables the mc_task_sync command without any pre-configured scope."
+commands.allow = ["mc_task_sync"]
+
+[[permission]]
+identifier = "deny-mc-task-sync"
+description = "Denies the mc_task_sync command."
+commands.deny = ["mc_task_sync"]
+
+[[permission]]
+identifier = "allow-mc-task-login"
+description = "Enables the mc_task_login command without any pre-configured scope."
+commands.allow = ["mc_task_login"]
+
+[[permission]]
+identifier = "deny-mc-task-login"
+description = "Denies the mc_task_login command."
+commands.deny = ["mc_task_login"]

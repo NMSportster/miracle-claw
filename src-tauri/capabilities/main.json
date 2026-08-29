@@ -76,6 +76,13 @@
     "allow-voice-diagnostics",
     "allow-voice-open-sound-settings",
     "allow-voice-open-windows-update",
-    "allow-mc-voice-native-capture"
+    "allow-mc-voice-native-capture",
+    "allow-mc-tasks-page",
+    "allow-mc-task-add",
+    "allow-mc-task-update",
+    "allow-mc-task-done",
+    "allow-mc-task-delete",
+    "allow-mc-task-sync",
+    "allow-mc-task-login"
   ]
 }
