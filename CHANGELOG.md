@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.0.1 polish queue
 
+### v1.1.0-rc55.0 — 2026-08-29 (Tasks: MAIC agent loop closed — agent creates visible to user)
+
+This release closes the MAIC-agent ↔ MC-user Tasks loop end-to-end.
+After Lesson 736 shipped server-side `mc_task_*` tools, the MAIC agent
+in a chat turn could create, update, complete, and delete tasks on
+the user's behalf. Until this release, those changes lived only in
+MAIC's `user_tasks` table — they didn't surface in MC's Tasks UI
+until the user clicked "Sync now". Now they appear automatically
+on the Tasks page mount.
+
+Three layers of work in this release:
+
+1. **MC auto-sync on Tasks page mount** (`src/pages/tasks.js`,
+   rc54.8): paid users get a fire-and-forget `mc_task_sync` round-trip
+   right after the local view loads. Free users skip it (tier gate
+   is server-side too — defense in depth). MAIC unreachable → silent
+   "⚠ Stale" badge; manual "Sync now" clears it.
+2. **MAIC `effective_user_id` pattern** (Lesson 736.1, 736.2):
+   `/v1/tasks`, `/v1/users/me/ollama-key`, `/v1/telemetry/byok-event`,
+   `/v1/billing/*` — promoted `_effective_user_id(p, request)` from
+   `tasks.py` to `Principal.effective_user_id(request)` method on
+   `api/auth.py`. Master-key + `X-User-Id` impersonation now works
+   uniformly across per-user REST routes.
+3. **Bug fix**: `tasksPage.mount` wrapper was setting
+   `this._state._ctx = ctx` BEFORE `_state` existed. Now
+   `await _origMount(...)` first.
+
+Smoke-tested end-to-end with master-key + X-User-Id: 13/13 endpoints
+return 200 with the expected payload. MAIC tier-gate (Lesson 736)
+still intact: free user blocked from `mc_task_add`. Master-only
+admin endpoints (`/v1/admin/billing/plan-price`,
+`/v1/admin/billing/report`) do NOT require X-User-Id — `p.is_master`
+is the real gate.
+
+158/158 cargo tests pass. 14/14 page_registry tests pass.
+
 ### v1.1.0-rc54.8 — 2026-08-28 (Tasks: auto-sync on mount + ctx-bug fix)
 
 After the MAIC `mc_task_*` server-side tools shipped in Lesson 736
