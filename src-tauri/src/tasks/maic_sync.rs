@@ -65,6 +65,13 @@ struct RemoteTask {
     priority: String,
     completed: bool,
     date: String,
+    /// Server may add fields in future (e.g. `source`, `created_at`,
+    /// `tags`). Unknown fields are ignored via serde defaults so MC
+    /// stays forward-compatible with MAIC schema changes.
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
     #[serde(default)]
     updated_at: Option<String>,
 }
@@ -76,8 +83,10 @@ struct RemoteTaskUpsert {
     priority: String,
     completed: bool,
     date: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    updated_at: Option<String>,
+    /// "miracle-claw" so MAIC knows which client created this row.
+    /// Distinguishes from adeal-schedule's "adeal-schedule" source
+    /// value in audit logs and any future per-source dashboards.
+    source: String,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -174,7 +183,7 @@ fn push_task(
         priority: priority_to_str(task.priority).to_string(),
         completed: task.completed,
         date: task.date.clone(),
-        updated_at: task.updated_at.clone(),
+        source: "miracle-claw".to_string(),
     };
     let resp = ureq::put(&url)
         .set("Authorization", &format!("Bearer {token}"))
@@ -310,10 +319,15 @@ pub fn now_iso8601_pub() -> String {
 }
 
 fn url_encode(s: &str) -> String {
+    // RFC 3986 unreserved set. Critical: do NOT include '+' here —
+    // a '+' in a URL query string is decoded to ' ' (space) by the
+    // server, which would break RFC3339 timestamps like
+    // "2026-08-29T03:00:00+00:00". Use proper percent-encoding
+    // for anything that isn't strictly alphanumeric / - _ . ~.
     s.bytes()
         .flat_map(|b| {
             if b.is_ascii_alphanumeric()
-                || matches!(b, b'-' | b'_' | b'.' | b'~' | b':' | b'+' | b'Z')
+                || matches!(b, b'-' | b'_' | b'.' | b'~')
             {
                 vec![b as char]
             } else {
@@ -399,6 +413,8 @@ mod tests {
                 priority: "low".into(),
                 completed: true,
                 date: "2026-08-29".into(),
+                source: Some("adeal-schedule".into()),
+                created_at: Some("2026-08-29T08:00:00Z".into()),
                 updated_at: Some("2026-08-29T11:00:00Z".into()),
             },
             RemoteTask {
@@ -409,6 +425,8 @@ mod tests {
                 priority: "high".into(),
                 completed: false,
                 date: "2026-08-30".into(),
+                source: Some("miracle-claw".into()),
+                created_at: Some("2026-08-29T08:00:00Z".into()),
                 updated_at: Some("2026-08-29T09:00:00Z".into()),
             },
         ];
@@ -433,6 +451,8 @@ mod tests {
             priority: "medium".into(),
             completed: false,
             date: "2026-08-29".into(),
+            source: Some("adeal-schedule".into()),
+            created_at: Some("2026-08-29T08:00:00Z".into()),
             updated_at: Some("2026-08-29T10:00:00Z".into()),
         }];
         let (added, updated) = merge_remote(&mut list, remote);
@@ -453,10 +473,31 @@ mod tests {
             priority: "high".into(),
             completed: true,
             date: "2026-08-29".into(),
+            source: Some("adeal-schedule".into()),
+            created_at: Some("2026-08-29T08:00:00Z".into()),
             updated_at: Some("2026-08-29T10:00:00Z".into()),
         }];
         let (added, updated) = merge_remote(&mut list, remote);
         assert_eq!(list.tasks[0].name, "a-remote");
         assert_eq!(updated, 1);
+    }
+
+    #[test]
+    fn url_encode_percent_encodes_plus_and_colon() {
+        // Regression: '+' in a query string is decoded to ' ' by HTTP
+        // servers, which broke RFC3339 timestamps like
+        // "2026-08-29T03:00:00+00:00" (became "2026-08-29T03:00:00 00:00"
+        // and the server rejected it as not ISO-8601).
+        assert_eq!(
+            url_encode("2026-08-29T03:00:00+00:00"),
+            "2026-08-29T03%3A00%3A00%2B00%3A00"
+        );
+        // 'Z' is a normal letter, no encoding needed.
+        assert_eq!(url_encode("2026-08-29T03:00:00Z"), "2026-08-29T03%3A00%3A00Z");
+        // ':' is the only unreserved-ish char that's actually reserved
+        // in a URL — encode it.
+        assert_eq!(url_encode("a:b"), "a%3Ab");
+        // Spaces, slashes, etc. — always encode.
+        assert_eq!(url_encode("a b/c"), "a%20b%2Fc");
     }
 }

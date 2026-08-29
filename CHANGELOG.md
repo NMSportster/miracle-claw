@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.0.1 polish queue
 
+### v1.1.0-rc54.7 — 2026-08-28 (Tasks: MAIC wire-format compat fixes, end-to-end verified)
+
+Verified end-to-end against `https://maicserver.com/v1/tasks/*` after
+merge to master. Three MC bugs surfaced that would have broken the
+first real sync:
+
+- **`url_encode` decoded `+` as space.** RFC 3986 unreserved set is
+  only `A-Z a-z 0-9 - _ . ~`. The Rust helper was treating `+` and
+  `:` and `Z` as unreserved, which means an ISO-8601 timestamp like
+  `2026-08-29T03:00:00+00:00` would hit MAIC as
+  `2026-08-29T03:00:00 00:00` (the `+` became a space) and be
+  rejected as not ISO-8601 → 400 on `GET /v1/tasks?since=...`.
+  **Fix**: drop everything from the unreserved whitelist except
+  `- _ . ~`. New test
+  `url_encode_percent_encodes_plus_and_colon` covers the regression.
+- **`RemoteTask` deserializer missing new server fields.** MAIC's
+  `TaskOut` schema includes `id, source, created_at` in addition to
+  what MC expected. MC's deserializer would fail on these → empty
+  task list (silent data loss). **Fix**: add `source` and
+  `created_at` as `#[serde(default)] Option<String>` so MAIC can
+  add more fields without breaking MC clients.
+- **`RemoteTaskUpsert` sent `updated_at` field that MAIC rejects.**
+  MAIC's `TaskIn` schema does not accept `updated_at` — it would
+  422. **Fix**: drop `updated_at` from the PUT body, add `source`
+  field (value `"miracle-claw"`) so MAIC knows which client
+  created the row. Distinguishes from adeal-schedule's existing
+  `source="adeal-schedule"` for future per-source dashboards.
+
+Verified end-to-end with a fresh test user against `maicserver.com`:
+
+| Step | Result |
+|---|---|
+| `POST /v1/users/signup` | 201, JWT issued |
+| `GET /v1/tasks` | 200 `[]` (empty) |
+| `PUT /v1/tasks/{uuid}` | 200 with full row echoed back |
+| `GET /v1/tasks` | 200 with 1 item, all fields present |
+| `GET /v1/tasks?since=<encoded iso>` | 200 with 1 item (incremental pull works) |
+| `DELETE /v1/tasks/{uuid}` | 200 `{"deleted": true}` |
+
+Tests: 12/12 pass (`cargo test --lib tasks::`).
+
 ### v1.1.0-rc54.6 — 2026-08-28 (Tasks feature for Miracle Bot; persistent agent memory)
 
 #### MC Tasks — first paid-tier-gated feature (Lesson 725, David 2026-08-28 21:30 MDT)
