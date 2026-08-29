@@ -4090,23 +4090,73 @@ kbd {
 
 /* MC Tasks (Lesson 725, 2026-08-28 21:30 MDT, David) */
 .mc-tasks-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 24px;
+  padding: 16px 24px 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
-.mc-tasks-header-left,
-.mc-tasks-header-right {
+.mc-tasks-header-row {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+}
+.mc-tasks-header-row-1 {
+  /* Title + meta on the first row */
+}
+.mc-tasks-header-row-2 {
+  /* Actions on the second row, right-aligned */
+  justify-content: flex-end;
+}
+.mc-tasks-header-spacer {
+  flex: 1;
+}
+.mc-tasks-header-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mc-tasks-header-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+.mc-tasks-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  font-size: 12px;
+  color: #888;
+  min-width: 0;
+}
+/* Lesson 756 (2026-08-29 16:56 MDT, David): back-to-dashboard
+   button. Lives on the left of the title row so it reads as a
+   global nav affordance, not just another toolbar button. */
+.mc-tasks-back-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: #aaa;
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease, border-color 0.1s ease;
+  flex: 0 0 auto;
+}
+.mc-tasks-back-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.24);
 }
 .mc-tasks-title {
   margin: 0;
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 600;
+  letter-spacing: -0.01em;
 }
 .mc-tasks-tier-badge {
   font-size: 11px;
@@ -4127,6 +4177,7 @@ kbd {
 .mc-tasks-sync-info {
   font-size: 12px;
   color: #888;
+  white-space: nowrap;
 }
 /* Lesson 736: auto-sync indicator (subtle pill next to "Last sync:").
    "Syncing…" pulses gently; "⚠ Stale" shows when the mount-time sync
@@ -4155,7 +4206,7 @@ kbd {
 }
 .mc-tasks-body {
   padding: 24px;
-  max-width: 900px;
+  max-width: 760px;
   margin: 0 auto;
 }
 .mc-tasks-empty {
@@ -4187,12 +4238,12 @@ kbd {
 .mc-tasks-add-form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 16px;
+  gap: 10px;
+  padding: 18px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  margin-bottom: 24px;
+  border-radius: 10px;
+  margin-bottom: 28px;
 }
 .mc-tasks-input {
   background: rgba(0, 0, 0, 0.2);
@@ -4253,55 +4304,65 @@ kbd {
 }
 .mc-tasks-btn-icon {
   background: none;
-  border: none;
+  border: 1px solid transparent;
   cursor: pointer;
   font-size: 14px;
-  padding: 4px 8px;
-  border-radius: 4px;
+  padding: 6px 10px;
+  border-radius: 6px;
   color: inherit;
+  transition: background 0.1s ease, border-color 0.1s ease;
 }
 .mc-tasks-btn-icon:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
 }
 .mc-tasks-btn-icon-danger:hover {
-  background: rgba(247, 118, 142, 0.18);
+  background: rgba(247, 118, 142, 0.14);
   color: #f7768e;
+  border-color: rgba(247, 118, 142, 0.3);
 }
 .mc-tasks-list {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 20px;
 }
 .mc-tasks-date-header {
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #888;
-  padding: 8px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  color: #7aa2f7;
+  padding: 12px 4px 6px;
+  border-bottom: 1px solid rgba(122, 162, 247, 0.18);
+  margin-bottom: 4px;
 }
 .mc-tasks-row {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 12px;
+  gap: 14px;
+  padding: 14px 16px;
   background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 8px;
-  transition: opacity 0.1s ease;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  transition: background 0.1s ease, border-color 0.1s ease, opacity 0.1s ease;
+}
+.mc-tasks-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.14);
 }
 .mc-tasks-row.is-completed {
-  opacity: 0.55;
+  opacity: 0.5;
 }
 .mc-tasks-row.is-completed .mc-tasks-row-name {
   text-decoration: line-through;
 }
 .mc-tasks-checkbox {
   flex: 0 0 auto;
-  margin-top: 2px;
-  width: 16px;
-  height: 16px;
+  margin-top: 4px;
+  width: 18px;
+  height: 18px;
   cursor: pointer;
+  accent-color: #7aa2f7;
 }
 .mc-tasks-row-main {
   flex: 1;
@@ -4312,19 +4373,22 @@ kbd {
 }
 .mc-tasks-row-name {
   font-weight: 600;
-  font-size: 14px;
+  font-size: 15px;
   word-break: break-word;
+  line-height: 1.35;
 }
 .mc-tasks-row-desc {
   font-size: 13px;
   color: #aaa;
   white-space: pre-wrap;
   word-break: break-word;
+  line-height: 1.4;
 }
 .mc-tasks-row-meta {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  margin-top: 2px;
 }
 .mc-tasks-prio {
   font-weight: 600;
@@ -4332,7 +4396,8 @@ kbd {
 .mc-tasks-row-actions {
   flex: 0 0 auto;
   display: flex;
-  gap: 2px;
+  gap: 4px;
+  align-self: center;
 }
 .mc-tasks-edit-form {
   flex: 1;

@@ -153,10 +153,23 @@ export const tasksPage = {
           }, ["⚠ Stale"])
         : null;
 
+    // Lesson 756 (2026-08-29 16:56 MDT, David): back-to-dashboard
+    // button. The Tasks page is the deepest nav level — without this
+    // the user has to close + relogin to get back. Mirror the
+    // pattern from secrets.js / settings.js.
+    const onBack = this._currentCtx().onBackToDashboard || (() => {});
+    const backBtn = el("button", {
+      class: "mc-tasks-back-btn",
+      title: "Back to Dashboard",
+      "aria-label": "Back to Dashboard",
+      onClick: () => onBack(),
+    }, ["← Dashboard"]);
+
     const syncBtn = el("button", {
-      class: "mc-tasks-btn mc-tasks-btn-secondary",
+      class: "mc-tasks-btn mc-tasks-btn-primary",
       onClick: () => this._onSync(state, this._currentCtx()),
       disabled: !state.paid || state.busy,
+      title: "Push local changes and pull remote changes from MAIC",
     }, ["🔄 Sync now"]);
 
     const loginBtn = state.hasToken
@@ -175,17 +188,29 @@ export const tasksPage = {
       title: "Reload from disk",
     }, ["↻ Refresh"]);
 
+    // Lesson 756: two-row header. Row 1: title + tier + sync status
+    // (so it has room to breathe). Row 2: back button (left) + actions
+    // (right). Cleaner visual hierarchy than cramming everything into
+    // a single flex row.
     return el("div", { class: "mc-tasks-header" }, [
-      el("div", { class: "mc-tasks-header-left" }, [
-        el("h1", { class: "mc-tasks-title" }, ["✅ Tasks"]),
-        tierBadge,
-        el("span", { class: "mc-tasks-sync-info" }, [lastSync]),
-        ...(autoSyncIndicator ? [autoSyncIndicator] : []),
+      el("div", { class: "mc-tasks-header-row mc-tasks-header-row-1" }, [
+        backBtn,
+        el("div", { class: "mc-tasks-header-title" }, [
+          el("h1", { class: "mc-tasks-title" }, ["✅ Tasks"]),
+          tierBadge,
+        ]),
+        el("div", { class: "mc-tasks-header-meta" }, [
+          el("span", { class: "mc-tasks-sync-info" }, [lastSync]),
+          ...(autoSyncIndicator ? [autoSyncIndicator] : []),
+        ]),
       ]),
-      el("div", { class: "mc-tasks-header-right" }, [
-        refreshBtn,
-        ...(loginBtn ? [loginBtn] : []),
-        syncBtn,
+      el("div", { class: "mc-tasks-header-row mc-tasks-header-row-2" }, [
+        el("div", { class: "mc-tasks-header-spacer" }),
+        el("div", { class: "mc-tasks-header-actions" }, [
+          refreshBtn,
+          ...(loginBtn ? [loginBtn] : []),
+          syncBtn,
+        ]),
       ]),
     ]);
   },
