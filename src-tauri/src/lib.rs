@@ -7348,8 +7348,12 @@ mod tests {
     fn tools_for_tier_returns_all_seven_for_every_tier() {
         // Lesson 526 (NEW 2026-08-21 13:55 MDT): all tiers get all 7
         // tools. Rate limiting (per-tier TPM) is the actual control.
+        // Lesson 737 (NEW 2026-08-29, David): Starter/StarterPlus are
+        // paid tiers — same features as Pro, only the token bucket differs.
         for t in [
             crate::auth::tier::Tier::Free,
+            crate::auth::tier::Tier::Starter,
+            crate::auth::tier::Tier::StarterPlus,
             crate::auth::tier::Tier::Pro,
             crate::auth::tier::Tier::ProPlus,
             crate::auth::tier::Tier::Team,
@@ -7899,7 +7903,10 @@ mod tests {
 
     #[test]
     fn paid_tiers_write_all_seven_tools() {
+        // Lesson 737 (2026-08-29, David): all paid tiers share features.
         for tier in [
+            crate::auth::tier::Tier::Starter,
+            crate::auth::tier::Tier::StarterPlus,
             crate::auth::tier::Tier::Pro,
             crate::auth::tier::Tier::ProPlus,
             crate::auth::tier::Tier::Team,
@@ -8063,7 +8070,10 @@ mod tests {
         // Note: existing tests like `paid_tiers_write_all_seven_tools`
         // test the TOOLS list, not the model list. This is the
         // parallel test for models.
+        // Lesson 737 (2026-08-29, David): all paid tiers share models too.
         for tier in [
+            crate::auth::tier::Tier::Starter,
+            crate::auth::tier::Tier::StarterPlus,
             crate::auth::tier::Tier::Pro,
             crate::auth::tier::Tier::ProPlus,
             crate::auth::tier::Tier::Team,
@@ -8603,7 +8613,11 @@ mod tests {
         // MiniMax + GLM + local chain. This is the invariant the user's
         // request ("paid accounts use Kimi, fallback Minimax-m3, fallback
         // glm") pins.
+        // Lesson 737 (2026-08-29, David): Starter/StarterPlus share the
+        // same routing as Pro. Token bucket is the only differentiator.
         for tier in [
+            crate::auth::tier::Tier::Starter,
+            crate::auth::tier::Tier::StarterPlus,
             crate::auth::tier::Tier::ProPlus,
             crate::auth::tier::Tier::Team,
             crate::auth::tier::Tier::Enterprise,

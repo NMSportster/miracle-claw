@@ -43,6 +43,56 @@ is the real gate.
 
 158/158 cargo tests pass. 14/14 page_registry tests pass.
 
+### v1.1.0-rc55.1 — 2026-08-29 (Tier stack: Starter/StarterPlus are paid)
+
+Lesson 737 (2026-08-29, David): **Starter ($10/mo) and Starter Plus
+($25/mo) are paid tiers, not aliases of free**. They share every feature
+that Pro/ProPlus/Team/Enterprise have — same tool set, same model
+chain, same priority routing. The only difference between paid tiers
+is the token bucket (5M/15M/50M/200M/200M+2000rpm) and rate limit
+(120/300/600/1500/2000 rpm). No feature gating across the paid ladder.
+
+Three bugs caused Starter/StarterPlus to silently collapse to Free
+behavior:
+
+1. **Rust `Tier` enum missing variants** (`src-tauri/src/auth/tier.rs`):
+   only `Free | Pro | ProPlus | Team | Enterprise`. Any other string
+   (including `"starter"`) hit the `_ => Tier::Free` fallback arm in
+   `from_str()`. A $10/mo Starter user logged in, MC read their tier as
+   `Free`, and they got the Free-tier experience: no `mc_task_*` tools,
+   free-tier model picker, no priority routing.
+2. **MAIC `PAID_TIERS` set missing entries** (`api/tools/mc_tasks.py`):
+   `frozenset({"pro", "pro_plus", "team", "enterprise"})` — same bug,
+   server side. Even if MC sent the right tier, MAIC stripped
+   `mc_task_*` tools from the chat prompt.
+3. **MAIC `CANONICAL_TIERS` missing entries** (`api/tier.py`):
+   the resolver walks `subscriptions.plan_code → orgs.tier → users.tier`
+   and returns the first match. `_canonical_tier("starter")` worked
+   correctly (returned "starter") but adding `starter`/`starter_plus`
+   to `CANONICAL_TIERS` is defense-in-depth so future code that
+   asserts membership in the frozenset behaves predictably.
+4. **Bonus fix**: `chat.py` master-key impersonation read `users.tier`
+   directly via `SELECT tier FROM users WHERE id = $1`, which is a
+   denormalized copy that drifts from the canonical
+   `subscriptions.plan_code`. Replaced with `resolve_effective_tier()`
+   so the master-key tier lookup matches the JWT-path tier lookup.
+
+Verified live on Hetzner:
+- `get_tools_for_tier("starter")` → 10 tools (5 general + 5 mc_task_*)
+- `get_tools_for_tier("starter_plus")` → 10 tools
+- `get_tools_for_tier("free")` → 5 tools (no mc_task_*) — gate intact
+- End-to-end smoke: as `brentwill42@gmail.com` (starter_plus),
+  `List my tasks please` → model responds with actual task list
+  (was previously "I don't have access to a task management tool").
+
+Tests: 159/159 cargo tests pass (added `is_paid_covers_all_paid_tiers_lesson_737`,
+extended 4 existing test loops to cover Starter/StarterPlus).
+
+DB state verified: all 6 plans (`free`, `starter`, `starter_plus`,
+`pro`, `pro_plus`, `team`) present and `active=TRUE` in `plans` table.
+`/v1/billing/plans` serves all 6. Stripe prices exist for all 6 paid
+plans. No data migrations needed — only code changes.
+
 ### v1.1.0-rc54.8 — 2026-08-28 (Tasks: auto-sync on mount + ctx-bug fix)
 
 After the MAIC `mc_task_*` server-side tools shipped in Lesson 736

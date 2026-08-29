@@ -190,7 +190,7 @@ fn compute_kind(tier: Tier, used: u64, limit: u64) -> NudgeKind {
                 NudgeKind::None
             }
         }
-        Tier::Pro | Tier::ProPlus | Tier::Team | Tier::Enterprise => {
+        Tier::Starter | Tier::StarterPlus | Tier::Pro | Tier::ProPlus | Tier::Team | Tier::Enterprise => {
             if limit == 0 {
                 return NudgeKind::None; // No quota configured; nothing to nudge.
             }

@@ -25,6 +25,12 @@ use std::time::{Duration, Instant};
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
     Free,
+    /// $10/mo — 5M tokens, 120 rpm. Token-bucket only — same features as Pro.
+    /// Lesson 737 (NEW 2026-08-29, David): all paid tiers share the same
+    /// features and model access; the bucket is the only differentiator.
+    Starter,
+    /// $25/mo — 15M tokens, 300 rpm. Same features as Pro.
+    StarterPlus,
     Pro,
     ProPlus,
     Team,
@@ -38,6 +44,8 @@ impl Tier {
             "team" => Tier::Team,
             "enterprise" => Tier::Enterprise,
             "pro" => Tier::Pro,
+            "starter_plus" | "starterplus" => Tier::StarterPlus,
+            "starter" => Tier::Starter,
             _ => Tier::Free,
         }
     }
@@ -45,6 +53,8 @@ impl Tier {
     pub fn as_str(&self) -> &'static str {
         match self {
             Tier::Free => "free",
+            Tier::Starter => "starter",
+            Tier::StarterPlus => "starter_plus",
             Tier::Pro => "pro",
             Tier::ProPlus => "pro_plus",
             Tier::Team => "team",
@@ -81,8 +91,22 @@ impl Tier {
     /// editor. Backend commands (`mc_task_add`, `mc_task_sync`, etc.)
     /// also enforce this gate so a Free user's MAIC chat agent can't
     /// silently bypass it via tool calls.
+    ///
+    /// **Lesson 737 (NEW 2026-08-29, David)**: ALL paid tiers
+    /// (Starter, StarterPlus, Pro, ProPlus, Team, Enterprise) grant
+    /// Pro-only features. Token bucket is the only differentiator.
+    /// Previously Starter/StarterPlus collapsed to Free because they
+    /// weren't in this enum (Lesson 526 follow-up).
     pub fn is_paid(self) -> bool {
-        matches!(self, Tier::Pro | Tier::ProPlus | Tier::Team | Tier::Enterprise)
+        matches!(
+            self,
+            Tier::Starter
+                | Tier::StarterPlus
+                | Tier::Pro
+                | Tier::ProPlus
+                | Tier::Team
+                | Tier::Enterprise
+        )
     }
 }
 
@@ -432,6 +456,10 @@ mod tests {
         assert_eq!(Tier::from_str("free"), Tier::Free);
         assert_eq!(Tier::from_str("Free"), Tier::Free);
         assert_eq!(Tier::from_str("FREE"), Tier::Free);
+        assert_eq!(Tier::from_str("starter"), Tier::Starter);
+        assert_eq!(Tier::from_str("Starter"), Tier::Starter);
+        assert_eq!(Tier::from_str("starter_plus"), Tier::StarterPlus);
+        assert_eq!(Tier::from_str("starterplus"), Tier::StarterPlus);
         assert_eq!(Tier::from_str("pro"), Tier::Pro);
         assert_eq!(Tier::from_str("pro_plus"), Tier::ProPlus);
         assert_eq!(Tier::from_str("proplus"), Tier::ProPlus);
@@ -445,7 +473,15 @@ mod tests {
 
     #[test]
     fn tier_as_str_round_trips() {
-        for t in [Tier::Free, Tier::Pro, Tier::ProPlus, Tier::Team, Tier::Enterprise] {
+        for t in [
+            Tier::Free,
+            Tier::Starter,
+            Tier::StarterPlus,
+            Tier::Pro,
+            Tier::ProPlus,
+            Tier::Team,
+            Tier::Enterprise,
+        ] {
             assert_eq!(Tier::from_str(t.as_str()), t);
         }
     }
@@ -457,6 +493,8 @@ mod tests {
         // tool gating. Previously Free was excluded; that broke
         // onboarding for users who couldn't see pricing yet.
         assert!(Tier::Free.has_local_tools(), "Free gets tools (Lesson 526)");
+        assert!(Tier::Starter.has_local_tools());
+        assert!(Tier::StarterPlus.has_local_tools());
         assert!(Tier::Pro.has_local_tools());
         assert!(Tier::ProPlus.has_local_tools());
         assert!(Tier::Team.has_local_tools());
@@ -464,8 +502,26 @@ mod tests {
     }
 
     #[test]
+    fn is_paid_covers_all_paid_tiers_lesson_737() {
+        // Lesson 737 (2026-08-29, David): Starter/StarterPlus are paid.
+        // Previously they collapsed to Free and paying customers got the
+        // Free-tier experience (no mc_task_* tools, no priority routing).
+        assert!(!Tier::Free.is_paid(), "Free is not paid");
+        assert!(Tier::Starter.is_paid(), "Starter is paid (Lesson 737)");
+        assert!(Tier::StarterPlus.is_paid(), "StarterPlus is paid (Lesson 737)");
+        assert!(Tier::Pro.is_paid());
+        assert!(Tier::ProPlus.is_paid());
+        assert!(Tier::Team.is_paid());
+        assert!(Tier::Enterprise.is_paid());
+    }
+
+    #[test]
     fn tier_serialization_matches_maic_strings() {
         // Sanity-check the JSON wire format the frontend expects.
+        let json = serde_json::to_string(&Tier::Starter).unwrap();
+        assert_eq!(json, "\"starter\"");
+        let json = serde_json::to_string(&Tier::StarterPlus).unwrap();
+        assert_eq!(json, "\"starter_plus\"");
         let json = serde_json::to_string(&Tier::Pro).unwrap();
         assert_eq!(json, "\"pro\"");
         let json = serde_json::to_string(&Tier::ProPlus).unwrap();
@@ -512,7 +568,16 @@ mod tests {
 
     #[test]
     fn paid_default_is_kimi() {
-        for tier in [Tier::Pro, Tier::ProPlus, Tier::Team, Tier::Enterprise] {
+        // Lesson 737 (2026-08-29, David): Starter/StarterPlus share Kimi
+        // default with all other paid tiers.
+        for tier in [
+            Tier::Starter,
+            Tier::StarterPlus,
+            Tier::Pro,
+            Tier::ProPlus,
+            Tier::Team,
+            Tier::Enterprise,
+        ] {
             assert_eq!(
                 tier_default_model_id(tier),
                 "milagro-oc-kimi",
@@ -524,7 +589,14 @@ mod tests {
 
     #[test]
     fn paid_fallbacks_are_ordered_minimax_then_glm_then_local() {
-        for tier in [Tier::Pro, Tier::ProPlus, Tier::Team, Tier::Enterprise] {
+        for tier in [
+            Tier::Starter,
+            Tier::StarterPlus,
+            Tier::Pro,
+            Tier::ProPlus,
+            Tier::Team,
+            Tier::Enterprise,
+        ] {
             let f = tier_default_fallbacks(tier);
             assert_eq!(f.len(), 3, "{:?} should have exactly 3 fallbacks", tier);
             assert_eq!(f[0], "milagro-oc-minimax", "{:?} fallback[0] must be MiniMax-M3", tier);
