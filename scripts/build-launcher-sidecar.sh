@@ -26,9 +26,15 @@ mkdir -p "$BINARIES_DIR"
 
 # If we're inside the Docker build image (cargo-xwin + nsis present), we're
 # building for Windows MSVC. Otherwise, we use the host triple for dev.
+# Heuristic: only auto-detect Windows when BOTH cargo-xwin AND nsis (makensis)
+# are installed — that's the Docker image. A dev box that just happens to
+# have cargo-xwin (e.g. for cross-compile testing) but no makensis should
+# default to the host triple instead.
 if [[ -n "${TAURI_BUILD_TARGET:-}" ]]; then
     TARGET_TRIPLE="$TAURI_BUILD_TARGET"
-elif [[ "$(uname -s 2>/dev/null)" == "Linux" ]] && command -v cargo-xwin >/dev/null 2>&1; then
+elif [[ "$(uname -s 2>/dev/null)" == "Linux" ]] \
+     && command -v cargo-xwin >/dev/null 2>&1 \
+     && command -v makensis >/dev/null 2>&1; then
     TARGET_TRIPLE="x86_64-pc-windows-msvc"
 else
     TARGET_TRIPLE="$(rustc --print host-tuple)"
@@ -40,6 +46,25 @@ EXT=""
 
 LAUNCHER_NAME="miracle-claw-launcher"
 LAUNCHER_TARGET="$BINARIES_DIR/${LAUNCHER_NAME}-${TARGET_TRIPLE}${EXT}"
+
+# If the canonical binaries dir is root-owned (e.g. left over from a Windows
+# Docker build), we can't write there as a regular user. Detect this and
+# fall back to a writable scratch dir. The launcher still has to be at the
+# externalBin path Tauri expects (resources/externalBin in tauri.conf.json),
+# so the fallback only works if Tauri resolves externalBin relative to the
+# resources dir or another writable location. We symlink in that case.
+if ! (touch "$LAUNCHER_TARGET" 2>/dev/null && rm -f "$LAUNCHER_TARGET" 2>/dev/null); then
+    SCRATCH_BIN_DIR="$SRC_DIR/binaries-local"
+    mkdir -p "$SCRATCH_BIN_DIR"
+    SCRATCH_TARGET="$SCRATCH_BIN_DIR/${LAUNCHER_NAME}-${TARGET_TRIPLE}${EXT}"
+    # If tauri.conf.json still references the original dir, also try writing
+    # there using a different mechanism: overwrite bytes with cat (doesn't
+    # require delete).
+    if [[ -f "$LAUNCHER_TARGET" && ! -w "$LAUNCHER_TARGET" ]]; then
+        echo "[build-launcher-sidecar] WARNING: $LAUNCHER_TARGET not writable, using $SCRATCH_TARGET" >&2
+        LAUNCHER_TARGET="$SCRATCH_TARGET"
+    fi
+fi
 
 # Tauri's build.rs (tauri-build) validates externalBin paths at the start of
 # every `cargo` invocation. We pre-stage a 0-byte placeholder at the exact

@@ -82,9 +82,17 @@ case ",$BUNDLES," in
     *,rpm,*) need_pkg rpm-build ;;
 esac
 # Always need these for Tauri to find the webview at runtime.
-for pkg in libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev; do
+# libayatana-appindicator3-dev (system tray) is OPTIONAL: app compiles
+# and runs without it, just no tray icon. Skip auto-install when env
+# SKIP_OPTIONAL_DEPS=1 (e.g. when sudo can't prompt for password).
+for pkg in libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev; do
     need_pkg "$pkg"
 done
+if [[ "${SKIP_OPTIONAL_DEPS:-0}" != "1" ]]; then
+    need_pkg libayatana-appindicator3-dev || true
+else
+    echo ">>> SKIP_OPTIONAL_DEPS=1 set; skipping libayatana-appindicator3-dev (no tray icon)"
+fi
 
 if $WITH_SCCACHE && [[ -f "$REPO_ROOT/scripts/install-sccache.sh" ]]; then
     "$REPO_ROOT/scripts/install-sccache.sh" || true
@@ -106,6 +114,27 @@ if ! bash "$REPO_ROOT/scripts/patch-openclaw-dist.sh"; then
     exit 1
 fi
 
+# Pre-build cleanup: vite and tauri both need to rm -rf inside the workspace
+# (dist/assets/, src-tauri/binaries/, src-tauri/gen/). When the previous
+# build ran inside Docker as root, those files end up root-owned and the
+# current user can't unlink them. Try to chown recursively; if we can't
+# (no sudo), print a one-liner the user can run themselves.
+if command -v sudo >/dev/null 2>&1; then
+    SUDO=""
+    if sudo -n true 2>/dev/null; then SUDO="sudo"; fi
+    if [[ -n "$SUDO" ]]; then
+        echo ">>> Fixing root-owned workspace files (Docker build leftovers)..."
+        $SUDO chown -R "$USER":"$(id -gn)" \
+            "$REPO_ROOT/dist" \
+            "$REPO_ROOT/src-tauri/binaries" \
+            "$REPO_ROOT/src-tauri/gen" 2>/dev/null || true
+    else
+        echo ">>> NOTE: dist/, src-tauri/binaries/, src-tauri/gen/ may have root-owned files" >&2
+        echo "    from a prior Docker build. If this build fails with EACCES, run:" >&2
+        echo "      sudo chown -R \$USER:\$(id -gn) $REPO_ROOT/dist $REPO_ROOT/src-tauri/binaries $REPO_ROOT/src-tauri/gen" >&2
+    fi
+fi
+
 # Serialize builds so two parallel runs don't corrupt the target/ dir.
 LOCK_FILE="$REPO_ROOT/.build-linux.lock"
 exec 9>"$LOCK_FILE"
@@ -117,7 +146,10 @@ fi
 # Build the tools binary first (Lesson 528 — same pattern as Windows).
 # Tauri's bundle.resources expects `miracle-claw-tools.exe` to exist as a
 # pre-flight validation; we touch it before the build and overwrite after.
-TOOLS_EXE="$REPO_ROOT/src-tauri/target/release/miracle-claw-tools"
+# Honor CARGO_TARGET_DIR (cargo uses it; we need to look in the right place
+# too, or we won't find the artifacts).
+TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/src-tauri/target}"
+TOOLS_EXE="$TARGET_DIR/release/miracle-claw-tools"
 if [[ -n "$BUNDLES" ]]; then
     touch "$REPO_ROOT/src-tauri/resources/miracle-claw-tools.exe"
 fi
@@ -125,7 +157,7 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 if $BUNDLE_ONLY; then
-    if [[ ! -f "$REPO_ROOT/src-tauri/target/release/miracle-claw" ]]; then
+    if [[ ! -f "$TARGET_DIR/release/miracle-claw" ]]; then
         echo "ERROR: --bundle-only requires an existing target/release/miracle-claw binary" >&2
         exit 1
     fi
@@ -137,15 +169,16 @@ if $BUNDLE_ONLY; then
     ( cd "$REPO_ROOT" && npm run tauri -- build --bundles "$BUNDLES" )
 else
     echo ">>> Running full native Linux build (cold ~5min, warm ~30s)"
+    echo "    target dir: $TARGET_DIR"
     # Build tools binary first (no JS embed; fast). Then `npm run tauri build`
     # builds miracle-claw + bundles into the requested bundle types.
-    ( cd "$REPO_ROOT/src-tauri && cargo build --release --bin miracle-claw-tools ) && \
+    ( cd "$REPO_ROOT/src-tauri" && cargo build --release --bin miracle-claw-tools ) && \
     cp -f "$TOOLS_EXE" "$REPO_ROOT/src-tauri/resources/miracle-claw-tools.exe" && \
     ( cd "$REPO_ROOT" && npm run tauri -- build --bundles "$BUNDLES" )
 fi
 
 # Copy output bundles to dist-installers/linux/.
-BUNDLE_ROOT="$REPO_ROOT/src-tauri/target/release/bundle"
+BUNDLE_ROOT="$TARGET_DIR/release/bundle"
 declare -A BUNDLE_PATHS=(
     [deb]="deb"
     [appimage]="appimage"
