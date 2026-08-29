@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.0.1 polish queue
 
+### v1.1.0-rc54.8 — 2026-08-28 (Tasks: auto-sync on mount + ctx-bug fix)
+
+After the MAIC `mc_task_*` server-side tools shipped in Lesson 736
+(2026-08-28 23:30 MDT), tasks added by the MAIC agent in a chat turn
+land in MAIC's `user_tasks` table but not in MC's local store until
+the user clicks "Sync now". This release wires a fire-and-forget
+`mc_task_sync` to the Tasks page mount so changes the agent makes
+appear instantly:
+
+- **Auto-sync on Tasks page mount** (`src/pages/tasks.js`).
+  After `_reload()` reads from local disk, paid users get a silent
+  `mc_task_sync` round-trip. The page never blocks on it — the user
+  sees their local view immediately, and the auto-sync updates the
+  view in place when it completes. Free users skip auto-sync entirely
+  (tier gate is server-side too — defense in depth).
+- **Subtle header indicator** (`src/styles.css`): a small "⟳ Syncing…"
+  pill next to "Last sync" while the auto-sync is in flight; a "⚠ Stale"
+  pill (no animation) if MAIC is unreachable so the user knows their
+  view might be out of date. Manual "Sync now" button clears the stale
+  indicator on success.
+- **Silent failure**: `autoSyncError` is captured but never thrown.
+  If MAIC is down, the page keeps showing local data and surfaces the
+  stale pill instead of a blocking error toast.
+- **Bug fix**: `tasksPage.mount` wrapper was doing `this._state._ctx = ctx`
+  BEFORE the inner mount() initialized `_state`, throwing
+  "Cannot set properties of undefined" on first mount. Fixed by
+  `await _origMount(root, ctx)` then assign `_ctx` on the resulting
+  state. Latent since rc54.6 — production path happened to work
+  because of unobserved re-mounts, but unit tests caught it now.
+
 ### v1.1.0-rc54.7 — 2026-08-28 (Tasks: MAIC wire-format compat fixes, end-to-end verified)
 
 Verified end-to-end against `https://maicserver.com/v1/tasks/*` after

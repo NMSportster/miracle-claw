@@ -4128,6 +4128,31 @@ kbd {
   font-size: 12px;
   color: #888;
 }
+/* Lesson 736: auto-sync indicator (subtle pill next to "Last sync:").
+   "Syncing…" pulses gently; "⚠ Stale" shows when the mount-time sync
+   failed and the local view might be out of date. */
+.mc-tasks-auto-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(122, 162, 247, 0.12);
+  color: #7aa2f7;
+  border: 1px solid rgba(122, 162, 247, 0.25);
+  animation: mc-tasks-sync-pulse 1.6s ease-in-out infinite;
+}
+.mc-tasks-auto-sync-error {
+  background: rgba(247, 118, 142, 0.10);
+  color: #f7768e;
+  border-color: rgba(247, 118, 142, 0.25);
+  animation: none;
+}
+@keyframes mc-tasks-sync-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
 .mc-tasks-body {
   padding: 24px;
   max-width: 900px;

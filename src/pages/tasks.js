@@ -84,15 +84,28 @@ export const tasksPage = {
       hasToken: false,
       lastSync: null,
       busy: false,
+      autoSyncing: false,   // Lesson 736: silent sync on mount
+      autoSyncDone: false,   // only auto-sync once per mount
+      autoSyncError: null,  // shown subtly in header if MAIC unreachable
       editingId: null,
       draft: { name: "", description: "", priority: "medium", date: todayIso() },
       error: null,
     });
 
+    // Stash header element so _rerenderHeader can replace it in-place.
+    state._headerEl = this._renderHeader(state);
     root.innerHTML = "";
-    root.appendChild(this._renderHeader(state));
+    root.appendChild(state._headerEl);
     root.appendChild(this._renderBody(state, ctx));
     await this._reload(state, ctx);
+    // Lesson 736: auto-sync from MAIC on page mount so the user sees
+    // any task changes the MAIC agent made in a chat turn. Fire-and-
+    // forget from the UI's perspective — we don't block the page load,
+    // and if MAIC is unreachable we keep showing local data. The
+    // header shows a subtle "Syncing…" indicator while in flight.
+    if (state.paid && !state.autoSyncDone) {
+      this._onAutoSync(state, ctx);
+    }
   },
 
   unmount() {
@@ -129,6 +142,17 @@ export const tasksPage = {
       ? `Last sync: ${new Date(state.lastSync).toLocaleString()}`
       : "Never synced";
 
+    // Lesson 736: subtle auto-sync indicator. Shows during the silent
+    // mount-time sync, otherwise silent.
+    const autoSyncIndicator = state.autoSyncing
+      ? el("span", { class: "mc-tasks-auto-sync", title: "Pulling latest tasks from MAIC" }, ["⟳ Syncing…"])
+      : state.autoSyncError
+        ? el("span", {
+            class: "mc-tasks-auto-sync mc-tasks-auto-sync-error",
+            title: `MAIC sync failed: ${state.autoSyncError}`,
+          }, ["⚠ Stale"])
+        : null;
+
     const syncBtn = el("button", {
       class: "mc-tasks-btn mc-tasks-btn-secondary",
       onClick: () => this._onSync(state, this._currentCtx()),
@@ -156,6 +180,7 @@ export const tasksPage = {
         el("h1", { class: "mc-tasks-title" }, ["✅ Tasks"]),
         tierBadge,
         el("span", { class: "mc-tasks-sync-info" }, [lastSync]),
+        ...(autoSyncIndicator ? [autoSyncIndicator] : []),
       ]),
       el("div", { class: "mc-tasks-header-right" }, [
         refreshBtn,
@@ -170,6 +195,17 @@ export const tasksPage = {
     state._bodyEl = body;
     this._rerenderBody(state, ctx);
     return body;
+  },
+
+  _rerenderHeader(state, ctx) {
+    // Lesson 736: replace the header in-place to show auto-sync indicator
+    // without rerendering the entire body (which would lose focus/scroll).
+    const oldHeader = this._state?._headerEl;
+    if (oldHeader && oldHeader.parentNode) {
+      const newHeader = this._renderHeader(state);
+      oldHeader.parentNode.replaceChild(newHeader, oldHeader);
+      this._state._headerEl = newHeader;
+    }
   },
 
   _rerenderBody(state, ctx) {
@@ -491,6 +527,31 @@ export const tasksPage = {
     }
   },
 
+  async _onAutoSync(state, ctx) {
+    // Lesson 736: fire-and-forget sync on page mount. Best-effort —
+    // we silently fall back to local data if MAIC is unreachable.
+    // Sets autoSyncDone so we never double-sync within one mount.
+    state.autoSyncing = true;
+    state.autoSyncError = null;
+    state.autoSyncDone = true;
+    this._rerenderHeader(state, ctx);
+    try {
+      // Reuse the same command as the manual button; pass `server: null`
+      // to use the default MAIC URL from settings.
+      await invoke("mc_task_sync", { server: null });
+      // Reload from disk to surface the merged state.
+      await this._reload(state, ctx);
+    } catch (e) {
+      // Silent failure — surface a tiny "⚠ Stale" badge in the header
+      // so the user knows the local view might be out of date, but
+      // don't block the page or show a scary error.
+      state.autoSyncError = String(e?.message || e);
+    } finally {
+      state.autoSyncing = false;
+      this._rerenderHeader(state, ctx);
+    }
+  },
+
   async _onSync(state, ctx) {
     if (!confirm("Sync tasks with MAIC? Local changes will be pushed; remote changes pulled. Conflicts resolve by latest `updated_at` (server wins on tie).")) return;
     state.busy = true;
@@ -499,6 +560,8 @@ export const tasksPage = {
     try {
       const report = await invoke("mc_task_sync", { server: null });
       state._syncReport = report;
+      // Clear any stale auto-sync indicator — manual sync succeeded.
+      state.autoSyncError = null;
       await this._reload(state, ctx);
       alert(`MAIC sync complete:\n\n${report}`);
     } catch (e) {
@@ -527,11 +590,14 @@ export const tasksPage = {
   },
 };
 
-// Stash ctx for re-renders after mount() returns.
+// Stash ctx for re-renders after mount() returns. The original mount()
+// reassigns `this._state` to a fresh object, so we have to set _ctx
+// AFTER it runs. The _currentCtx() helper reads from the state object.
 const _origMount = tasksPage.mount.bind(tasksPage);
-tasksPage.mount = function (root, ctx) {
-  this._state._ctx = ctx;
-  return _origMount(root, ctx);
+tasksPage.mount = async function (root, ctx) {
+  const result = await _origMount(root, ctx);
+  if (this._state) this._state._ctx = ctx;
+  return result;
 };
 
 export function mount(root, ctx) {
