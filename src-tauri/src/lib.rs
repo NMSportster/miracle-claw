@@ -67,6 +67,13 @@ mod secrets_friendly;
 // it up at request time.
 mod provider_keys;
 
+// Lesson 725 (2026-08-28 21:30 MDT, David): Tasks feature for Miracle
+// Claw v1.1.0+ (Miracle Bot persistent memory). Paid-tier-gated.
+// Models + storage + MAIC sync engine adapted from the adeal-schedule
+// v0.1.0 test program shipped by the MC-openclaw agent on 2026-08-22.
+// See src/tasks/mod.rs for the full design and the schema-migration fix.
+mod tasks;
+
 // v1.0.7: tier fetching + token-quota nudges.
 pub mod auth;
 // v1.0.7: 7 local tool schemas (paid tier only). Marked `pub` so the
@@ -4914,6 +4921,13 @@ fn resolve_maic_base_url() -> String {
     DEFAULT_ENDPOINT.to_string()
 }
 
+// Lesson 725 (2026-08-28 21:30 MDT, David): Tasks feature needs the
+// same MAIC base URL resolver. Expose `pub(crate)` so the tasks
+// module can call it without re-implementing the env-var ladder.
+pub(crate) fn maic_base_url() -> String {
+    resolve_maic_base_url()
+}
+
 // Returns the current tier (cached, 5-min TTL). Used by the dashboard
 // to render the tier badge.
 #[tauri::command]
@@ -7020,7 +7034,19 @@ pub fn run() {
             mc_module_install_local,
             mc_module_install_url,
             mc_module_uninstall,
-            mc_module_call
+            mc_module_call,
+            // Lesson 725 (2026-08-28 21:30 MDT, David): MC Tasks feature
+            // (Miracle Bot persistent memory). Paid-tier gated (Pro,
+            // Pro+, Team, Enterprise). Free users see the tile + an
+            // upgrade prompt; commands return `paid_tier_required` if
+            // invoked anyway (e.g. via MAIC tool call on a free account).
+            tasks::mc_tasks_page,
+            tasks::mc_task_add,
+            tasks::mc_task_update,
+            tasks::mc_task_done,
+            tasks::mc_task_delete,
+            tasks::mc_task_sync,
+            tasks::mc_task_login
         ])
         .setup(|app| {
             setup(app)?;

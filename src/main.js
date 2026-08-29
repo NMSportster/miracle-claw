@@ -50,6 +50,11 @@ import { pricingPage } from "./pages/pricing.js";
 // every MC module with status pills (Available / Installed / Coming
 // Soon) and routes users to install/hook flows.
 import { modulesPage } from "./pages/modules.js";
+// Lesson 725 (2026-08-28 21:30 MDT, David): MC Tasks feature (Miracle
+// Bot persistent memory). Paid-tier-gated; free users see an upgrade
+// CTA in place of the editor. Self-registers on import (matches the
+// register() pattern used by every other page).
+import { tasksPage } from "./pages/tasks.js";
 // rc53 (feature/secrets-vault): debug page for v0 verification.
 // Not registered in the main page map; mounted via window.__mc_openSecretsDebug.
 import { secretsDebugPage } from "./secrets/debug_page.js";
@@ -89,6 +94,12 @@ register("pricing", pricingPage);
 // src/pages/modules.js — Settings → Modules (Lesson 572) is the
 // install manager; this is the discovery surface.
 register("modules", modulesPage);
+// Lesson 725 (2026-08-28 21:30 MDT, David): MC Tasks (Miracle Bot
+// persistent memory). Paid-tier-gated. Self-registers on import via
+// `register("tasks", ...)` at the bottom of pages/tasks.js, so we
+// don't need an explicit `register("tasks", tasksPage)` line here —
+// the import side-effect is enough.
+import "./pages/tasks.js";
 // rc53 (feature/secrets-vault): debug page registration. Mounted
 // only via window.__mc_openSecretsDebug() (dev escape hatch).
 register("secrets-debug", secretsDebugPage);
@@ -279,6 +290,11 @@ function pageCtx() {
     // tile routes here so the BYO provider keys page renders the
     // 13 supported providers with vault-encrypted storage.
     onOpenProviderKeys: () => navigate("provider-keys"),
+    // Lesson 725 (2026-08-28 21:30 MDT, David): dashboard's "Tasks"
+    // tile routes to the MC Tasks page (Miracle Bot persistent memory).
+    // The page enforces the paid-tier gate; the route itself is
+    // universal so free users can click through and see the upgrade CTA.
+    onOpenTasks: () => navigate("tasks"),
     // rc53.8 (feature/extras-hub): hand off to Terminal with a
     // pre-filled command + the right shell for the OS. cmd on
     // Windows, bash on Linux/macOS — both can resolve mc-* from

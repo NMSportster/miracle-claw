@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.0.1 polish queue
 
+### v1.1.0-rc54.6 — 2026-08-28 (Tasks feature for Miracle Bot; persistent agent memory)
+
+#### MC Tasks — first paid-tier-gated feature (Lesson 725, David 2026-08-28 21:30 MDT)
+- Tasks is the Week-0 foundation for the **Miracle Bot** product
+  positioning: a local-first alternative to xAI's Grok Bot ($200/mo)
+  for $200 one-time, running on the user's hardware with MAIC as the
+  sync layer. Persistent tasks give the agent memory across sessions
+  (every future Miracle Bot template — Inbox Zero, Lead Hunter, Price
+  Watcher, Server Health — writes to Tasks).
+- New `src-tauri/src/tasks/` module: `models.rs`, `storage.rs`,
+  `maic_sync.rs` (350-line sync engine adapted from adeal-schedule
+  v0.1.0), `mod.rs` (Tauri commands). New `src/pages/tasks.js`
+  React UI. Paid-tier gate via new `Tier::is_paid()` in
+  `auth/tier.rs`. Dashboard tile + Cmd-K palette entry + page
+  registry wiring.
+- **Schema migration fix** (lesson 184 carryover): old adeal-schedule
+  tasks.json with `{id, time, description, completed, source}` loads
+  via `migrate_legacy_task()` and re-saves in the new schema on
+  first load. Verified by `legacy_schema_loads_via_migration` test.
+- **Storage path** is `%APPDATA%\miracle-claw\tasks\` on Windows,
+  `~/.local/share/miracle-claw/tasks/` on Linux. **Does NOT** touch
+  adeal-schedule's existing `%APPDATA%\adeal-schedule\` directory.
+- **Sync**: PUT `/v1/tasks/{local_id}` (idempotent upsert) + GET
+  `/v1/tasks?since=<iso>`. 3-way merge using `updated_at` timestamp
+  tie-breaker (strict-greater local wins; equal/missing lets server
+  replace). Auth: long-lived MAIC token in
+  `MC_SESSION_TOKEN` env var or `<data_dir>/maic_task_token` (mode
+  600 on Unix). Fall back to the active session JWT.
+- **HTTP client**: switched from `reqwest::blocking` (adeal-schedule
+  original) to `ureq` (Lesson 444 precedent in `provider_keys.rs`)
+  so we don't pull in tokio as a direct dep. Same one-PUT-per-task,
+  one-GET-per-sync pattern.
+- **Tests**: 11/11 passing (`cargo test --lib tasks::`).
+  Coverage: backfill, schema migration (current + 3 legacy variants),
+  merge (local-wins-newer, server-wins-equal, append-new).
+- **Tool exposure**: NOT YET routed to MAIC agent. The Tauri commands
+  are reachable from the React page; the model can't call them yet
+  (would need either `miracle-claw-tools` IPC loopback or plugin
+  Tauri-command routing — follow-up after rc54.6).
+
 ### v1.1.0-rc54.5 — 2026-08-27 (Native voice: Robust RecognizeAsync + better error visibility)
 
 #### Native voice: `RecognizeAsync` robustness fixes (Lesson 709, round 2)

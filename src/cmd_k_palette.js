@@ -308,6 +308,17 @@ function buildCommands() {
       keywords: ["api key", "openai", "anthropic", "ollama", "byo", "bring your own", "secret"],
       run: () => _deps.navigate("provider-keys"),
     },
+    // Lesson 725 (2026-08-28 21:30 MDT, David): MC Tasks. Paid-tier
+    // gate is enforced in the page itself; palette entry is universal
+    // so free users can click and see the upgrade CTA.
+    {
+      id: "page.tasks",
+      label: "Tasks",
+      category: "Page",
+      icon: "✅",
+      keywords: ["todo", "task", "reminder", "checklist", "follow-up", "milagro bot"],
+      run: () => _deps.navigate("tasks"),
+    },
     {
       id: "page.terminal.local",
       label: "Local Terminal",
