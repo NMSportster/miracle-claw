@@ -7,6 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.0.1 polish queue
 
+### v1.1.0-rc55.2 — 2026-08-29 (Local tools wired: 7 paid-tier tools now executable)
+
+Closes the long-standing TODO from 2026-08-28 ("Fix 7 broken local
+MC tools"). The 7 paid-tier local tools (read_file, write_file,
+edit_file, list_dir, bash_run, apply_patch, remember_fact) were
+advertised to the model via MAIC's `tools_for_tier`, but the
+client-side execution loop wasn't wired. MAIC returned `tool_calls`
+with `finish_reason: "tool_calls"`, OpenClaw's runner looked for a
+matching registered tool, found none, and either surfaced the
+tool_call back to the model as a string (model hallucinated a
+result) or never returned the loop. Fix: register the tools from
+inside the MAIC plugin so the runner can find them by name.
+
+Three layers of work in this release:
+
+1. **`api.registerTool()` for all 7 tools** (`depot/maic-plugin/index.js`,
+   Lesson 738): each tool gets a descriptor with the same OpenAI-compatible
+   parameter schemas MC's Rust side advertises (`src-tauri/src/tools/schemas.rs`).
+   The `execute(toolCallId, args)` callback spawns the
+   `miracle-claw-tools[.exe]` side-car binary (already bundled in the
+   installer alongside `miracle-claw.exe`) with the documented wire
+   protocol (`argv[1]=tool_name`, `argv[2]=params_json`, stdout=result,
+   stderr=error, exit 0/1). Returns content in OpenClaw's expected
+   `{ content: [{type: "text", text: stdout}] }` shape.
+
+2. **Binary path resolution via `import.meta.url`** (Lesson 738): the
+   plugin lives at `<resources>/maic-plugin/index.js`, the side-car
+   lives at `<resources>/miracle-claw-tools[.exe]`. `path.dirname(
+   path.dirname(fileURLToPath(import.meta.url)))` resolves the
+   resources dir at runtime. Works under both ESM dev mode and
+   bundled production builds because Tauri rewrites `import.meta.url`
+   to a `file://` URL pointing at the installed location.
+
+3. **Structured error returns** (Lesson 738): on `spawn` failure or
+   non-zero exit, `execute()` returns `{ content: [{type: "text",
+   text: "[tool_name error] <message>"}], details: { error: true,
+   tool: name } }` so the runner sees a normal content array and the
+   model gets a recoverable error message (vs. a thrown exception
+   that would abort the agent loop).
+
+Files changed:
+- `depot/maic-plugin/index.js` (Lesson 738 — `buildLocalToolDescriptors`,
+  `executeLocalTool`, `toolsBinaryPath`, `registerLocalTools`)
+- `depot/maic-plugin/test_plugin.js` (24 new tests covering
+  registration shape, schema parity, error paths — 54/54 pass)
+- `depot/maic-plugin/openclaw.plugin.json` (description updated,
+  version 0.2.0 → 0.3.0)
+- `depot/maic-plugin/package.json` (version 0.2.0 → 0.3.0)
+- `src-tauri/resources/maic-plugin/{index.js,test_plugin.js,...}`
+  (synced from depot — bundle script will re-sync on rebuild)
+
+End-to-end smoke (Linux dev mode, 2026-08-29 ~01:25 MDT):
+```
+$ node -e 'import("./depot/maic-plugin/index.js").then(({executeLocalTool}) => {
+    const out = executeLocalTool("bash_run", {command: "echo hello-from-mc-tools"});
+    console.log(out);
+  })'
+hello-from-mc-tools
+
+$ node -e 'import("./depot/maic-plugin/index.js").then(({executeLocalTool}) => {
+    const p = "/home/adeal/.local/share/miracle-claw/workspace/lesson-738-test.txt";
+    executeLocalTool("write_file", {path: p, content: "hello from lesson 738
+"});
+    console.log(executeLocalTool("read_file", {path: p}));
+  })'
+hello from lesson 738
+```
+
+Test results:
+- `cargo test --bin miracle-claw-tools`: ✓ builds clean
+- `cargo test --lib tools::`: 11/11 pass (no regressions)
+- `cargo test --lib`: 159/159 pass (no regressions)
+- `node test_plugin.js`: 54/54 pass (30 new Lesson 738 tests)
+
+`miracle-claw-tools` binary version alignment verified — the
+side-car reports the same `v1.1.0-rc55.1` as the main EXE
+(per the existing `BUILD_TIMESTAMP` banner convention, Lesson 528).
+
+Anti-pattern lesson for future MAIC plugin work:
+- The plugin uses `import.meta.url` to find the resources dir, NOT
+  `process.cwd()` or `__dirname` (Lesson 516 ESM sub-fix). `__dirname`
+  is undefined in pure ESM and `process.cwd()` is whatever the OS
+  shell happened to launch from.
+- `spawnSync` with `timeout: 60_000` covers `bash_run`'s hard cap
+  (max 60000ms in the schema). The Rust side enforces its own
+  timeout too — defense in depth.
+- Always return `{ content: [...] }` on error paths, don't throw.
+  A thrown `execute()` aborts the agent loop. A structured error
+  lets the model retry or pivot.
+
 ### v1.1.0-rc55.0 — 2026-08-29 (Tasks: MAIC agent loop closed — agent creates visible to user)
 
 This release closes the MAIC-agent ↔ MC-user Tasks loop end-to-end.
