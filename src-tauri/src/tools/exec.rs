@@ -371,6 +371,25 @@ fn apply_patch(params: &serde_json::Value) -> Result<String, String> {
     // For v1.0.7 we ship a minimal but compliant parser: it supports
     // a single Update File per patch, with hunk-style +/- diffs. The
     // parser is line-oriented and rejects ambiguous patches.
+    //
+    // Lesson 757 (2026-08-29 17:08 MDT, David): also accept standard
+    // unified-diff format (`--- a/path` / `+++ b/path` headers). The
+    // schema description says "unified-diff-like" but v1.0.7 only
+    // handled openai-style, so when the model or user sent a
+    // genuine unified-diff patch the parser silently no-op'd and
+    // returned `Ok("apply_patch: applied")` without writing anything.
+    // Root cause: `--- a/path` never matched `*** Update File:` so
+    // `current_path` stayed `None` for the entire loop, the trailing
+    // flush branch was skipped, and the function returned success.
+    //
+    // Two changes here:
+    //   (a) Recognize `--- path` and `+++ path` as path markers. We
+    //       use the `+++ path` (target file) — matching `git apply`
+    //       semantics.
+    //   (b) Track whether any file was actually applied; if neither
+    //       openai-style `*** Update File:` nor unified-diff `+++`
+    //       appeared in the patch, error with a clear "no file
+    //       modified" message instead of silently reporting success.
     let patch = params
         .get("patch")
         .and_then(|v| v.as_str())
@@ -381,21 +400,67 @@ fn apply_patch(params: &serde_json::Value) -> Result<String, String> {
     let mut in_hunk = false;
     let mut old_buf = String::new();
     let mut new_buf = String::new();
+    // Lesson 757: tracks whether the patch caused any writes. Used to
+    // detect the silent-no-op case where current_path never gets set
+    // (e.g. parser received a unified-diff format it doesn't recognize
+    // and silently ignored all path lines).
+    let mut applied_any = false;
 
     for line in patch.lines() {
         if let Some(path_str) = line.strip_prefix("*** Update File:") {
             // Flush previous file
             if let Some(p) = current_path.take() {
                 apply_one_hunk(&p, &hunks)?;
+                applied_any = true;
             }
             current_path = Some(normalize_user_path(path_str.trim())?);
             hunks.clear();
             in_hunk = false;
+        } else if let Some(rest) = line.strip_prefix("+++ ") {
+            // Lesson 757: unified-diff target-file marker. We use the
+            // `+++` line because that's the post-change path (matches
+            // git apply / patch semantics). Skip the `+++ /dev/null`
+            // case for now (file deletion) — emit a clear error if
+            // seen, since we don't support deletes in v1.
+            let raw = rest.trim();
+            if raw == "/dev/null" {
+                return Err(
+                    "apply_patch: file deletion via unified-diff '+++ /dev/null' not implemented".to_string(),
+                );
+            }
+            // Lesson 757: strip unified-diff `a/` and `b/` directory
+            // prefixes (the git convention). Without this, a path
+            // like `b//home/adeal/foo.txt` would fail the
+            // absolute-path check in normalize_user_path.
+            let stripped = raw
+                .strip_prefix("a/")
+                .or_else(|| raw.strip_prefix("b/"))
+                .unwrap_or(raw);
+            // Flush previous file before switching target
+            if let Some(p) = current_path.take() {
+                apply_one_hunk(&p, &hunks)?;
+                applied_any = true;
+            }
+            current_path = Some(normalize_user_path(stripped)?);
+            hunks.clear();
+            in_hunk = false;
+        } else if line.starts_with("--- ") {
+            // Lesson 757: unified-diff source-file marker. We don't
+            // use this for path resolution (use +++ instead), but we
+            // do ignore `--- /dev/null` (file creation) cleanly. For
+            // any other `---` line, just skip — the +++ line carries
+            // the actual target path.
+            //
+            // Note: We also need to NOT reset `in_hunk` here, because
+            // a `--- path` line should not abort a hunk in progress.
+            // The +++ line above is the one that switches targets.
+            continue;
         } else if line.starts_with("*** Begin Patch") || line.starts_with("*** End Patch") {
             // Sentinel lines; End Patch flushes.
             if line.starts_with("*** End Patch") {
                 if let Some(p) = current_path.take() {
                     apply_one_hunk(&p, &hunks)?;
+                    applied_any = true;
                 }
             }
         } else if line.starts_with("@@") {
@@ -429,6 +494,21 @@ fn apply_patch(params: &serde_json::Value) -> Result<String, String> {
     // Trailing file without explicit End Patch.
     if let Some(p) = current_path.take() {
         apply_one_hunk(&p, &hunks)?;
+        applied_any = true;
+    }
+
+    // Lesson 757: fail loud instead of silent no-op. If the patch
+    // text was syntactically parseable but never produced a write
+    // (e.g. user sent a unified-diff with neither --- nor +++ that
+    // we recognized), surface that as an error so the model / user
+    // gets a clear signal rather than a false-positive success.
+    if !applied_any {
+        return Err(
+            "apply_patch: patch parsed but no file modified. \
+             Expected either openai-style '*** Update File: path' or \
+             unified-diff '+++ path' header."
+                .to_string(),
+        );
     }
 
     Ok("apply_patch: applied".to_string())
@@ -506,5 +586,147 @@ mod tests {
         // Windows-style variants. Verify there are at least 4 unique
         // base dirs.
         assert!(roots.len() >= 4, "expected at least 4 roots, got {}", roots.len());
+    }
+
+    // Lesson 757 (2026-08-29 17:08 MDT, David): the apply_patch
+    // parser silently no-op'd on unified-diff format (`--- a/path` /
+    // `+++ b/path` headers) and returned `Ok("apply_patch: applied")`
+    // without writing anything. These tests pin both the original
+    // openai-style format and the newly-supported unified-diff format
+    // so the regression can't sneak back in.
+    //
+    // Setup: a per-test fixture file in the first allowed root
+    // (Documents/Desktop/Downloads/workspace), which is always
+    // passable through `assert_path_allowed()` regardless of host OS.
+
+    fn fixture_root() -> std::path::PathBuf {
+        // Walk allowed_roots() and pick the first one we can both
+        // read AND write to (and whose parent exists). On dev boxes
+        // some roots (e.g. Downloads/) may not exist; skip those.
+        for p in allowed_roots() {
+            if p.is_absolute() && p.exists() && p.is_dir() {
+                return p;
+            }
+        }
+        // Fallback: create the workspace dir if nothing else works.
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let workspace = std::path::PathBuf::from(format!(
+            "{}/.local/share/miracle-claw/workspace",
+            home
+        ));
+        std::fs::create_dir_all(&workspace).expect("create workspace dir");
+        workspace
+    }
+
+    fn write_fixture(name: &str, content: &str) -> std::path::PathBuf {
+        let p = fixture_root().join(name);
+        std::fs::write(&p, content).expect("write fixture");
+        p
+    }
+
+    #[test]
+    fn apply_patch_openai_style_writes_file() {
+        let path = write_fixture(
+            "lesson757_openai.txt",
+            "hello world\nfoo bar\nbaz qux\n",
+        );
+        let path_str = path.to_string_lossy().to_string();
+        let patch = format!(
+            "*** Begin Patch\n*** Update File: {}\n@@\n-hello world\n+GOODBYE WORLD\n*** End Patch",
+            path_str
+        );
+        let params = serde_json::json!({ "patch": patch });
+        let result = apply_patch(&params);
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "GOODBYE WORLD\nfoo bar\nbaz qux\n");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn apply_patch_unified_diff_with_ab_prefix_writes_file() {
+        // Lesson 757: this is the format that used to silently no-op.
+        let path = write_fixture(
+            "lesson757_unified_ab.txt",
+            "hello world\nfoo bar\nbaz qux\n",
+        );
+        let path_str = path.to_string_lossy().to_string();
+        let patch = format!(
+            "--- a/{0}\n+++ b/{0}\n@@ -1 +1 @@\n-hello world\n+GOODBYE WORLD",
+            path_str
+        );
+        let params = serde_json::json!({ "patch": patch });
+        let result = apply_patch(&params);
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            content, "GOODBYE WORLD\nfoo bar\nbaz qux\n",
+            "unified-diff with a/b prefix should have modified the file"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn apply_patch_unified_diff_plain_prefix_writes_file() {
+        let path = write_fixture(
+            "lesson757_unified_plain.txt",
+            "hello world\nfoo bar\nbaz qux\n",
+        );
+        let path_str = path.to_string_lossy().to_string();
+        let patch = format!(
+            "--- {0}\n+++ {0}\n@@ -1 +1 @@\n-hello world\n+GOODBYE WORLD",
+            path_str
+        );
+        let params = serde_json::json!({ "patch": patch });
+        let result = apply_patch(&params);
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "GOODBYE WORLD\nfoo bar\nbaz qux\n");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn apply_patch_no_path_header_errors_not_silent_success() {
+        // Lesson 757: malformed patch with hunk body but NO path header
+        // (neither openai `*** Update File:` nor unified-diff `+++`)
+        // must error, not return Ok("applied").
+        let params = serde_json::json!({
+            "patch": "@@\n-foo\n+bar"
+        });
+        let result = apply_patch(&params);
+        assert!(
+            result.is_err(),
+            "expected Err for path-less patch, got {:?}",
+            result
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("no file modified"),
+            "error message should explain no file was modified: {:?}",
+            msg
+        );
+    }
+
+    #[test]
+    fn apply_patch_devnull_target_errors() {
+        // Lesson 757: file deletion via unified-diff `+++ /dev/null`
+        // is not implemented in v1; surface as a clear error.
+        let path = write_fixture(
+            "lesson757_devnull.txt",
+            "hello world\n",
+        );
+        let path_str = path.to_string_lossy().to_string();
+        let patch = format!(
+            "--- a/{0}\n+++ /dev/null\n@@ -1 +0 @@\n-hello world\n",
+            path_str
+        );
+        let params = serde_json::json!({ "patch": patch });
+        let result = apply_patch(&params);
+        assert!(result.is_err(), "expected Err for /dev/null target");
+        assert!(
+            result.unwrap_err().contains("not implemented"),
+            "error should explain deletion is not implemented"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }
