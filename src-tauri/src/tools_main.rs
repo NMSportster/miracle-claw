@@ -9,10 +9,18 @@
 // Wire protocol:
 //   - argv[1] = tool name (e.g. "read_file")
 //   - argv[2] (optional) = JSON-encoded params object (matches the OpenAI tool schema)
-//   - stdin (if no argv[2]) = JSON-encoded params object
+//                      OR the literal "-" sentinel, which means "read params from stdin"
+//   - stdin = JSON-encoded params object (used when argv[2] is "-", or when no argv[2])
 //   - stdout = the tool result as a UTF-8 string (the model sees this)
 //   - stderr = error message on failure
 //   - exit 0 = success, exit 1 = error, exit 2 = usage error
+//
+// Lesson 837 (2026-08-30): The plugin uses `useStdin = (process.platform === "win32"
+// || paramsJson.length >= 2048)` and sends `[toolName, "-"]` when stdin is needed
+// (always on Windows). The binary must recognize "-" as a sentinel and read params
+// from stdin. Lesson 804's plugin-side fix shipped in rc55.13, but this binary side
+// was missed — every rc55.13+ Windows tool call has been failing with
+// `argv[2] is not valid JSON: EOF while parsing a value at line 1 column 1`.
 //
 // All business logic lives in `tools::exec::dispatch`. This file is
 // intentionally thin — just argv/stdin parsing and exit code mapping.
@@ -52,8 +60,8 @@ fn main() {
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: miracle-claw-tools <tool_name> [params_json]");
-        eprintln!("  or read JSON params from stdin if no argv[2]");
+        eprintln!("usage: miracle-claw-tools <tool_name> [params_json_or_-]");
+        eprintln!("  pass params as argv[2] OR pass \"-\" to read JSON params from stdin");
         eprintln!("  valid tool names: {:?}", ALL_LOCAL_TOOL_NAMES);
         std::process::exit(2);
     }
@@ -70,8 +78,15 @@ fn main() {
     }
 
     // Read params: prefer argv[2], fall back to stdin.
-    let params = if args.len() >= 3 {
-        match serde_json::from_str(&args[2]) {
+    // Lesson 837: argv[2] = "-" is the stdin sentinel used by the plugin on
+    // Windows (and when params JSON > 2 KiB).
+    let params_from_argv: Option<String> = if args.len() >= 3 && args[2] != "-" {
+        Some(args[2].clone())
+    } else {
+        None
+    };
+    let params = if let Some(json_str) = params_from_argv {
+        match serde_json::from_str(&json_str) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("argv[2] is not valid JSON: {}", e);

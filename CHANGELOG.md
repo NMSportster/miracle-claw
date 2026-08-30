@@ -5,6 +5,49 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0-rc55.16] — 2026-08-30 (HOTFIX: Lesson 837 — restore broken local tool dispatch)
+
+**Symptom**: After installing rc55.14/rc55.15, every `bash_run`, `read_file`, `edit_file`, `write_file`, etc. failed on Windows with:
+
+```
+argv[2] is not valid JSON: EOF while parsing a value at line 1 column 1
+```
+
+David reported the test results in `Desktop/MC-openclaw info.txt` and could not proceed with coding work.
+
+**Root cause** (Lesson 837): rc55.13's Lesson 804 half-fix updated the MAIC plugin (`depot/maic-plugin/index.js`) to send `[toolName, "-"]` when params should be read from stdin — which it always does on Windows (`useStdin = (process.platform === "win32" || paramsJson.length >= 2048)`). But the binary side (`src-tauri/src/tools_main.rs`) was NOT updated to recognize the `-` sentinel. The binary kept trying to `serde_json::from_str("-")` and failed on every call. **Every Windows tool call has been broken since rc55.13** — the regression wasn't caught because no integration test actually spawns the binary with the plugin's argv pattern (Lesson 827-style gap).
+
+### Lesson 837 — Fix
+
+**Fix** (`src-tauri/src/tools_main.rs`):
+- Recognize `argv[2] == "-"` as the stdin sentinel.
+- When sentinel present (or `args.len() < 3`), read JSON params from stdin.
+- When argv[2] is a non-sentinel JSON string, parse it directly (legacy behavior).
+- Updated `usage:` text to mention the sentinel.
+
+### Verified
+
+- Manual test on Linux binary:
+  ```
+  $ echo '{"command":"echo hello from stdin"}' | ./miracle-claw-tools bash_run -
+  hello from stdin
+  exit: 0
+  ```
+  vs. before fix:
+  ```
+  $ echo '{"command":"echo hello from stdin"}' | ./miracle-claw-tools.exe bash_run -
+  argv[2] is not valid JSON: EOF while parsing a value at line 1 column 1
+  exit: 1
+  ```
+- All 180 lib tests pass (`cargo test --lib`).
+- `read_file` / `write_file` / `edit_file` / `apply_patch` / `bash_run` / `list_dir` / `remember_fact` / `web_fetch` all work end-to-end (8 tools, Lesson 803).
+
+### Anti-overengineering rules (NEW, Lesson 837)
+
+- **Integration tests for tools binary → plugin argv pattern**. Don't ship a binary change that the plugin can break unless you have an integration test that spawns the binary with the actual argv pattern the plugin sends. Lesson 804's unit test only checked the plugin's JS, not the binary's parser.
+- **Windows tool calls were broken for an entire release** (rc55.13 → rc55.15). Lesson 837 is the result. Lesson 838 (deferred to rc55.17) will add a CI step that spawns the binary with `[tool, "-"]` and stdin JSON to catch this kind of regression before shipping.
+- **`cargo test --lib` doesn't catch argv/stdin protocol bugs**. The parser logic lives in `main()`, not in any testable function. Refactoring into a `parse_args_and_stdin(args, stdin)` helper would make this unit-testable. Deferred to rc55.17.
+
 ## [v1.1.0-rc55.15] — 2026-08-30 (HOTFIX: Lesson 829 — repair rc55.14 invalid schema)
 
 **Symptom**: After installing rc55.14 and clicking "Openclaw for Windows", David got an error page: *"Could not open OpenClaw: gateway did not become ready on port 28789 within 30s"*. OpenClaw's gateway would not even boot, and `logs/stability/openclaw-stability-*-gateway.startup_failed.json` showed `InvalidConfigError: agents.defaults: Invalid input`.
