@@ -1574,8 +1574,8 @@ pub(crate) fn ensure_agents_default_model_for_tier(
     // merge — either fix alone resolves the user-visible bug, both together
     // make it impossible to regress on a partial upgrade.
     const PROVIDER_PREFIX: &str = "maic/";
-    let primary = format!("{PROVIDER_PREFIX}{}", tier_default_model_id(tier));
-    let fallbacks: Vec<String> = tier_default_fallbacks(tier)
+    let default_primary = format!("{PROVIDER_PREFIX}{}", tier_default_model_id(tier));
+    let default_fallbacks: Vec<String> = tier_default_fallbacks(tier)
         .iter()
         .map(|s| format!("{PROVIDER_PREFIX}{s}"))
         .collect();
@@ -1591,7 +1591,7 @@ pub(crate) fn ensure_agents_default_model_for_tier(
         None => return Ok(false),
     };
 
-    // Walk to `agents.defaults.model`.
+    // Walk to `agents.defaults`.
     let agents = cfg
         .as_object_mut()
         .and_then(|o| o.get_mut("agents"))
@@ -1619,42 +1619,100 @@ pub(crate) fn ensure_agents_default_model_for_tier(
         }
     };
 
-    // Read the existing model entry to decide whether to write.
-    let existing_primary = defaults
-        .get("model")
-        .and_then(|m| m.get("primary"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-
-    // Non-destructive: only write if no primary is set OR primary is empty.
-    // We deliberately do NOT overwrite an existing non-empty primary — that
-    // means the user picked one and we should respect it across logins.
-    let needs_write = match existing_primary.as_deref() {
-        None | Some("") => true,
-        Some(_) => false, // user already chose; don't clobber
+    // Lesson 800 (2026-08-30, rc55.13): migrate old schema
+    //   `agents.defaults.model = { primary, fallbacks }`
+    // to the new flat schema openclaw ships now:
+    //   `agents.defaults.model = "<provider>/<id>"`  (string)
+    //   `agents.defaults.fallbacks = ["<provider>/<id>", ...]`
+    //
+    // The old schema still WORKS at runtime (resolveSelectedModelFallbacksOverride
+    // in agent-scope-B2Pk_xhT.js handles both), so this migration is purely
+    // cosmetic for correctness — but it removes a foot-gun where a future
+    // openclaw schema validator might reject the nested object form, and
+    // it lets us drop the special-case branch in the writer below.
+    //
+    // We migrate in-place and only treat the file as "needs write" if the
+    // shape actually changed (or primary is still missing).
+    let mut schema_changed = false;
+    let existing_primary: Option<String> = match defaults.get("model") {
+        Some(Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
+        Some(Value::Object(obj)) => {
+            // Old {primary, fallbacks} shape — flatten to the new schema.
+            let primary = obj
+                .get("primary")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let fallbacks: Vec<String> = obj
+                .get("fallbacks")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Replace `model` with a string. Preserve user's choice of primary.
+            if let Some(p) = primary.as_deref() {
+                defaults.as_object_mut().unwrap().insert(
+                    "model".to_string(),
+                    Value::String(p.to_string()),
+                );
+            } else {
+                defaults.as_object_mut().unwrap().remove("model");
+            }
+            // Move `fallbacks` to top-level. Drop the in-object copy.
+            if fallbacks.is_empty() {
+                defaults.as_object_mut().unwrap().remove("fallbacks");
+            } else {
+                let arr: Vec<Value> = fallbacks
+                    .iter()
+                    .map(|s| Value::String(s.clone()))
+                    .collect();
+                defaults.as_object_mut().unwrap().insert(
+                    "fallbacks".to_string(),
+                    Value::Array(arr),
+                );
+            }
+            schema_changed = true;
+            primary
+        }
+        _ => None,
     };
-    if !needs_write {
+
+    // Non-destructive: only seed defaults when no primary is set OR the
+    // existing primary is empty. We deliberately do NOT overwrite a user's
+    // explicit non-empty primary — that means they picked one and we
+    // should respect it across logins.
+    let needs_seed = match existing_primary.as_deref() {
+        None | Some("") => true,
+        Some(_) => false,
+    };
+    if !needs_seed && !schema_changed {
         return Ok(false);
     }
 
-    let model_obj = defaults
-        .as_object_mut()
-        .unwrap()
-        .entry("model".to_string())
-        .or_insert_with(|| Value::Object(Default::default()));
-    if !model_obj.is_object() {
-        *model_obj = Value::Object(Default::default());
-    }
-    let model_obj = model_obj.as_object_mut().unwrap();
-
-    model_obj.insert("primary".to_string(), Value::String(primary.to_string()));
-    if fallbacks.is_empty() {
-        // Free: clear any stale fallback array left over from a paid
-        // account's downgrade (so the dropdown shows just `milagro-dev`).
-        model_obj.remove("fallbacks");
-    } else {
-        let fb: Vec<Value> = fallbacks.iter().map(|s| Value::String(s.to_string())).collect();
-        model_obj.insert("fallbacks".to_string(), Value::Array(fb));
+    if needs_seed {
+        defaults.as_object_mut().unwrap().insert(
+            "model".to_string(),
+            Value::String(default_primary.to_string()),
+        );
+        if default_fallbacks.is_empty() {
+            // Free: clear any stale top-level fallback array left over
+            // from a paid account's downgrade (so the dropdown shows
+            // just the default).
+            defaults.as_object_mut().unwrap().remove("fallbacks");
+        } else {
+            let fb: Vec<Value> = default_fallbacks
+                .iter()
+                .map(|s| Value::String(s.to_string()))
+                .collect();
+            defaults.as_object_mut().unwrap().insert(
+                "fallbacks".to_string(),
+                Value::Array(fb),
+            );
+        }
     }
 
     // Persist. Use atomic temp-file + rename so a crash mid-write doesn't
@@ -1669,8 +1727,8 @@ pub(crate) fn ensure_agents_default_model_for_tier(
     fs::rename(&tmp, &path)?;
 
     eprintln!(
-        "[miracle-claw] tier: wrote agents.defaults.model primary={} fallbacks={:?} (tier={})",
-        primary, fallbacks, tier.as_str()
+        "[miracle-claw] tier: wrote agents.defaults.model primary={} fallbacks={:?} (tier={}, schema_migrated={})",
+        default_primary, default_fallbacks, tier.as_str(), schema_changed
     );
     Ok(true)
 }
@@ -5105,7 +5163,7 @@ fn mc_list_tools() -> Vec<crate::tools::LocalToolName> {
 /// `miracle-claw-tools` binary.
 ///
 /// **Lesson 526 (NEW 2026-08-21)**: gating removed. ALL tiers get the
-/// 7 tools — Free users are rate-limited by TPM (50K) but otherwise
+/// 8 tools — Free users are rate-limited by TPM (50K) but otherwise
 /// have the same capabilities. The tier parameter is kept for
 /// signature stability and forward-compatibility (e.g. if we later
 /// add tier-specific tools, this is the seam).
@@ -5179,8 +5237,25 @@ fn mc_set_tier_defaults(force: Option<bool>) -> Result<bool, String> {
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         {
-            if let Some(primary) = cfg.pointer_mut("/agents/defaults/model/primary") {
-                *primary = serde_json::Value::String(String::new());
+            // Lesson 800 (rc55.13): new flat schema is
+            //   `agents.defaults.model = "<provider>/<id>"`  (string)
+            // Clear the primary string in-place so the writer below
+            // stamps the tier default. Tolerate the old object schema
+            // too so a force-reset works during the migration window.
+            if let Some(model_val) = cfg
+                .pointer_mut("/agents/defaults/model")
+            {
+                match model_val {
+                    serde_json::Value::String(_) => {
+                        *model_val = serde_json::Value::String(String::new());
+                    }
+                    serde_json::Value::Object(obj) => {
+                        if let Some(primary) = obj.get_mut("primary") {
+                            *primary = serde_json::Value::String(String::new());
+                        }
+                    }
+                    _ => {}
+                }
             }
             if let Ok(serialized) = serde_json::to_string_pretty(&cfg) {
                 let _ = std::fs::write(&path, serialized);
@@ -7340,12 +7415,12 @@ mod tests {
     // ---------------------------------------------------------------------
     // v1.0.7: tools_for_tier gating → REMOVED in Lesson 526 (2026-08-21)
     // ---------------------------------------------------------------------
-    // Previously Free got 0 tools; now ALL tiers get all 7 tools. The
+    // Previously Free got 0 tools; now ALL tiers get all 8 tools. The
     // tier parameter is kept on `tools_for_tier(tier)` for future
     // forward-compat but currently ignores it.
 
     #[test]
-    fn tools_for_tier_returns_all_seven_for_every_tier() {
+    fn tools_for_tier_returns_all_eight_for_every_tier() {
         // Lesson 526 (NEW 2026-08-21 13:55 MDT): all tiers get all 7
         // tools. Rate limiting (per-tier TPM) is the actual control.
         // Lesson 737 (NEW 2026-08-29, David): Starter/StarterPlus are
@@ -7362,8 +7437,8 @@ mod tests {
             let tools = tools_for_tier(t);
             assert_eq!(
                 tools.len(),
-                7,
-                "Lesson 526: tier {:?} should have 7 local tools (was Free=0)",
+                8,
+                "Lesson 526: tier {:?} should have 8 local tools (was Free=0)",
                 t
             );
         }
@@ -7867,12 +7942,12 @@ mod tests {
     }
 
     #[test]
-    fn no_tier_default_writes_all_seven_tools() {
+    fn no_tier_default_writes_all_eight_tools() {
         // Lesson 523 (was): setup() / login-required bootstrap (no
         // tier context) defaulted to Free → empty tools array.
         //
         // Lesson 526 (NEW 2026-08-21): gating removed. ALL tiers,
-        // including Free, get all 7 tools. The "no tier" case
+        // including Free, get all 8 tools. The "no tier" case
         // (login-required bootstrap before MAIC responds) now also
         // gets all 7 — better to advertise capabilities than to
         // hide them behind a tier check that may be wrong.
@@ -7883,14 +7958,14 @@ mod tests {
         ensure_maic_provider_config().expect("ok");
         let len = read_tools_array_len().expect("params.tools should be present");
         assert_eq!(
-            len, 7,
-            "no-tier bootstrap gets all 7 tools (Lesson 526); was 0 before"
+            len, 8,
+            "no-tier bootstrap gets all 8 tools (Lesson 526); was 0 before"
         );
     }
 
     #[test]
-    fn free_tier_writes_all_seven_tools() {
-        // Lesson 526: Free tier gets all 7 tools. Rate limiting
+    fn free_tier_writes_all_eight_tools() {
+        // Lesson 526: Free tier gets all 8 tools. Rate limiting
         // (TPM) is the actual control, not capability gating.
         let _lock = lock_env();
         let _g = fresh_env();
@@ -7898,11 +7973,11 @@ mod tests {
 
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free).expect("ok");
         let len = read_tools_array_len().expect("params.tools should be present");
-        assert_eq!(len, 7, "Free tier gets all 7 tools (Lesson 526); was 0");
+        assert_eq!(len, 8, "Free tier gets all 8 tools (Lesson 526); was 0");
     }
 
     #[test]
-    fn paid_tiers_write_all_seven_tools() {
+    fn paid_tiers_write_all_eight_tools() {
         // Lesson 737 (2026-08-29, David): all paid tiers share features.
         for tier in [
             crate::auth::tier::Tier::Starter,
@@ -7920,8 +7995,8 @@ mod tests {
             let names = read_tools_names();
             assert_eq!(
                 names.len(),
-                7,
-                "tier {tier:?} should write 7 tools, got {} ({names:?})",
+                8,
+                "tier {tier:?} should write 8 tools, got {} ({names:?})",
                 names.len()
             );
             // Verify the wire format (Lesson 513): each entry is
@@ -7949,7 +8024,7 @@ mod tests {
             // Spot-check that all 7 names are present.
             for expected in [
                 "read_file", "write_file", "edit_file", "list_dir",
-                "bash_run", "apply_patch", "remember_fact",
+                "bash_run", "apply_patch", "remember_fact", "web_fetch",
             ] {
                 assert!(
                     names.iter().any(|n| n == expected),
@@ -7965,19 +8040,19 @@ mod tests {
         // configs from being silently overwritten on every login.
         //
         // Lesson 526 (NEW 2026-08-21): tools_for_tier returns 7 for
-        // ALL tiers, so a `[]` on disk always gets re-stamped to 7.
+        // ALL tiers, so a `[]` on disk always gets re-stamped to 8.
         // But NON-EMPTY arrays (the actual user-edited case — e.g.
         // user removed a tool they don't want) must still be preserved.
         let _lock = lock_env();
         let _g = fresh_env();
         env::set_var("MAIC_API_KEY", "any-key");
 
-        // First call: Pro tier writes 7 tools.
+        // First call: Pro tier writes 8 tools.
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro).expect("ok");
-        assert_eq!(read_tools_array_len(), Some(7));
+        assert_eq!(read_tools_array_len(), Some(8));
 
         // Mutate the on-disk config to a smaller array (user removed
-        // 6 of the 7 tools by hand).
+        // 7 of the 8 tools by hand).
         let path = openclaw_json_path();
         let raw = std::fs::read_to_string(&path).expect("read");
         let mut cfg: serde_json::Value = serde_json::from_str(&raw).expect("parse");
@@ -7988,7 +8063,7 @@ mod tests {
             .expect("write");
 
         // Second call: any tier. The non-empty single-tool array
-        // must be preserved (not re-stamped to 7).
+        // must be preserved (not re-stamped to 8).
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Free).expect("ok");
         assert_eq!(
             read_tools_array_len(),
@@ -8067,7 +8142,7 @@ mod tests {
         // the addition of 3 Nemotron models
         // (chat-nemotron-nano/super/ultra). nano is also added to
         // Free (test asserts that separately).
-        // Note: existing tests like `paid_tiers_write_all_seven_tools`
+        // Note: existing tests like `paid_tiers_write_all_eight_tools`
         // test the TOOLS list, not the model list. This is the
         // parallel test for models.
         // Lesson 737 (2026-08-29, David): all paid tiers share models too.
@@ -8194,14 +8269,14 @@ mod tests {
         )
         .expect("write");
 
-        // Call with Pro tier. Must re-stamp tools from `[]` to 7 entries.
+        // Call with Pro tier. Must re-stamp tools from `[]` to 8 entries.
         ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro)
             .expect("ok");
 
         let names = read_tools_names();
         assert_eq!(
             names.len(),
-            7,
+            8,
             "Lesson 525: existing-entry with empty `params.tools: []` must be re-stamped for Pro (got {names:?})"
         );
         // Verify the original apiKey was preserved.
@@ -8267,7 +8342,7 @@ mod tests {
         let names = read_tools_names();
         assert_eq!(
             names.len(),
-            7,
+            8,
             "Lesson 524: existing-entry early-return path must still stamp tools (got {names:?})"
         );
         // Verify the original apiKey was preserved (not overwritten).
@@ -8462,12 +8537,59 @@ mod tests {
     /// after `ensure_maic_provider_config`. Returns the temp dir guard so
     /// the file lives for the test scope.
     ///
+    /// Lesson 800 (rc55.13): default schema is the new flat one
+    ///   `agents.defaults.model = "<provider>/<id>"`  (string)
+    ///   `agents.defaults.fallbacks = [...]`  (top-level array)
+    /// For tests that exercise the migration path, use
+    /// `fresh_openclaw_with_legacy_object_model` instead.
+    ///
     /// Note: openclaw_json_path() resolves to `<HOME>/.miracle-claw/openclaw.json`
     /// on non-Windows builds (and `<APPDATA>/MiracleClaw/openclaw.json` on
     /// Windows), NOT `<HOME>/.openclaw/openclaw.json` — that was a steeler
     /// convention we don't use. This helper mirrors what the production
     /// code resolves to.
     fn fresh_openclaw_with_model(primary: Option<&str>, fallbacks: Option<Vec<&str>>) -> EnvGuard {
+        let g = fresh_env();
+        let path = if cfg!(windows) {
+            g._temp.path().join("MiracleClaw").join("openclaw.json")
+        } else {
+            g._temp.path().join(".miracle-claw").join("openclaw.json")
+        };
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut cfg = serde_json::json!({
+            "models": { "providers": { "maic": {} } }
+        });
+        if primary.is_some() || fallbacks.is_some() {
+            // New flat schema.
+            let mut defaults = serde_json::Map::new();
+            if let Some(p) = primary {
+                defaults.insert(
+                    "model".to_string(),
+                    serde_json::Value::String(p.to_string()),
+                );
+            }
+            if let Some(fb) = fallbacks {
+                let arr: Vec<serde_json::Value> = fb
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.to_string()))
+                    .collect();
+                defaults.insert("fallbacks".to_string(), serde_json::Value::Array(arr));
+            }
+            cfg["agents"] = serde_json::json!({
+                "defaults": serde_json::Value::Object(defaults)
+            });
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+        g
+    }
+
+    /// Same as `fresh_openclaw_with_model` but emits the pre-rc55.13
+    /// nested-object schema so the migration test can verify the writer
+    /// flattens it to the new shape.
+    fn fresh_openclaw_with_legacy_object_model(
+        primary: Option<&str>,
+        fallbacks: Option<Vec<&str>>,
+    ) -> EnvGuard {
         let g = fresh_env();
         let path = if cfg!(windows) {
             g._temp.path().join("MiracleClaw").join("openclaw.json")
@@ -8511,7 +8633,7 @@ mod tests {
         // openclaw gateway dispatches via MAIC's baseUrl regardless of
         // catalog state (defends against the rc18→rc19/20 upgrade gap
         // fixed in Lesson 520).
-        let primary = cfg.pointer("/agents/defaults/model/primary").unwrap();
+        let primary = cfg.pointer("/agents/defaults/model").unwrap();
         // Lesson 569 (2026-08-24 22:57 MDT, David): Free default switched
         // BACK to local m1-t1 (zero Ollama usage) from cloud-deepseek
         // (Lesson 566). Reason: deepseek = Ollama usage level 4 (extra
@@ -8522,7 +8644,7 @@ mod tests {
         // Lesson 569: Free NOW has a 3-step fallback chain ending at the
         // cheapest cloud route (chat-nemotron-nano, level 1).
         let fallbacks: Vec<String> = cfg
-            .pointer("/agents/defaults/model/fallbacks")
+            .pointer("/agents/defaults/fallbacks")
             .expect("Free must have fallbacks array (Lesson 569)")
             .as_array()
             .unwrap()
@@ -8552,11 +8674,11 @@ mod tests {
         // (empirically the only paid-tier model that reliably fires
         // our plugin's local tools). Lesson 798: prefixed at writer.
         assert_eq!(
-            cfg.pointer("/agents/defaults/model/primary").unwrap(),
+            cfg.pointer("/agents/defaults/model").unwrap(),
             "maic/milagro-oc-glm"
         );
         let fallbacks: Vec<String> = cfg
-            .pointer("/agents/defaults/model/fallbacks")
+            .pointer("/agents/defaults/fallbacks")
             .unwrap()
             .as_array()
             .unwrap()
@@ -8585,7 +8707,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         // Primary still the user's pick, NOT Kimi.
         assert_eq!(
-            cfg.pointer("/agents/defaults/model/primary").unwrap(),
+            cfg.pointer("/agents/defaults/model").unwrap(),
             "milagro-dev-coder"
         );
     }
@@ -8605,7 +8727,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         // Lesson 795 (2026-08-30): primary is GLM, not Kimi.
         assert_eq!(
-            cfg.pointer("/agents/defaults/model/primary").unwrap(),
+            cfg.pointer("/agents/defaults/model").unwrap(),
             "maic/milagro-oc-glm"
         );
     }
@@ -8637,13 +8759,13 @@ mod tests {
             // Lesson 521: provider-prefixed primary + fallbacks.
             // Lesson 795: primary is GLM.
             assert_eq!(
-                cfg.pointer("/agents/defaults/model/primary").unwrap(),
+                cfg.pointer("/agents/defaults/model").unwrap(),
                 "maic/milagro-oc-glm",
                 "{:?} primary must be GLM (Lesson 795)",
                 tier,
             );
             let fallbacks: Vec<String> = cfg
-                .pointer("/agents/defaults/model/fallbacks")
+                .pointer("/agents/defaults/fallbacks")
                 .unwrap()
                 .as_array()
                 .unwrap()
@@ -8679,14 +8801,14 @@ mod tests {
         // also re-introduces a Free fallback chain (was empty); the chain
         // walks cheap → expensive (local 7B → local 14B → cloud nano).
         assert_eq!(
-            cfg.pointer("/agents/defaults/model/primary").unwrap(),
+            cfg.pointer("/agents/defaults/model").unwrap(),
             "maic/milagro-m1-t1"
         );
         // Lesson 569: Free now has a 3-step fallback chain ending at
         // chat-nemotron-nano. The downgrade REPLACES the stale paid
         // fallbacks with Free's chain (does not leave them).
         let fallbacks: Vec<String> = cfg
-            .pointer("/agents/defaults/model/fallbacks")
+            .pointer("/agents/defaults/fallbacks")
             .expect("Free must have fallbacks (Lesson 569)")
             .as_array()
             .unwrap()
@@ -8697,6 +8819,82 @@ mod tests {
             fallbacks,
             vec!["maic/milagro-m1-t2", "maic/milagro-m1-t3", "maic/chat-nemotron-nano"],
             "Free downgrade must replace paid fallbacks with Free's m1-t chain"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Lesson 800 tests (rc55.13 schema migration)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lesson_800_migrates_legacy_object_schema_to_flat_string() {
+        // Pre-rc55.13 openclaw.json shape:
+        //   agents.defaults.model = { primary: "...", fallbacks: [...] }
+        // Post-rc55.13 shape:
+        //   agents.defaults.model = "..."      (string)
+        //   agents.defaults.fallbacks = [...]  (top-level array)
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_legacy_object_model(
+            Some("milagro-oc-kimi"),
+            Some(vec!["milagro-oc-minimax", "milagro-oc-glm", "milagro-dev"]),
+        );
+
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("writer should succeed");
+        // Migration IS a write — the schema changed even though primary was set.
+        assert!(
+            wrote,
+            "legacy object schema must trigger migration write (Lesson 800)"
+        );
+
+        let path = openclaw_json_path();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // New schema: model is a top-level string, fallbacks top-level array.
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model").unwrap(),
+            "milagro-oc-kimi",
+            "user's primary preserved during migration"
+        );
+        let fallbacks: Vec<String> = cfg
+            .pointer("/agents/defaults/fallbacks")
+            .expect("fallbacks must be at top level after migration")
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            fallbacks,
+            vec!["milagro-oc-minimax", "milagro-oc-glm", "milagro-dev"],
+            "user's fallbacks preserved during migration"
+        );
+        // The old object form must be gone.
+        assert!(
+            cfg.pointer("/agents/defaults/model/primary").is_none(),
+            "legacy /agents/defaults/model/primary must be removed after migration"
+        );
+        assert!(
+            cfg.pointer("/agents/defaults/model/fallbacks").is_none(),
+            "legacy /agents/defaults/model/fallbacks must be removed after migration"
+        );
+    }
+
+    #[test]
+    fn lesson_800_no_op_when_already_flat_string() {
+        // Already on the new schema — writer should NOT trigger a write
+        // unless the primary is empty.
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(
+            Some("milagro-oc-kimi"),
+            Some(vec!["milagro-oc-minimax"]),
+        );
+
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("writer should succeed");
+        assert!(
+            !wrote,
+            "already-flat schema with non-empty primary must be a no-op"
         );
     }
 

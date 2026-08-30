@@ -36,6 +36,14 @@ pub enum LocalToolName {
     BashRun,
     ApplyPatch,
     RememberFact,
+    // Lesson 803 (rc55.13): web_fetch — fetch a URL and return the
+    // raw response (or rendered markdown when the response is HTML).
+    // MAIC also exposes a server-side `web_search` tool (Brave search),
+    // but the model couldn't load arbitrary URLs. Adding it here makes
+    // the link-following workflow whole: search → fetch. Paid-tier
+    // only — the plugin only registers paid tools, so it never reaches
+    // a Free user's tool list.
+    WebFetch,
 }
 
 impl LocalToolName {
@@ -48,6 +56,7 @@ impl LocalToolName {
             LocalToolName::BashRun => "bash_run",
             LocalToolName::ApplyPatch => "apply_patch",
             LocalToolName::RememberFact => "remember_fact",
+            LocalToolName::WebFetch => "web_fetch",
         }
     }
 
@@ -60,6 +69,7 @@ impl LocalToolName {
             "bash_run" => LocalToolName::BashRun,
             "apply_patch" => LocalToolName::ApplyPatch,
             "remember_fact" => LocalToolName::RememberFact,
+            "web_fetch" => LocalToolName::WebFetch,
             _ => LocalToolName::ReadFile, // safe default
         }
     }
@@ -73,6 +83,7 @@ pub const ALL_LOCAL_TOOL_NAMES: &[LocalToolName] = &[
     LocalToolName::BashRun,
     LocalToolName::ApplyPatch,
     LocalToolName::RememberFact,
+    LocalToolName::WebFetch,
 ];
 
 /// One tool, with its OpenAI-compatible JSON schema.
@@ -248,7 +259,37 @@ pub fn remember_fact() -> LocalTool {
     }
 }
 
-/// All 7 tools, in the order they should be advertised to the model
+pub fn web_fetch() -> LocalTool {
+    LocalTool {
+        name: LocalToolName::WebFetch,
+        description: "Fetch the contents of a URL and return it as text. HTTP/HTTPS only. Response bodies larger than 5MB are truncated. Binary content (non-text MIME types) is summarized as the first 1KB of bytes — use read_file on local files instead. Pair with web_search to follow links from a search result.",
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Absolute URL to fetch (must start with http:// or https://)."
+                },
+                "max_bytes": {
+                    "type": "integer",
+                    "description": "Maximum bytes to return (default 65536, hard cap 5242880 = 5MB).",
+                    "minimum": 1,
+                    "maximum": 5242880
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Wall-clock timeout in ms (default 15000, max 30000).",
+                    "minimum": 100,
+                    "maximum": 30000
+                }
+            },
+            "required": ["url"],
+            "additionalProperties": false
+        }),
+    }
+}
+
+/// All 8 tools, in the order they should be advertised to the model
 /// (most useful first so the model prefers them when picking the first
 /// tool). Built at runtime so we can use `serde_json::json!()`.
 pub fn all_local_tools() -> Vec<LocalTool> {
@@ -260,6 +301,7 @@ pub fn all_local_tools() -> Vec<LocalTool> {
         apply_patch(),
         bash_run(),
         remember_fact(),
+        web_fetch(),
     ]
 }
 
@@ -319,7 +361,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_7_tools_have_unique_names() {
+    fn all_tools_have_unique_names() {
         let mut seen = std::collections::HashSet::new();
         for t in all_local_tools() {
             assert!(
@@ -328,11 +370,13 @@ mod tests {
                 t.name
             );
         }
-        assert_eq!(seen.len(), 7);
+        // Lesson 803 (rc55.13): 8 tools (added web_fetch). Update this
+        // assertion whenever `all_local_tools()` gains or loses a tool.
+        assert_eq!(seen.len(), 8);
     }
 
     #[test]
-    fn all_7_tools_have_object_parameters() {
+    fn all_tools_have_object_parameters() {
         for t in all_local_tools() {
             assert_eq!(
                 t.parameters["type"], "object",

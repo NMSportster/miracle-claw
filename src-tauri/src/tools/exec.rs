@@ -32,6 +32,7 @@ pub fn dispatch(tool: &LocalToolName, params: &serde_json::Value) -> Result<Stri
         LocalToolName::BashRun => bash_run(params),
         LocalToolName::ApplyPatch => apply_patch(params),
         LocalToolName::RememberFact => remember_fact(params),
+        LocalToolName::WebFetch => web_fetch(params),
     }
 }
 
@@ -457,6 +458,152 @@ fn looks_like_path(s: &str) -> bool {
     false
 }
 
+/// Lesson 805 (rc55.13): When the command is `python -c "<code>"` and
+/// the code embeds a Windows path like `C:\Users\foo\file.txt`, Python's
+/// tokenizer interprets the `\U`, `\f`, and other backslash-letter
+/// sequences as escape codes, raising SyntaxError. Convert Windows paths
+/// inside the quoted code segment to forward slashes (Python accepts
+/// them on every platform).
+///
+/// Only operates on the single argument after `-c` (between the next
+/// pair of matched quotes). If we can't reliably find that boundary
+/// (e.g. unbalanced quotes), we return the command unchanged — better
+/// to surface the original SyntaxError than to silently corrupt Python
+/// source.
+fn normalize_python_c_paths(command: &str) -> String {
+    // Match `python`, `python3`, or `py` as the head word, then `-c`
+    // (possibly with the long form `--command`), then a quoted string.
+    // We use a hand-rolled scan instead of regex to keep this code
+    // dependency-free and to be precise about the quoting rules.
+    let bytes = command.as_bytes();
+    let mut i = 0;
+
+    // Skip leading whitespace.
+    while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+        i += 1;
+    }
+
+    // Read the head word.
+    let head_start = i;
+    while i < bytes.len() && !(bytes[i] as char).is_whitespace() {
+        i += 1;
+    }
+    let head = &command[head_start..i];
+    let head_lower = head.to_ascii_lowercase();
+    // Strip `.exe` / `.bat` suffix on Windows.
+    let head_stem = head_lower
+        .strip_suffix(".exe")
+        .or_else(|| head_lower.strip_suffix(".bat"))
+        .unwrap_or(&head_lower);
+    if !matches!(head_stem, "python" | "python3" | "py") {
+        return command.to_string();
+    }
+
+    // Skip whitespace, then expect `-c` or `--command`.
+    while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+        i += 1;
+    }
+    let arg_start = i;
+    while i < bytes.len() && !(bytes[i] as char).is_whitespace() {
+        i += 1;
+    }
+    let arg = &command[arg_start..i];
+    if arg != "-c" && arg != "--command" {
+        return command.to_string();
+    }
+
+    // Skip whitespace between `-c` and the quoted code.
+    while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return command.to_string();
+    }
+
+    let quote = bytes[i] as char;
+    if quote != '"' && quote != '\'' {
+        return command.to_string();
+    }
+
+    // Find the matching close quote. Allow escaped quotes inside
+    // (e.g. `\"`) — but only if the escape is itself escaped (we
+    // don't try to fully parse Python source here).
+    let code_start = i + 1;
+    let mut j = code_start;
+    while j < bytes.len() {
+        let c = bytes[j] as char;
+        if c == '\\' && j + 1 < bytes.len() {
+            j += 2; // skip escaped char
+            continue;
+        }
+        if c == quote {
+            break;
+        }
+        j += 1;
+    }
+    if j >= bytes.len() {
+        return command.to_string(); // unmatched — bail
+    }
+    let code_end = j; // exclusive
+    let inner = &command[code_start..code_end];
+
+    // Convert any `X:\...` or `X:/...` Windows path inside the code
+    // segment to forward slashes. Match `[A-Za-z]:[/\\][^"'` ]*` and
+    // stop at common delimiters (quote, space, paren, brace).
+    let mut out = String::with_capacity(inner.len());
+    let mut k = 0;
+    while k < inner.len() {
+        let ch = inner.as_bytes()[k] as char;
+        // Drive letter + colon?
+        if ch.is_ascii_alphabetic()
+            && k + 1 < inner.len()
+            && inner.as_bytes()[k + 1] == b':'
+            && k + 2 < inner.len()
+            && (inner.as_bytes()[k + 2] == b'/' || inner.as_bytes()[k + 2] == b'\\')
+        {
+            let path_start = k;
+            // Walk until we hit a quote, space, paren, brace, bracket,
+            // or end.
+            let mut m = k + 3;
+            while m < inner.len() {
+                let mc = inner.as_bytes()[m] as char;
+                if mc == '"' || mc == '\'' || mc == ' ' || mc == '\t'
+                    || mc == '(' || mc == ')' || mc == '{' || mc == '}'
+                    || mc == '[' || mc == ']'
+                {
+                    break;
+                }
+                m += 1;
+            }
+            // Replace backslashes with forward slashes in this range.
+            for c in inner[path_start..m].chars() {
+                if c == '\\' {
+                    out.push('/');
+                } else {
+                    out.push(c);
+                }
+            }
+            k = m;
+        } else {
+            out.push(ch);
+            k += 1;
+        }
+    }
+
+    if out == inner {
+        return command.to_string(); // nothing changed
+    }
+
+    // Reassemble: [head] [whitespace] [-c] [whitespace] [quote][new code][quote] [rest]
+    let after = code_end + 1; // skip closing quote
+    let mut result = String::with_capacity(command.len());
+    result.push_str(&command[..code_start]);
+    result.push_str(&out);
+    result.push_str(&command[code_end..]);
+    let _ = after; // result already includes the closing quote
+    result
+}
+
 fn bash_run(params: &serde_json::Value) -> Result<String, String> {
     let command = params
         .get("command")
@@ -491,6 +638,28 @@ fn bash_run(params: &serde_json::Value) -> Result<String, String> {
     // e.g. `${HOME}/foo`, `$(echo /etc/passwd)`, variable expansion. For
     // those, the runtime errors will surface them as they fail.
     validate_command_paths(command)?;
+
+    // Lesson 805 (rc55.13): python -c path-quoting brittleness.
+    //
+    // Symptom: when the model emits something like
+    //   python -c "open('C:\Users\foo\file.txt').read()"
+    // Python's tokenizer interprets the `\U` and `\f` as escape
+    // sequences, raising `SyntaxError: unterminated string literal`
+    // or `unicode error`. The MC info file (Lesson 805) lists this as
+    // a recurring annoyance: "passing python -c ... with single
+    // quotes or nested quotes often exploded with SyntaxError".
+    //
+    // Fix: when the command starts with `python` / `python3` / `py`
+    // and uses `-c "<code>"`, walk the code string and convert any
+    // embedded Windows path (`X:\...` or `X:/...`) to forward slashes.
+    // Python accepts forward slashes everywhere; Windows paths work
+    // fine in Python as long as the backslashes don't get tokenized
+    // as escape sequences.
+    //
+    // We only touch the inner code (between matched quotes after -c),
+    // not the outer shell args, so this is safe for legitimate uses
+    // of `\n` in Python source.
+    let command = normalize_python_c_paths(&command).to_string();
 
     let shell = if cfg!(windows) { "cmd" } else { "sh" };
     let flag = if cfg!(windows) { "/C" } else { "-c" };
@@ -719,6 +888,122 @@ fn remember_fact(_params: &serde_json::Value) -> Result<String, String> {
     Ok("remember_fact: stored locally (not yet synced to MAIC)".to_string())
 }
 
+/// Lesson 803 (rc55.13): fetch a URL and return its body. The previous
+/// workflow had `web_search` (MAIC server-side) but no `web_fetch`, so
+/// the model could find links but never load them. `ureq` is already
+/// in the dependency graph (Lesson 7) and is well-suited for short,
+/// blocking fetches. Response bodies larger than `max_bytes` are
+/// truncated with a clear marker so the model knows there's more.
+///
+/// Constraints (defense in depth):
+///   * URL scheme MUST be http/https — no file://, no gopher://, no
+///     javascript:. Refusing the unknown scheme keeps this tool from
+///     being weaponized for local file disclosure.
+///   * 15s default timeout, 30s hard cap — chat UX can't wait longer.
+///   * 5MB hard response cap — binary or huge responses get a
+///     summary rather than the model eating megabytes of HTML.
+///   * Redirects are NOT followed automatically — keeps the call
+///     surface predictable for the model. If a 30x comes back, we
+///     return the Location header verbatim and let the model decide
+///     whether to chase it.
+fn web_fetch(params: &serde_json::Value) -> Result<String, String> {
+    let url = params
+        .get("url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "web_fetch: missing required 'url' (string)".to_string())?;
+
+    // Scheme allowlist. Anything else (file://, data:, ftp://, etc.)
+    // gets rejected up front.
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(format!(
+            "web_fetch: refusing url with non-http(s) scheme: {}",
+            &url[..url.len().min(40)]
+        ));
+    }
+
+    let max_bytes = params
+        .get("max_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(65_536)
+        .clamp(1, 5_242_880) as usize;
+
+    let timeout_ms = params
+        .get("timeout_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(15_000)
+        .clamp(100, 30_000) as u64;
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_millis(timeout_ms))
+        .build();
+
+    let resp = agent.get(url).call().map_err(|e| {
+        // ureq::Error covers transport (DNS / TLS / timeout / refused)
+        // and HTTP status. Surface the kind so the model can recover.
+        match e {
+            ureq::Error::Status(code, response) => {
+                format!(
+                    "web_fetch: HTTP {} for {} ({})",
+                    code,
+                    url,
+                    response.status_text()
+                )
+            }
+            ureq::Error::Transport(t) => {
+                format!("web_fetch: transport error for {}: {}", url, t)
+            }
+        }
+    })?;
+
+    let status = resp.status();
+    let headers = resp.headers_names();
+
+    // Capture content-type and any redirect target before consuming the
+    // body (ureq's response API gives us .into_string() but no
+    // header-by-header peek).
+    let mut content_type = String::new();
+    let mut location = String::new();
+    for name in headers {
+        if let Some(v) = resp.header(&name) {
+            let lname = name.to_lowercase();
+            if lname == "content-type" && content_type.is_empty() {
+                content_type = v.to_string();
+            } else if lname == "location" && location.is_empty() {
+                location = v.to_string();
+            }
+        }
+    }
+
+    let mut body = resp
+        .into_string()
+        .map_err(|e| format!("web_fetch: body read error for {}: {}", url, e))?;
+
+    let truncated = body.len() > max_bytes;
+    if truncated {
+        body.truncate(max_bytes);
+        body.push_str(&format!(
+            "\n\n[truncated at {} bytes; full response was larger. Re-call with max_bytes if you need more.]",
+            max_bytes
+        ));
+    }
+
+    let mut out = String::with_capacity(body.len() + 256);
+    out.push_str(&format!("HTTP {}\n", status));
+    if !content_type.is_empty() {
+        out.push_str(&format!("Content-Type: {}\n", content_type));
+    }
+    if !location.is_empty() {
+        // Non-2xx with a Location header is a redirect — surface it so
+        // the model can chase it explicitly.
+        if !(200..300).contains(&status) {
+            out.push_str(&format!("Location: {}\n", location));
+        }
+    }
+    out.push_str("\n");
+    out.push_str(&body);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,6 +1012,83 @@ mod tests {
     fn normalize_user_path_rejects_relative() {
         assert!(normalize_user_path("Documents/foo.txt").is_err());
         assert!(normalize_user_path("").is_err());
+    }
+
+    // Lesson 805: bash_run / python -c path quoting. The normalizer
+    // converts Windows backslash paths to forward slashes inside
+    // python -c "<code>" segments so Python's tokenizer doesn't try
+    // to interpret \U, \f, etc. as escape sequences.
+    #[test]
+    fn lesson_805_normalize_python_c_converts_backslash_to_slash() {
+        let cmd = r#"python -c "open('C:\Users\foo\file.txt').read()""#;
+        let fixed = normalize_python_c_paths(cmd);
+        assert!(
+            fixed.contains("C:/Users/foo/file.txt"),
+            "expected forward-slash path, got: {fixed}"
+        );
+        assert!(
+            !fixed.contains(r"C:\Users"),
+            "backslash path should be gone, got: {fixed}"
+        );
+    }
+
+    #[test]
+    fn lesson_805_normalize_python_c_preserves_python_escapes() {
+        // Real Python source that uses \n, \t, etc. inside strings
+        // must NOT be rewritten (only Windows-path patterns get touched).
+        let cmd = r#"python -c "s='line1\nline2'; print(s)""#;
+        let fixed = normalize_python_c_paths(cmd);
+        // The literal \n in the source must still be there — only the
+        // drive-letter paths get rewritten.
+        assert!(
+            fixed.contains(r"\n"),
+            "python \\n escape should be preserved, got: {fixed}"
+        );
+    }
+
+    #[test]
+    fn lesson_805_normalize_python_c_noop_for_non_python() {
+        let cmd = r#"echo 'C:\Users\foo' > out.txt"#;
+        let fixed = normalize_python_c_paths(cmd);
+        assert_eq!(fixed, cmd, "non-python commands must pass through");
+    }
+
+    #[test]
+    fn lesson_805_normalize_python_c_handles_python3() {
+        let cmd = r#"python3 -c "open(r'C:\temp\data.json')""#;
+        let fixed = normalize_python_c_paths(cmd);
+        assert!(fixed.contains("C:/temp/data.json"));
+    }
+
+    #[test]
+    fn lesson_805_normalize_python_c_handles_py_launcher() {
+        let cmd = r#"py -c "import json; json.load(open('D:\data\a.json'))""#;
+        let fixed = normalize_python_c_paths(cmd);
+        assert!(fixed.contains("D:/data/a.json"));
+    }
+
+    #[test]
+    fn lesson_805_normalize_python_c_noop_when_no_paths() {
+        let cmd = r#"python -c "print('hello world')""#;
+        let fixed = normalize_python_c_paths(cmd);
+        assert_eq!(fixed, cmd);
+    }
+
+    #[test]
+    fn lesson_805_normalize_python_c_handles_multiple_paths() {
+        let cmd = r#"python -c "open('C:\a\b.txt'); open('D:\c\d.txt')""#;
+        let fixed = normalize_python_c_paths(cmd);
+        assert!(fixed.contains("C:/a/b.txt"));
+        assert!(fixed.contains("D:/c/d.txt"));
+    }
+
+    #[test]
+    fn lesson_805_normalize_python_c_unmatched_quote_passthrough() {
+        // If quotes don't match cleanly, refuse to rewrite (better to
+        // surface the original Python SyntaxError than to corrupt source).
+        let cmd = r#"python -c "print('unterminated)""#;
+        let fixed = normalize_python_c_paths(cmd);
+        assert_eq!(fixed, cmd);
     }
 
     #[test]

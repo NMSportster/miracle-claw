@@ -5,6 +5,86 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0-rc55.13] — 2026-08-30 (picker + clean chatter patch)
+
+Seven targeted fixes for RC55.13, in priority order (1+2 → 3 → 4 → 5+6 → 7).
+
+### Fix 1 — Schema migration: `{primary, fallbacks}` object → flat string + top-level `fallbacks[]` (Lesson 800)
+
+**Symptom**: When users on pre-RC55.10 installs (with the old `defaults.model = {primary: "...", fallbacks: [...]}` shape) upgrade to RC55.10+, the chat panel can't find the default model because the picker reads `defaults.model` as a string but the on-disk value is an object.
+
+**Fix**:
+- `ensure_agents_default_model_for_tier` now detects the legacy `{primary, fallbacks}` object shape and migrates to the new flat `{model: "<id>", fallbacks: [...]}` schema in-place.
+- The `mc_set_tier_defaults` force-reset path handles BOTH schemas when clearing the previous default — it doesn't matter which shape was on disk.
+- `fresh_openclaw_with_model()` test helper writes the new schema by default; `fresh_openclaw_with_legacy_object_model()` writes the old shape for migration tests.
+- New tests `lesson_800_migrates_legacy_object_schema_to_flat_string` and `lesson_800_no_op_when_already_flat_string` pin the migration.
+- The Lesson 517 schema tests now assert against the new flat path: `defaults.model` (string) + `defaults.fallbacks[]`.
+
+### Fix 2 — `extra_body` collision with `tools` payload key (Lesson 801)
+
+**Symptom**: Every chat in RC55.12 emits the sidecar log:
+```
+[agent/embedded] extra_body overwriting request payload keys: tools
+```
+The MAIC plugin was setting `extraBody.tools = [...]` in `patch()`, and OpenClaw's vendored `extra-params-cce1g0up.js:482` warns whenever `extraBody` keys collide with already-populated payload keys — then `Object.assign(payloadObj, extraBody)` overwrites the runtime-built `payloadObj.tools` (the OpenAI-format tool schemas).
+
+**Fix**: Drop `tools` from `extraBody` entirely. The runtime already populates `payloadObj.tools` via normal request building (every registered agent tool gets added), so `extraBody` only needs to carry `tool_execution: "client"` (Lesson 169). MAIC reads `body.tools` from the wire request — which has them — and tool calls flow correctly.
+
+### Fix 3 — `timeoutMs=undefined` log spam (Lesson 802)
+
+**Symptom**: Every chat emits:
+```
+[model-fetch] response ... timeoutMs=undefined
+```
+OpenClaw's vendored `resolveModelRequestTimeoutMs()` returns `undefined` when neither the caller nor the model has a `requestTimeoutMs` set. `stream-BcRkg2P0.js:670` then logs `timeoutMs=undefined` because `emitModelTransportDebug` reads the resolved value verbatim.
+
+**Fix**: Patch vendored `stream-BcRkg2P0.js:515` to fall back to `clampTimerTimeoutMs(60_000)` (60 seconds) when both caller and model config are absent. This is enough for MAIC's cascade (LiteLLM → Ollama Cloud → local Ollama) and matches the previous behavior the model tolerated.
+
+### Fix 4 — Add `web_fetch` tool (Lesson 803)
+
+**Symptom**: The MAIC policy listed `web_search` AND `web_fetch`, but the actual function list only had `web_search`. The model could find links but never load them.
+
+**Fix**: Add `web_fetch` as the 8th local tool:
+- `src-tauri/src/tools/schemas.rs`: `LocalToolName::WebFetch` variant, `web_fetch()` schema with `url` (required), `max_bytes` (default 65536, cap 5MB), `timeout_ms` (default 15s, cap 30s)
+- `src-tauri/src/tools/exec.rs`: `web_fetch()` implementation using `ureq`. URL scheme allowlist (http/https only), redirect responses surface `Location:` header, oversized bodies get truncated with a clear marker.
+- `src-tauri/resources/maic-plugin/openclaw.plugin.json`: `"web_fetch"` added to `contracts.tools[]`
+- `src-tauri/resources/maic-plugin/index.js`: 8th tool descriptor registered in `buildLocalToolDescriptors()`
+- All `*_seven_tools*` tests renamed to `*_eight_tools*` and the expected list updated.
+
+### Fix 5 — `write_file`/`edit_file` path-drop on payloads ≥2.5KB (Lesson 804)
+
+**Symptom**: `write_file` calls with ≥~2.5KB content returned `"path": must have required properties path` even though `path` was clearly present in the call.
+
+**Root cause**: The MAIC plugin's `executeLocalTool` passed the JSON-encoded params as `argv[2]` via `spawnSync(bin, [toolName, paramsJson], ...)`. On Windows, `CreateProcess` builds a single command line that's hard-capped at ~32KB total (CommandLineToArgvW limit). When the JSON payload for `write_file` exceeds ~2.5KB (the model often emits 2.5KB-3KB of content), Windows silently TRUNCATES the command line at the nearest byte — which lands inside the JSON for the path field. The sidecar then sees a malformed `params.path` and returns "missing required field: path".
+
+**Fix**: Switch `spawnSync` to pass params via stdin instead of argv. The sidecar already supports stdin (`tools_main.rs` reads JSON from stdin when `argv[2]` is absent). macOS/Linux behavior is identical; Windows no longer truncates.
+
+### Fix 6 — `bash_run` / `python -c` Windows path quoting brittleness (Lesson 805)
+
+**Symptom**: When the model emits `python -c "open('C:\Users\foo\file.txt').read()"`, Python's tokenizer interprets `\U` and `\f` as escape sequences and raises `SyntaxError: unterminated string literal` or `unicode error`. The MC info file listed this as a recurring annoyance.
+
+**Fix**: New `normalize_python_c_paths()` helper in `src-tauri/src/tools/exec.rs`. When the command starts with `python`/`python3`/`py` and uses `-c "<code>"`, the helper walks the inner code segment and converts Windows drive paths (`C:\...`, `D:/...`) to forward slashes. Python accepts forward slashes everywhere; Windows paths work fine without backslash escapes. The fix:
+- Only triggers on `python` / `python3` / `py` head + `-c` / `--command` arg
+- Only converts `[A-Za-z]:[/\\]...` patterns (not Python string escapes like `\n` or `\t`)
+- Preserves the source exactly when no Windows paths are present
+- Refuses to rewrite when quote pairing is unbalanced (better to surface the original SyntaxError than to corrupt Python source)
+
+8 new tests pin all the cases (convert path, preserve escapes, no-op for non-python, multiple paths, unmatched-quote passthrough).
+
+### Fix 7 — Add `modelCatalog` to MAIC plugin manifest (Lesson 806)
+
+**Symptom**: User reports "I still only see 4 models in the chat dropdown" on Windows MC-openclaw after upgrading to RC55.12.
+
+**Root cause**: OpenClaw's vendored `plugin-metadata-snapshot-rpSrEgGf.js:467` builds the picker list from `plugin.modelCatalog` in each plugin's `openclaw.plugin.json`. The MAIC plugin (id="maic") never declared a `modelCatalog` — so the picker falls back to the manifest's bundled catalog plus `<agentDir>/models.json`, neither of which MC writes. Only 4 models made it through.
+
+**Fix**: Add `modelCatalog.providers.maic` to `src-tauri/resources/maic-plugin/openclaw.plugin.json` with all 20 paid-tier entries (context window, max tokens, compat flags). Plus a `modelCatalog.tiers` block for free-tier visual seeding. Plugin version bumped 0.3.0 → 0.3.1.
+
+### Build/test
+
+- `cargo build` clean (debug)
+- `cargo test --lib` = 178 passed (added 2 schema tests + 8 Lesson 805 normalizer tests + the Lesson 517/800 migrations)
+- `node -c maic-plugin/index.js` parses clean
+
 ## [Unreleased] — v1.0.1 polish queue
 
 ### v1.1.0-rc55.8 — 2026-08-29 (Lesson 760 FIX: actually edit the plugin)
