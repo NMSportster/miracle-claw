@@ -3888,3 +3888,30 @@ before shell execution if any path is outside allowed roots.
 - `src-tauri/src/tools/exec.rs`: added `validate_command_paths` +
   `looks_like_path` helpers; `bash_run` calls `validate_command_paths`
   after cwd validation; 4 new tests.
+
+### rc55.15 (2026-08-30) — HOTFIX: Repair rc55.14 gateway boot failure
+
+**Lesson 829: `agents.defaults` schema is `.strict()` — Lesson 800 migration was WRONG.**
+
+The RC55.13/RC55.14 schema migration (Lesson 800) wrote:
+```json
+{"agents": {"defaults": {
+  "model": "maic/<id>",
+  "fallbacks": ["maic/<id>", ...]
+}}}
+```
+
+`AgentDefaultsSchema` (zod) is `.strict()` — it only allows specific fields. The `fallbacks` field at `agents.defaults` top level is NOT in the schema. Gateway boot failed with `InvalidConfigError: agents.defaults: Invalid input`, surfacing as "Could not open OpenClaw: gateway did not become ready on port 28789 within 30s".
+
+**RC55.15 hotfix (Lesson 829)**:
+1. Removed Lesson 800 migration entirely
+2. Writer now ALWAYS writes OBJECT form: `model = {primary, fallbacks: [...]}`
+3. **Auto-repairs existing rc55.14-bad files**: detects top-level `fallbacks`, lifts them into `model.fallbacks[]`, strips the invalid key
+4. Preserves user's existing form (string vs object) via `write_model_field()` helper
+5. New test `lesson_829_repairs_bad_top_level_fallbacks_from_rc55_14` covers the repair path
+
+**Also includes**:
+- Linux: `MiracleClaw_1.1.0-rc55.15_amd64.deb` (70MB) + `MiracleClaw_1.1.0-rc55.15_amd64.AppImage` (138MB)
+- Windows: `MiracleClaw_1.1.0-rc55.15_x64-setup.exe` (60.5MB, MD5 `61f5f608e97afaab6a14a76d09034884`)
+- All 180 lib tests pass (10 schema-migration tests rewritten + 1 new repair test)
+- David's config was manually repaired at 13:19:56 MDT; rc55.15 writer will detect no work to do on first run

@@ -70,3 +70,4 @@ brand/lockup-horizontal.svg
 .build-windows-docker.lock
 .build-linux.lock
 dist.OLD.root-owned/
+dist.root-owned-bak/
