@@ -3628,6 +3628,24 @@ The picker is where pricing meets product. Filter there.
 
 ## 1.1.0-rc55.12 (2026-08-30)
 
+**🚨 Months-long "models can't fire tools" mystery — ROOT CAUSE discovered:**
+
+The routing layer was the bottleneck, NOT the models. All chat traffic
+used to go through LiteLLM directly, which stripped tool schemas in
+transit. Earlier this month, traffic was re-routed through
+`maicserver.com` (MAIC's FastAPI gateway) which preserves tool schemas
+end-to-end. That single migration fixed kimi, GLM, MiniMax-M3, and
+Nemotron simultaneously — no per-model surgery needed.
+
+David noticed at 02:02 MDT: kimi has been firing all 7 paid-tier tools
+under rc55.11 for ~70 minutes straight. That activity was the
+post-migration behavior, not a model capability change.
+
+This release ships three defense-in-depth fixes on top of the routing
+fix (Lessons 794/795/796/798). The migration itself already shipped
+earlier — see `docs/2026-08-30-litellm-to-maic-migration.md` for the
+full story.
+
 **Lesson 794 + 795 + 796 + 798 — three paid-tier tool bugs fixed in one pass**
 
 ### Lesson 798: Chat UI model picker shows only 4 models (root cause)
