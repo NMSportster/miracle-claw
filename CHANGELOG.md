@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.0.1 polish queue
 
+### v1.1.0-rc55.7 — 2026-08-29 (Lesson 760: tool_execution routed via extra_body)
+
+- **Lesson 760 (NEW 2026-08-29 19:31 MDT, David): tool_execution + tools
+  re-routed through `extra_body` instead of top-level `effectiveExtraParams`.**
+  Root cause: OpenClaw's vendored runtime (`extra-params-cce1g0up.js`)
+  only reads `extra_body` (via `createOpenAICompletionsExtraBodyWrapper`)
+  to merge arbitrary fields into the POST payload. Top-level keys like
+  `tools` and `tool_execution` on `effectiveExtraParams` are dead data.
+  Symptom: MAIC's chat route saw `caller_tools_count=33` but
+  `tool_execution_in_payload=False` → defaulted to "server" → branch
+  `else: payload["tools"] = server_tools` → David saw only 10 server
+  tools (5 base + 5 mc_task_*) and not the 7 client tools
+  (read_file/write_file/edit_file/list_dir/bash_run/apply_patch/remember_fact).
+  Fix: plugin's `resolveMaicExtraParamsForTransport` now wraps
+  `tool_execution` + `tools` inside `patch.extra_body`. The runtime's
+  `extra_body overwriting request payload keys: tools` warning is
+  expected — it indicates the merge is actually happening. After the
+  fix, MAIC takes the `caller_tools and tool_execution=="client"`
+  branch and merges 10 server tools + 7 client tools = 17 tools.
+  Verified via `/tmp/test_extra_body.js` simulation (Lesson 760 evidence).
+  Unit tests updated (`test_plugin.js` now has 3 new Lesson 760 cases).
+  Plugin code path: `depot/maic-plugin/index.js` + mirror at
+  `src-tauri/resources/maic-plugin/index.js`.
+
+### v1.1.0-rc55.6 — 2026-08-29 (Lesson 759: Tasks page layout + stale sidecar)
+
+- **Lesson 759-A: Tasks page layout bug fixed.** Tasks page was mounting
+  the header + body as two siblings into the flex-row `#root`, so the
+  content centered horizontally and overflowed right when combined width
+  exceeded viewport. Wrapped the mount output in a single
+  `<div class="tasks-page">` flex-column wrapper with `max-width: 880px;
+  min-width: 0` (the missing `min-width: 0` was the actual culprit
+  since default `min-width: auto` = intrinsic min-content size, which
+  lets wide children push the wrapper past its `max-width`). Same pattern
+  already used by `.secrets-page`, `.files-page`, `.dashboard`.
+
+- **Lesson 759-B: stale AppData sidecar fix.** `MAIC_PLUGIN_FILENAMES`
+  in `launcher_info.rs` was missing `miracle-claw-tools.exe` /
+  `miracle-claw-tools`. Sidecar was being installed by the plugin's
+  ancestor walk but never updated when the installer was upgraded.
+  Result: rc55.4 fixes to apply_patch, path allowlist, etc. were
+  silently bypassed because the runtime sidecar at
+  `%APPDATA%/MiracleClaw/extensions/maic/miracle-claw-tools.exe`
+  stayed at the old hash. Fix: added `miracle-claw-tools.exe`
+  (Windows) + `miracle-claw-tools` (*nix) to `MAIC_PLUGIN_FILENAMES`
+  AND added `cp` step in both `build-windows-docker.sh` and
+  `build-linux.sh` so the fresh sidecar lands in
+  `resources/maic-plugin/` alongside the plugin JS. After install, the
+  SHA manifest re-trigger correctly detects sidecar changes and copies
+  the fresh one.
+
 ### v1.1.0-rc55.4 — 2026-08-29 (Re-ship: contracts.tools made it into the bundle)
 
 - **Re-build rc55.3 to re-include the MAIC plugin contracts.tools fix.**
