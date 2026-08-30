@@ -5,6 +5,38 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0-rc55.14] — 2026-08-30 (Lesson 824: prefix-rewrite for bare model ids)
+
+**The real fix for "only 4 models in chat dropdown".**
+
+RC55.13 attempted to fix the picker by writing `agents.defaults.model = {primary, fallbacks: [...]}` (Lesson 800). That schema migration worked, but it didn't address the **prefix** issue: David's `openclaw.json` had `model = "milagro-oc-kimi"` (bare) and `fallbacks = ["milagro-oc-glm", "milagro-dev"]` (also bare). OpenClaw's `inferUniqueProviderFromCatalog` couldn't disambiguate which provider owns these bare ids and fell through to `defaultProvider = "openai"`, rewriting as `openai/milagro-oc-kimi`. MAIC upstream rejects `openai/milagro-oc-kimi` as `Unknown model`, the chat session fails to dispatch, and the picker dropdown is left with the 4 fallback models that DID get prefixed correctly.
+
+### Lesson 824 — Bare-id prefix rewrite at the writer boundary
+
+**Fix**:
+- `ensure_agents_default_model_for_tier` now repairs both `agents.defaults.model` AND `agents.defaults.fallbacks[]` in-place when an entry is bare (no `maic/` prefix) but resolves in `models.providers.maic.models[]`.
+- Detection: snapshot `maic_model_ids_from_cfg(&cfg)` BEFORE taking the `&mut cfg` borrow (Lesson 825 — NLL elision didn't carry through the binding, so the snapshot pattern was the cleanest fix).
+- Idempotent: re-running the writer on an already-prefixed config is a no-op.
+- Defensive: bare ids NOT in the catalog (typos, stale entries) are left alone — no false prefixes that would silently corrupt the wire request.
+- 3 new tests pin the behavior:
+  - `lesson_824_prefixes_bare_existing_primary` — the user's actual symptom
+  - `lesson_824_does_not_double_prefix` — idempotency
+  - `lesson_824_ignores_bare_ids_not_in_catalog` — safety net
+
+### Side fixes shipped alongside
+
+- **Plugin**: `index.js` `executeLocalTool` now pipes params via stdin for `process.platform === "win32"` OR payloads ≥2048 bytes (Fix 5 / Lesson 804). Eliminates "file is X bytes, exceeds max_bytes=Y" errors when the JSON-encoded param block itself is large.
+- **Plugin**: `web_fetch` added as the 8th local tool in both `contracts.tools[]` AND `buildLocalToolDescriptors()` (Fix 4 / Lesson 803). URL scheme allowlist, 15s default timeout, 5MB response cap.
+- **Plugin**: `extraBody.tools = mergedTools` removed from `patch()` (Fix 2 / Lesson 801). Tools stay top-level on the patch; only `tool_execution` lives in `extra_body`. No more `[agent/embedded] extra_body overwriting request payload keys: tools` warning.
+- **Plugin**: `openclaw.plugin.json` bumped to v0.3.1, `modelCatalog.providers.maic[]` populated with **28 models** across all tiers (all/paid/free/internal), 18 aliases (Fix 7 / Lesson 806). All three copies mirror: `depot/maic-plugin/`, `src-tauri/resources/maic-plugin/`, and `$HOME/.openclaw/extensions/maic/`.
+- **Tools binary**: `miracle-claw-tools` rebuilt so `normalize_python_c_paths` (Lesson 805) is compiled in. Fix 6 was code-complete in RC55.13 but never made it to the binary that runs on David's box.
+
+### Architectural lock-in (this conversation)
+
+- **Lesson 822**: MC chat UI is OpenClaw's webchat (`http://127.0.0.1:28789/`), NOT TUI. MC-Terminal is the TUI (`node openclaw.mjs tui --local`).
+- **Lesson 823**: Long-lived architectural facts go in `projects/miracle-claw/docs/NOTES.md`, not CHANGELOG.
+- **Lesson 825**: When a function has both `&mut Value` AND needs to read another branch of the same `Value` multiple times, pre-extract all needed read-only data into local owned values BEFORE establishing the `&mut` borrow. NLL doesn't elide overlapping borrows through a binding.
+
 ## [v1.1.0-rc55.13] — 2026-08-30 (picker + clean chatter patch)
 
 Seven targeted fixes for RC55.13, in priority order (1+2 → 3 → 4 → 5+6 → 7).
