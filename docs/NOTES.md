@@ -104,6 +104,52 @@ restarts. Force-restart MC (close the app and reopen, or
 
 ---
 
+## agents.defaults schema contract (Lesson 829, rc55.15)
+
+OpenClaw's `AgentDefaultsSchema` (in `resources/dist/zod-schema-O9ml_nmo.js`,
+line 120+) defines which fields are valid at `agents.defaults`. The schema is
+**`.strict()`** — any unknown keys cause validation to fail with
+`InvalidConfigError: agents.defaults: Invalid input`, and the gateway refuses
+to boot.
+
+Allowed keys (verified 2026-08-30): `params`, `model`, `utilityModel`,
+`imageModel`, `imageGenerationModel`, `videoGenerationModel`,
+`musicGenerationModel`, `voiceModel`, `mediaGenerationAutoProviderFallback`,
+`pdfModel`, `pdfMaxBytesMb`, `pdfMaxPages`, `models`, `workspace`, `skills`,
+`silentReply`, `repoRoot`, `promptOverlays`, `skipBootstrap`,
+`skipOptionalBootstrapFiles`, `contextInjection`, `bootstrapMaxChars`,
+`bootstrapTotalMaxChars`, `experimental`, `bootstrapPromptTruncationWarning`,
+`userTimezone`, `startupContext`, `subagents`, `humanDelay`, `timeoutSeconds`,
+`mediaMaxMb`, `imageMaxDimensionPx`, `imageQuality`, `typingIntervalSeconds`,
+`typingMode`, `heartbeat`, `maxConcurrent`, `tts`, `contextLimits`,
+`contextTokens`, `message`, `tools`, `toolProgressDetail`, `reasoningDefault`,
+`fastModeDefault`, `skillsLimits`, `verboseDefault`, `thinkingDefault`,
+`blockStreamingDefault`, `blockStreamingBreak`, `blockStreamingChunk`,
+`blockStreamingCoalesce`, `runs`, `sandbox`, `identity`, `groupChat`,
+`runRetries`, `embeddedAgent`.
+
+**NOT in the schema**: `agents.defaults.fallbacks` (top-level). The
+fallback list MUST live inside `model.fallbacks[]`:
+```json
+{
+  "agents": {"defaults": {
+    "model": {
+      "primary": "maic/milagro-oc-glm",
+      "fallbacks": ["maic/milagro-oc-minimax", "maic/milagro-oc-kimi", "maic/milagro-m1-t3"]
+    }
+  }}
+}
+```
+
+Lesson 800 (rc55.13) attempted to migrate to a flat schema with top-level
+fallbacks — that was wrong and was reversed in Lesson 829 (rc55.15). The
+writer now: (a) seeds the OBJECT form, (b) rewrites bare ids in `model.primary`
++ `model.fallbacks[]` with the `maic/` prefix (Lesson 824), (c) lifts any
+stray top-level `fallbacks` into `model.fallbacks[]` (auto-repair of
+rc55.14-on-disk files) and strips the invalid top-level key.
+
+---
+
 ## Cross-references
 
 - `CHANGELOG.md` — version-by-version release notes (RC55.x fixes live here)

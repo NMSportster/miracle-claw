@@ -5,6 +5,55 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0-rc55.15] — 2026-08-30 (HOTFIX: Lesson 829 — repair rc55.14 invalid schema)
+
+**Symptom**: After installing rc55.14 and clicking "Openclaw for Windows", David got an error page: *"Could not open OpenClaw: gateway did not become ready on port 28789 within 30s"*. OpenClaw's gateway would not even boot, and `logs/stability/openclaw-stability-*-gateway.startup_failed.json` showed `InvalidConfigError: agents.defaults: Invalid input`.
+
+**Root cause**: Lesson 800 (shipped in rc55.13) flattened the schema to:
+```json
+{
+  "agents": {"defaults": {
+    "model": "maic/milagro-oc-kimi",          // string
+    "fallbacks": ["maic/...", ...]            // TOP-LEVEL array
+  }}
+}
+```
+But openclaw's `AgentDefaultsSchema` (in `zod-schema-O9ml_nmo.js`) is **`.strict()`** — it does NOT accept `fallbacks` at the top level of `agents.defaults`. Fallsbacks MUST live inside the model object: `model = {primary, fallbacks}`. The migration was wrong, and the rc55.14 file on David's box triggered the schema rejection on first boot.
+
+### Lesson 829 — Repair path
+
+**Fix** (`ensure_agents_default_model_for_tier`, src-tauri/src/lib.rs):
+- **Detects** the rc55.14 bad shape (top-level `fallbacks` present) at startup.
+- **Lifts** the top-level fallbacks into `model.fallbacks` (preserves user's intent).
+- **Promotes** string-form `model` to object form if needed.
+- **Strips** the invalid top-level `fallbacks` key (schema rejects it).
+- **Idempotent**: re-running the writer on an already-clean config is a no-op.
+- **Lesson 824 prefix rewrite** still fires on the OBJECT form — bare primary + bare fallbacks get prefixed with `maic/` as before, but they live in `model.fallbacks[]` not top-level.
+- **Seed path** now writes the OBJECT form directly.
+
+**New helper**: `write_model_field(defaults, was_object_form, primary, fallbacks)` — preserves the existing form (string vs object) when only one slot needs updating.
+
+### Tests updated/added (10 total pass, all of `lesson_517_*`, `lesson_824_*`, `lesson_829_*`)
+
+| Test | What it pins |
+|---|---|
+| `lesson_517_free_writes_local_default_when_empty` | Free seed → OBJECT form with `m1-t1` + 3-step chain |
+| `lesson_517_pro_writes_kimi_with_fallbacks` | Paid seed → OBJECT form with `oc-glm` + 3-step chain |
+| `lesson_517_does_not_overwrite_user_choice` | User-picked primary preserved (no clobber) |
+| `lesson_517_writes_when_existing_primary_is_empty_string` | Empty string treated as unset |
+| `lesson_517_pro_plus_team_enterprise_share_routing` | All paid tiers share the same OBJECT-form seed |
+| `lesson_517_free_clears_stale_paid_fallbacks_on_downgrade` | Free downgrade lifts fallbacks inside `model.fallbacks` |
+| `lesson_824_prefixes_bare_existing_primary` | Bare primary gets `maic/` prefix in OBJECT form |
+| `lesson_824_does_not_double_prefix` | Already-prefixed primary is a no-op |
+| `lesson_824_ignores_bare_ids_not_in_catalog` | Unknown bare ids left alone |
+| **`lesson_829_repairs_bad_top_level_fallbacks_from_rc55_14`** | Top-level fallbacks lifted into model.fallbacks + stripped |
+
+All 180 lib tests pass.
+
+### Operational note for David
+
+David's `openclaw.json` was manually repaired at 13:19:56 MDT (2026-08-30) before the rc55.15 installer was built. Backup at `openclaw.json.pre-rc55.15-backup-20260830-131956`. Even with this manual fix, **installing rc55.15 is recommended** because (a) the writer re-applies the lift+strip on first boot, (b) the Lesson 824 prefix rewrite corrects any other bare ids, and (c) the regression is locked in by tests.
+
 ## [v1.1.0-rc55.14] — 2026-08-30 (Lesson 824: prefix-rewrite for bare model ids)
 
 **The real fix for "only 4 models in chat dropdown".**
