@@ -1626,42 +1626,54 @@ pub(crate) fn ensure_agents_default_model_for_tier(
         }
     };
 
-    // Lesson 824 (2026-08-30, rc55.14): gather the existing primary + the
-    // existing top-level fallback list BEFORE we do the schema migration
-    // (which mutates `defaults` and would conflict with the catalog
-    // lookup). The catalog lookup borrows `cfg` immutably while
+    // Lesson 824 (2026-08-30, rc55.14): gather the existing primary +
+    // the existing fallbacks (inside the model object form) BEFORE we
+    // do any mutation. The catalog lookup borrows `cfg` immutably while
     // `defaults` mutably borrows into the same `cfg`, so the borrow
-    // checker requires us to split the work: compute prefix decisions
-    // first, then mutate.
+    // checker requires us to split the work: snapshot first, then mutate.
+    //
+    // Accept BOTH the string form (`model = "maic/<id>"`) AND the
+    // object form (`model = {primary, fallbacks}`). The schema
+    // (`AgentDefaultsSchema` in openclaw's zod-schema-O9ml_nmo.js) is
+    // `.strict()` — it does NOT accept top-level `fallbacks` at
+    // `agents.defaults`, so we MUST keep fallbacks inside the model
+    // object. Lesson 800's "flatten to top-level fallbacks" migration
+    // was wrong (rc55.14 regression: `agents.defaults: Invalid input`
+    // on gateway boot). Removed entirely.
     let pre_migration_primary: Option<String> = match defaults.get("model") {
         Some(Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
+        Some(Value::Object(obj)) => obj
+            .get("primary")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
         _ => None,
     };
-    let pre_migration_legacy_object: Option<(Option<String>, Vec<String>)> =
-        match defaults.get("model") {
-            Some(Value::Object(obj)) => {
-                let p = obj
-                    .get("primary")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string);
-                let fb: Vec<String> = obj
-                    .get("fallbacks")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                Some((p, fb))
-            }
-            _ => None,
-        };
-    // Copy the top-level fallback list to a separate Vec (so we can
-    // inspect it without holding the `&mut defaults` borrow).
-    let pre_migration_top_fallbacks: Vec<String> = match defaults.get("fallbacks") {
+    // Pre-migration fallbacks: only the in-object form is valid. Top-level
+    // `fallbacks` is NOT in the schema — if we find any, it's leftover
+    // from a prior bad migration and we'll discard it.
+    let pre_migration_in_object_fallbacks: Vec<String> = match defaults.get("model") {
+        Some(Value::Object(obj)) => obj
+            .get("fallbacks")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    // Track whether model is in the object form (so we know whether to
+    // write it back as an object or as a string when unchanged).
+    let pre_migration_is_object_form = matches!(defaults.get("model"), Some(Value::Object(_)));
+    // Detect any top-level `fallbacks` leftover from Lesson 800's bad
+    // migration. If present, we'll remove it when we persist (since the
+    // schema rejects it). Capture its contents in case we want to merge
+    // them into `model.fallbacks` for the user's sake.
+    let pre_migration_top_level_fallbacks_to_preserve: Vec<String> = match defaults.get("fallbacks")
+    {
         Some(Value::Array(arr)) => arr
             .iter()
             .filter_map(|v| v.as_str().map(str::to_string))
@@ -1669,82 +1681,24 @@ pub(crate) fn ensure_agents_default_model_for_tier(
         _ => Vec::new(),
     };
 
-    // Lesson 800 (2026-08-30, rc55.13): migrate old schema
-    //   `agents.defaults.model = { primary, fallbacks }`
-    // to the new flat schema openclaw ships now:
-    //   `agents.defaults.model = "<provider>/<id>"`  (string)
-    //   `agents.defaults.fallbacks = ["<provider>/<id>", ...]`
+    // Lesson 824 (2026-08-30, rc55.14): even when the user has an explicit
+    // primary, we MUST repair a bare-id primary that's missing the `maic/`
+    // prefix — otherwise the gateway dispatches via
+    // `inferUniqueProviderFromCatalog` and falls through to `openai/<id>`,
+    // MAIC rejects as Unknown model. User report: rc55.12 chat dropdown
+    // shows only 4 models because `agents.defaults.model.primary =
+    // "milagro-oc-kimi"` (bare) means the picker can't resolve the primary's
+    // catalog entry.
     //
-    // The old schema still WORKS at runtime (resolveSelectedModelFallbacksOverride
-    // in agent-scope-B2Pk_xhT.js handles both), so this migration is purely
-    // cosmetic for correctness — but it removes a foot-gun where a future
-    // openclaw schema validator might reject the nested object form, and
-    // it lets us drop the special-case branch in the writer below.
+    // Same treatment for fallbacks (inside the model object): if any entry
+    // is a bare id and `maic/<id>` exists in the catalog, rewrite it with
+    // the prefix.
     //
-    // We migrate in-place and only treat the file as "needs write" if the
-    // shape actually changed (or primary is still missing).
-    let mut schema_changed = false;
-    let mut prefix_applied = false;
-    let existing_primary: Option<String> = if let Some(legacy) = pre_migration_legacy_object.as_ref() {
-        // Old {primary, fallbacks} shape — flatten to the new schema.
-        let primary = legacy.0.clone();
-        let fallbacks = legacy.1.clone();
-        // Replace `model` with a string. Preserve user's choice of primary.
-        if let Some(p) = primary.as_deref() {
-            defaults.as_object_mut().unwrap().insert(
-                "model".to_string(),
-                Value::String(p.to_string()),
-            );
-        } else {
-            defaults.as_object_mut().unwrap().remove("model");
-        }
-        // Move `fallbacks` to top-level. Drop the in-object copy.
-        if fallbacks.is_empty() {
-            defaults.as_object_mut().unwrap().remove("fallbacks");
-        } else {
-            let arr: Vec<Value> = fallbacks
-                .iter()
-                .map(|s| Value::String(s.clone()))
-                .collect();
-            defaults.as_object_mut().unwrap().insert(
-                "fallbacks".to_string(),
-                Value::Array(arr),
-            );
-        }
-        schema_changed = true;
-        primary
-    } else {
-        pre_migration_primary
-    };
-
-    // Non-destructive: only seed defaults when no primary is set OR the
-    // existing primary is empty. We deliberately do NOT overwrite a user's
-    // explicit non-empty primary — that means they picked one and we
-    // should respect it across logins.
-    let needs_seed = match existing_primary.as_deref() {
-        None | Some("") => true,
-        Some(_) => false,
-    };
-
-    // Lesson 824 (2026-08-30, rc55.14): even when `needs_seed=false`, we
-    // MUST repair a bare-id primary that's missing the `maic/` prefix —
-    // otherwise the gateway dispatches via `inferUniqueProviderFromCatalog`
-    // and falls through to `openai/<id>`, MAIC rejects as Unknown model.
-    // User report: rc55.12 chat dropdown shows only 4 models because
-    // `agents.defaults.model = "milagro-oc-kimi"` (bare) means the picker
-    // can't resolve the primary's catalog entry, and `defaults.fallbacks`
-    // is the top-level field — openclaw's `resolveAgentModelFallbackValues`
-    // ONLY reads `model.fallbacks` (inside the object form), so for a
-    // string-form primary fallbacks silently collapse to `[]`.
-    //
-    // Same treatment for top-level `fallbacks`: if any entry is a bare id
-    // and `maic/<id>` exists in the catalog, rewrite it with the prefix.
-    //
-    // We use `pre_migration_top_fallbacks` (captured before the schema
-    // migration) and `maic_ids_snapshot` so neither lookup takes an
+    // We use `maic_ids_snapshot` so the catalog lookup doesn't take an
     // immutable borrow against `cfg` (which is already borrowed mutably
     // via `defaults`).
-    let prefixed_primary: Option<String> = match existing_primary.as_deref() {
+    let mut prefix_applied = false;
+    let prefixed_primary: Option<String> = match pre_migration_primary.as_deref() {
         Some(p)
             if !p.starts_with(PROVIDER_PREFIX)
                 && maic_ids_snapshot
@@ -1756,12 +1710,20 @@ pub(crate) fn ensure_agents_default_model_for_tier(
         _ => None,
     };
     let prefixed_fallbacks: Option<Vec<String>> = {
-        if pre_migration_top_fallbacks.is_empty() {
+        // Merge in-object fallbacks + any preserved top-level fallbacks
+        // from a prior bad migration, dedup.
+        let mut combined: Vec<String> = pre_migration_in_object_fallbacks.clone();
+        for s in &pre_migration_top_level_fallbacks_to_preserve {
+            if !combined.contains(s) {
+                combined.push(s.clone());
+            }
+        }
+        if combined.is_empty() {
             None
         } else {
-            let mut out: Vec<String> = Vec::with_capacity(pre_migration_top_fallbacks.len());
+            let mut out: Vec<String> = Vec::with_capacity(combined.len());
             let mut any_changed = false;
-            for s in &pre_migration_top_fallbacks {
+            for s in &combined {
                 if s.is_empty() {
                     continue;
                 }
@@ -1784,44 +1746,104 @@ pub(crate) fn ensure_agents_default_model_for_tier(
         }
     };
     if let Some(p) = prefixed_primary.as_deref() {
-        defaults
-            .as_object_mut()
-            .unwrap()
-            .insert("model".to_string(), Value::String(p.to_string()));
+        write_model_field(defaults, pre_migration_is_object_form, Some(p), None);
         prefix_applied = true;
     }
     if let Some(fb) = prefixed_fallbacks.as_ref() {
-        let arr: Vec<Value> = fb.iter().map(|s| Value::String(s.clone())).collect();
-        defaults
-            .as_object_mut()
-            .unwrap()
-            .insert("fallbacks".to_string(), Value::Array(arr));
+        write_model_field(defaults, pre_migration_is_object_form, None, Some(fb.clone()));
         prefix_applied = true;
     }
-    if !needs_seed && !schema_changed && !prefix_applied {
+
+    // Decide whether we need to seed defaults.
+    let needs_seed = pre_migration_primary.is_none();
+    // Decide whether we need to remove the top-level `fallbacks` key (it
+    // would be rejected by the schema). When we remove it, we ALSO need
+    // to lift those fallbacks into `model.fallbacks` (object form) so
+    // the user doesn't silently lose them — rcher they were being
+    // saved as preferences, even if rc55.14 stored them in the wrong
+    // place.
+    let top_fallbacks_to_preserve: Option<Vec<String>> =
+        if defaults.as_object().map_or(false, |o| o.contains_key("fallbacks")) {
+            // Decide which fallbacks to lift:
+            // - if any are already inside model.fallbacks, merge them
+            //   (preserve user's old set + new top-level set).
+            // - if model is empty (None), use top-level as the seed.
+            // - if model has its own fallbacks, leave those alone (they
+            //   were valid) and drop top-level (user clearly had both
+            //   — they're not empty in two places by accident).
+            let existing_in_obj = pre_migration_in_object_fallbacks.clone();
+            let top = pre_migration_top_level_fallbacks_to_preserve.clone();
+            if existing_in_obj.is_empty() {
+                if top.is_empty() {
+                    None
+                } else {
+                    Some(top)
+                }
+            } else {
+                // User already has in-object fallbacks. Just don't
+                // lift the stale top-level (it would dup).
+                Some(existing_in_obj)
+            }
+        } else {
+            None
+        };
+    let needs_remove_top_fallbacks = defaults.as_object().map_or(false, |o| o.contains_key("fallbacks"));
+
+    if !needs_seed && !prefix_applied && !needs_remove_top_fallbacks {
         return Ok(false);
     }
 
     if needs_seed {
-        defaults.as_object_mut().unwrap().insert(
-            "model".to_string(),
+        // Seed the OBJECT form: `model = {primary, fallbacks}`.
+        let mut model_obj = serde_json::Map::new();
+        model_obj.insert(
+            "primary".to_string(),
             Value::String(default_primary.to_string()),
         );
-        if default_fallbacks.is_empty() {
-            // Free: clear any stale top-level fallback array left over
-            // from a paid account's downgrade (so the dropdown shows
-            // just the default).
-            defaults.as_object_mut().unwrap().remove("fallbacks");
-        } else {
+        if !default_fallbacks.is_empty() {
             let fb: Vec<Value> = default_fallbacks
                 .iter()
-                .map(|s| Value::String(s.to_string()))
+                .map(|s| Value::String(s.clone()))
                 .collect();
-            defaults.as_object_mut().unwrap().insert(
-                "fallbacks".to_string(),
-                Value::Array(fb),
-            );
+            model_obj.insert("fallbacks".to_string(), Value::Array(fb));
         }
+        defaults
+            .as_object_mut()
+            .unwrap()
+            .insert("model".to_string(), Value::Object(model_obj));
+    }
+
+    // Lesson 829: if the user has top-level fallbacks (rc55.14 bad
+    // shape), lift them into model.fallbacks and strip the invalid
+    // top-level key. If model is empty AND we have top-level fallbacks,
+    // promote: use them as in-object fallbacks.
+    if needs_remove_top_fallbacks {
+        if let Some(fb) = top_fallbacks_to_preserve.as_ref() {
+            if needs_seed {
+                // Already inserted model object above — add fallbacks to it.
+                if let Some(model_obj) = defaults
+                    .as_object_mut()
+                    .unwrap()
+                    .get_mut("model")
+                    .and_then(|v| v.as_object_mut())
+                {
+                    if !fb.is_empty() {
+                        let arr: Vec<Value> =
+                            fb.iter().map(|s| Value::String(s.clone())).collect();
+                        model_obj.insert("fallbacks".to_string(), Value::Array(arr));
+                    }
+                }
+            } else if pre_migration_in_object_fallbacks.is_empty()
+                && !pre_migration_top_level_fallbacks_to_preserve.is_empty()
+            {
+                // Model was a string form. Promote to object form,
+                // preserving the existing primary and lifting the
+                // top-level fallbacks into model.fallbacks.
+                write_model_field(defaults, false, None, Some(fb.clone()));
+            }
+        }
+        // Always strip the invalid top-level key.
+        defaults.as_object_mut().unwrap().remove("fallbacks");
     }
 
     // Persist. Use atomic temp-file + rename so a crash mid-write doesn't
@@ -1836,8 +1858,8 @@ pub(crate) fn ensure_agents_default_model_for_tier(
     fs::rename(&tmp, &path)?;
 
     eprintln!(
-        "[miracle-claw] tier: wrote agents.defaults.model primary={} fallbacks={:?} (tier={}, schema_migrated={}, prefix_applied={})",
-        default_primary, default_fallbacks, tier.as_str(), schema_changed, prefix_applied
+        "[miracle-claw] tier: wrote agents.defaults.model primary={} fallbacks={:?} (tier={}, prefix_applied={})",
+        default_primary, default_fallbacks, tier.as_str(), prefix_applied
     );
     Ok(true)
 }
@@ -1888,6 +1910,79 @@ fn maic_model_ids_from_cfg(cfg: &serde_json::Value) -> Vec<String> {
 
 fn normalize_bare_model_id(id: &str) -> String {
     id.trim().trim_start_matches("maic/").trim().to_string()
+}
+
+/// Lesson 829 (2026-08-30, rc55.15 hotfix): write a `model` field on
+/// `agents.defaults` while preserving the form (string vs object) of the
+/// existing value. If we have a primary to set, we always set it as a
+/// string (the schema accepts either form for `model.primary`-equivalent
+/// slots). If we have fallbacks to set, we need the OBJECT form — if the
+/// existing value is a string, we wrap it.
+///
+/// Called from `ensure_agents_default_model_for_tier` to apply
+/// Lesson 824's prefix rewrite in-place without changing the schema
+/// shape the user already had.
+fn write_model_field(
+    defaults: &mut serde_json::Value,
+    was_object_form: bool,
+    primary: Option<&str>,
+    fallbacks: Option<Vec<String>>,
+) {
+    let obj = defaults
+        .as_object_mut()
+        .expect("defaults is always an object by this point");
+    match (primary, fallbacks) {
+        (Some(p), None) => {
+            // Only primary to set. Preserve form: keep object if it was
+            // object, otherwise write string.
+            if was_object_form {
+                if let Some(model_obj) = obj.get_mut("model").and_then(|v| v.as_object_mut()) {
+                    model_obj.insert("primary".to_string(), Value::String(p.to_string()));
+                } else {
+                    let mut new_obj = serde_json::Map::new();
+                    new_obj.insert("primary".to_string(), Value::String(p.to_string()));
+                    obj.insert("model".to_string(), Value::Object(new_obj));
+                }
+            } else {
+                obj.insert("model".to_string(), Value::String(p.to_string()));
+            }
+        }
+        (None, Some(fb)) => {
+            // Only fallbacks to set. Fallbacks MUST live inside the
+            // object form (the schema is `.strict()` and has no
+            // top-level fallbacks). If model was a string, wrap it.
+            if let Some(model_obj) = obj.get_mut("model").and_then(|v| v.as_object_mut()) {
+                let arr: Vec<Value> = fb.iter().map(|s| Value::String(s.clone())).collect();
+                model_obj.insert("fallbacks".to_string(), Value::Array(arr));
+            } else {
+                // Was a string form. Promote to object form: keep the
+                // existing string as primary, add fallbacks.
+                let existing_primary = obj
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                let mut new_obj = serde_json::Map::new();
+                if let Some(p) = existing_primary {
+                    new_obj.insert("primary".to_string(), Value::String(p));
+                }
+                let arr: Vec<Value> = fb.iter().map(|s| Value::String(s.clone())).collect();
+                new_obj.insert("fallbacks".to_string(), Value::Array(arr));
+                obj.insert("model".to_string(), Value::Object(new_obj));
+            }
+        }
+        (Some(p), Some(fb)) => {
+            // Both — always write the object form.
+            let mut new_obj = serde_json::Map::new();
+            new_obj.insert("primary".to_string(), Value::String(p.to_string()));
+            let arr: Vec<Value> = fb.iter().map(|s| Value::String(s.clone())).collect();
+            new_obj.insert("fallbacks".to_string(), Value::Array(arr));
+            obj.insert("model".to_string(), Value::Object(new_obj));
+        }
+        (None, None) => {
+            // Nothing to set — caller should have guarded against this.
+            // No-op.
+        }
+    }
 }
 
 /// Lesson 458 / v1.0.6: replace any literal JWT in `models.providers.maic.apiKey`
@@ -8694,11 +8789,12 @@ mod tests {
     /// after `ensure_maic_provider_config`. Returns the temp dir guard so
     /// the file lives for the test scope.
     ///
-    /// Lesson 800 (rc55.13): default schema is the new flat one
-    ///   `agents.defaults.model = "<provider>/<id>"`  (string)
-    ///   `agents.defaults.fallbacks = [...]`  (top-level array)
-    /// For tests that exercise the migration path, use
-    /// `fresh_openclaw_with_legacy_object_model` instead.
+    /// Schema (Lesson 829 / rc55.15):
+    ///   `agents.defaults.model = { primary: "<provider>/<id>", fallbacks: [...] }`
+    /// The OBJECT form is what openclaw's `AgentDefaultsSchema` accepts
+    /// (`.strict()` — it has NO top-level `fallbacks` field). Tests that
+    /// want to seed the migration from the BAD top-level form
+    /// (rc55.14 regression) should use the legacy helper below.
     ///
     /// Note: openclaw_json_path() resolves to `<HOME>/.miracle-claw/openclaw.json`
     /// on non-Windows builds (and `<APPDATA>/MiracleClaw/openclaw.json` on
@@ -8717,7 +8813,46 @@ mod tests {
             "models": { "providers": { "maic": {} } }
         });
         if primary.is_some() || fallbacks.is_some() {
-            // New flat schema.
+            // CORRECT schema: object form.
+            let mut model = serde_json::Map::new();
+            if let Some(p) = primary {
+                model.insert("primary".to_string(), serde_json::Value::String(p.to_string()));
+            }
+            if let Some(fb) = fallbacks {
+                let arr: Vec<serde_json::Value> =
+                    fb.iter().map(|s| serde_json::Value::String(s.to_string())).collect();
+                model.insert("fallbacks".to_string(), serde_json::Value::Array(arr));
+            }
+            cfg["agents"] = serde_json::json!({
+                "defaults": { "model": serde_json::Value::Object(model) }
+            });
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+        g
+    }
+
+    /// Build a openclaw.json shape that mirrors the BAD rc55.14 shape:
+    ///   `agents.defaults.model = "<id>"` (string, bare)
+    ///   `agents.defaults.fallbacks = [...]` (top-level — INVALID per
+    ///      AgentDefaultsSchema `.strict()`)
+    /// Used by `lesson_829_*` tests to verify the repair path strips the
+    /// top-level fallbacks and either keeps or converts the in-object
+    /// fallbacks.
+    fn fresh_openclaw_with_bad_top_level_fallbacks(
+        primary: Option<&str>,
+        fallbacks: Option<Vec<&str>>,
+    ) -> EnvGuard {
+        let g = fresh_env();
+        let path = if cfg!(windows) {
+            g._temp.path().join("MiracleClaw").join("openclaw.json")
+        } else {
+            g._temp.path().join(".miracle-claw").join("openclaw.json")
+        };
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut cfg = serde_json::json!({
+            "models": { "providers": { "maic": {} } }
+        });
+        if primary.is_some() || fallbacks.is_some() {
             let mut defaults = serde_json::Map::new();
             if let Some(p) = primary {
                 defaults.insert(
@@ -8740,41 +8875,6 @@ mod tests {
         g
     }
 
-    /// Same as `fresh_openclaw_with_model` but emits the pre-rc55.13
-    /// nested-object schema so the migration test can verify the writer
-    /// flattens it to the new shape.
-    fn fresh_openclaw_with_legacy_object_model(
-        primary: Option<&str>,
-        fallbacks: Option<Vec<&str>>,
-    ) -> EnvGuard {
-        let g = fresh_env();
-        let path = if cfg!(windows) {
-            g._temp.path().join("MiracleClaw").join("openclaw.json")
-        } else {
-            g._temp.path().join(".miracle-claw").join("openclaw.json")
-        };
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let mut cfg = serde_json::json!({
-            "models": { "providers": { "maic": {} } }
-        });
-        if primary.is_some() || fallbacks.is_some() {
-            let mut model = serde_json::Map::new();
-            if let Some(p) = primary {
-                model.insert("primary".to_string(), serde_json::Value::String(p.to_string()));
-            }
-            if let Some(fb) = fallbacks {
-                let arr: Vec<serde_json::Value> =
-                    fb.iter().map(|s| serde_json::Value::String(s.to_string())).collect();
-                model.insert("fallbacks".to_string(), serde_json::Value::Array(arr));
-            }
-            cfg["agents"] = serde_json::json!({
-                "defaults": { "model": serde_json::Value::Object(model) }
-            });
-        }
-        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
-        g
-    }
-
     #[test]
     fn lesson_517_free_writes_local_default_when_empty() {
         let _env = lock_env();
@@ -8786,23 +8886,16 @@ mod tests {
         let path = openclaw_json_path();
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        // Lesson 521: primary carries the `maic/` provider prefix so the
-        // openclaw gateway dispatches via MAIC's baseUrl regardless of
-        // catalog state (defends against the rc18→rc19/20 upgrade gap
-        // fixed in Lesson 520).
-        let primary = cfg.pointer("/agents/defaults/model").unwrap();
-        // Lesson 569 (2026-08-24 22:57 MDT, David): Free default switched
-        // BACK to local m1-t1 (zero Ollama usage) from cloud-deepseek
-        // (Lesson 566). Reason: deepseek = Ollama usage level 4 (extra
-        // high) — burns 4x what nemotron-nano would, blowing through
-        // Free quota in minutes. m1-t1 → m1-t2 → m1-t3 → chat-nemotron-nano
-        // chain keeps Free users on cheap paths.
+        // Lesson 829 (2026-08-30, rc55.15 hotfix): seed writes the OBJECT
+        // form (`agents.defaults.model = {primary, fallbacks}`). The
+        // schema (`AgentDefaultsSchema`) is `.strict()` — it does NOT
+        // accept top-level `fallbacks` at `agents.defaults`.
+        let primary = cfg.pointer("/agents/defaults/model/primary").unwrap();
         assert_eq!(primary, "maic/milagro-m1-t1");
-        // Lesson 569: Free NOW has a 3-step fallback chain ending at the
-        // cheapest cloud route (chat-nemotron-nano, level 1).
+        // Lesson 569: chain is local 7B → local 14B → cloud nano.
         let fallbacks: Vec<String> = cfg
-            .pointer("/agents/defaults/fallbacks")
-            .expect("Free must have fallbacks array (Lesson 569)")
+            .pointer("/agents/defaults/model/fallbacks")
+            .expect("Free must have fallbacks inside model (Lesson 829)")
             .as_array()
             .unwrap()
             .iter()
@@ -8812,6 +8905,11 @@ mod tests {
             fallbacks,
             vec!["maic/milagro-m1-t2", "maic/milagro-m1-t3", "maic/chat-nemotron-nano"],
             "Free chain must be local 7B → local 14B → cloud nano (level 1)"
+        );
+        // Lesson 829: no top-level fallbacks allowed.
+        assert!(
+            cfg.pointer("/agents/defaults/fallbacks").is_none(),
+            "Lesson 829: schema rejects top-level fallbacks"
         );
     }
 
@@ -8826,16 +8924,14 @@ mod tests {
         let path = openclaw_json_path();
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        // Lesson 521: paid primary + fallbacks all carry `maic/` prefix.
-        // Lesson 795 (2026-08-30, David): primary swapped Kimi → GLM
-        // (empirically the only paid-tier model that reliably fires
-        // our plugin's local tools). Lesson 798: prefixed at writer.
+        // Lesson 829: primary lives at /agents/defaults/model/primary.
+        // Lesson 795 (2026-08-30, David): primary swapped Kimi → GLM.
         assert_eq!(
-            cfg.pointer("/agents/defaults/model").unwrap(),
+            cfg.pointer("/agents/defaults/model/primary").unwrap(),
             "maic/milagro-oc-glm"
         );
         let fallbacks: Vec<String> = cfg
-            .pointer("/agents/defaults/fallbacks")
+            .pointer("/agents/defaults/model/fallbacks")
             .unwrap()
             .as_array()
             .unwrap()
@@ -8847,6 +8943,8 @@ mod tests {
             fallbacks,
             vec!["maic/milagro-oc-minimax", "maic/milagro-oc-kimi", "maic/milagro-m1-t3"]
         );
+        // Lesson 829: no top-level fallbacks allowed.
+        assert!(cfg.pointer("/agents/defaults/fallbacks").is_none());
     }
 
     #[test]
@@ -8864,7 +8962,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         // Primary still the user's pick, NOT Kimi.
         assert_eq!(
-            cfg.pointer("/agents/defaults/model").unwrap(),
+            cfg.pointer("/agents/defaults/model/primary").unwrap(),
             "milagro-dev-coder"
         );
     }
@@ -8882,9 +8980,8 @@ mod tests {
         let path = openclaw_json_path();
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        // Lesson 795 (2026-08-30): primary is GLM, not Kimi.
         assert_eq!(
-            cfg.pointer("/agents/defaults/model").unwrap(),
+            cfg.pointer("/agents/defaults/model/primary").unwrap(),
             "maic/milagro-oc-glm"
         );
     }
@@ -8913,16 +9010,14 @@ mod tests {
             let path = openclaw_json_path();
             let cfg: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-            // Lesson 521: provider-prefixed primary + fallbacks.
-            // Lesson 795: primary is GLM.
             assert_eq!(
-                cfg.pointer("/agents/defaults/model").unwrap(),
+                cfg.pointer("/agents/defaults/model/primary").unwrap(),
                 "maic/milagro-oc-glm",
                 "{:?} primary must be GLM (Lesson 795)",
                 tier,
             );
             let fallbacks: Vec<String> = cfg
-                .pointer("/agents/defaults/fallbacks")
+                .pointer("/agents/defaults/model/fallbacks")
                 .unwrap()
                 .as_array()
                 .unwrap()
@@ -8942,8 +9037,8 @@ mod tests {
         // User paid → had Kimi+fallbacks. Downgraded to Free. Next login
         // must rewrite the chain to Free's m1-t chain so the dropdown
         // shows the local models + cheap cloud fallback. We model this
-        // by starting with Free default + a paid fallback array, then
-        // calling the writer with Free.
+        // by starting with empty primary + paid fallbacks (OBJECT form,
+        // Lesson 829), then calling the writer with Free.
         let _g = fresh_openclaw_with_model(Some(""), Some(vec!["maic/milagro-oc-minimax", "maic/milagro-dev"]));
         let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
             .expect("writer should succeed");
@@ -8952,20 +9047,13 @@ mod tests {
         let path = openclaw_json_path();
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        // Lesson 521: provider-prefixed.
-        // Lesson 569 (2026-08-24 22:57 MDT, David): Free primary is now
-        // local m1-t1 (was cloud-deepseek from Lesson 566). Lesson 569
-        // also re-introduces a Free fallback chain (was empty); the chain
-        // walks cheap → expensive (local 7B → local 14B → cloud nano).
+        // Lesson 829: primary at /agents/defaults/model/primary.
         assert_eq!(
-            cfg.pointer("/agents/defaults/model").unwrap(),
+            cfg.pointer("/agents/defaults/model/primary").unwrap(),
             "maic/milagro-m1-t1"
         );
-        // Lesson 569: Free now has a 3-step fallback chain ending at
-        // chat-nemotron-nano. The downgrade REPLACES the stale paid
-        // fallbacks with Free's chain (does not leave them).
         let fallbacks: Vec<String> = cfg
-            .pointer("/agents/defaults/fallbacks")
+            .pointer("/agents/defaults/model/fallbacks")
             .expect("Free must have fallbacks (Lesson 569)")
             .as_array()
             .unwrap()
@@ -8977,88 +9065,22 @@ mod tests {
             vec!["maic/milagro-m1-t2", "maic/milagro-m1-t3", "maic/chat-nemotron-nano"],
             "Free downgrade must replace paid fallbacks with Free's m1-t chain"
         );
+        // Lesson 829: no top-level fallbacks.
+        assert!(cfg.pointer("/agents/defaults/fallbacks").is_none());
     }
 
     // -----------------------------------------------------------------------
     // Lesson 800 tests (rc55.13 schema migration)
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn lesson_800_migrates_legacy_object_schema_to_flat_string() {
-        // Pre-rc55.13 openclaw.json shape:
-        //   agents.defaults.model = { primary: "...", fallbacks: [...] }
-        // Post-rc55.13 shape:
-        //   agents.defaults.model = "..."      (string)
-        //   agents.defaults.fallbacks = [...]  (top-level array)
-        let _env = lock_env();
-        let _g = fresh_openclaw_with_legacy_object_model(
-            Some("milagro-oc-kimi"),
-            Some(vec!["milagro-oc-minimax", "milagro-oc-glm", "milagro-dev"]),
-        );
+    // ---------------------------------------------------------------------
+    // Lesson 829 tests (rc55.15 schema repair)
+    // ---------------------------------------------------------------------
 
-        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
-            .expect("writer should succeed");
-        // Migration IS a write — the schema changed even though primary was set.
-        assert!(
-            wrote,
-            "legacy object schema must trigger migration write (Lesson 800)"
-        );
-
-        let path = openclaw_json_path();
-        let cfg: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        // New schema: model is a top-level string, fallbacks top-level array.
-        assert_eq!(
-            cfg.pointer("/agents/defaults/model").unwrap(),
-            "milagro-oc-kimi",
-            "user's primary preserved during migration"
-        );
-        let fallbacks: Vec<String> = cfg
-            .pointer("/agents/defaults/fallbacks")
-            .expect("fallbacks must be at top level after migration")
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap().to_string())
-            .collect();
-        assert_eq!(
-            fallbacks,
-            vec!["milagro-oc-minimax", "milagro-oc-glm", "milagro-dev"],
-            "user's fallbacks preserved during migration"
-        );
-        // The old object form must be gone.
-        assert!(
-            cfg.pointer("/agents/defaults/model/primary").is_none(),
-            "legacy /agents/defaults/model/primary must be removed after migration"
-        );
-        assert!(
-            cfg.pointer("/agents/defaults/model/fallbacks").is_none(),
-            "legacy /agents/defaults/model/fallbacks must be removed after migration"
-        );
-    }
-
-    #[test]
-    fn lesson_800_no_op_when_already_flat_string() {
-        // Already on the new schema — writer should NOT trigger a write
-        // unless the primary is empty.
-        let _env = lock_env();
-        let _g = fresh_openclaw_with_model(
-            Some("milagro-oc-kimi"),
-            Some(vec!["milagro-oc-minimax"]),
-        );
-
-        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
-            .expect("writer should succeed");
-        assert!(
-            !wrote,
-            "already-flat schema with non-empty primary must be a no-op"
-        );
-    }
-
-    /// Lesson 824 (2026-08-30, rc55.14): build an `openclaw.json` with
-    /// the maic provider entry populated with known model rows, so we
-    /// can exercise the `maic/...` prefix-application logic in
-    /// `ensure_agents_default_model_for_tier`.
+    /// Build an openclaw.json with the OBJECT schema
+    /// (`model = { primary, fallbacks }`) but populated with BARE ids
+    /// (no `maic/` prefix). Used to exercise Lesson 824's prefix
+    /// rewrite on top of the correct schema shape (Lesson 829).
     fn fresh_openclaw_with_maic_models_and_primary(
         primary: Option<&str>,
         fallbacks: Option<Vec<&str>>,
@@ -9088,10 +9110,10 @@ mod tests {
         });
         let mut cfg = cfg;
         if primary.is_some() || fallbacks.is_some() {
-            let mut defaults = serde_json::Map::new();
+            let mut model_obj = serde_json::Map::new();
             if let Some(p) = primary {
-                defaults.insert(
-                    "model".to_string(),
+                model_obj.insert(
+                    "primary".to_string(),
                     serde_json::Value::String(p.to_string()),
                 );
             }
@@ -9100,10 +9122,10 @@ mod tests {
                     .iter()
                     .map(|s| serde_json::Value::String(s.to_string()))
                     .collect();
-                defaults.insert("fallbacks".to_string(), serde_json::Value::Array(arr));
+                model_obj.insert("fallbacks".to_string(), serde_json::Value::Array(arr));
             }
             cfg["agents"] = serde_json::json!({
-                "defaults": serde_json::Value::Object(defaults)
+                "defaults": { "model": serde_json::Value::Object(model_obj) }
             });
         }
         std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
@@ -9111,11 +9133,66 @@ mod tests {
     }
 
     #[test]
+    fn lesson_829_repairs_bad_top_level_fallbacks_from_rc55_14() {
+        // rc55.14 regression: the writer (Lesson 800) emitted
+        //   agents.defaults = { fallbacks: [...], model: "<id>" }
+        // which crashes gateway boot with `agents.defaults: Invalid
+        // input` because `AgentDefaultsSchema` is `.strict()` (only
+        // accepts the documented fields).
+        //
+        // Lesson 829 (rc55.15): the writer must lift top-level
+        // fallbacks into the model object's `fallbacks` field, then
+        // STRIP the top-level key.
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_bad_top_level_fallbacks(
+            Some("maic/milagro-oc-kimi"),
+            Some(vec!["maic/milagro-oc-minimax", "maic/milagro-oc-glm"]),
+        );
+
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("writer should succeed");
+        assert!(wrote, "rc55.14-bad shape must trigger a repair write");
+
+        let path = openclaw_json_path();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // Lesson 829: top-level fallbacks key removed (schema rejects it).
+        assert!(
+            cfg.pointer("/agents/defaults/fallbacks").is_none(),
+            "Lesson 829: top-level fallbacks must be stripped"
+        );
+        // Lesson 829: model is OBJECT form with fallbacks preserved.
+        let fb_in_obj: Vec<String> = cfg
+            .pointer("/agents/defaults/model/fallbacks")
+            .expect("fallbacks must live inside model.fallbacks (Lesson 829)")
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            fb_in_obj,
+            vec!["maic/milagro-oc-minimax".to_string(), "maic/milagro-oc-glm".to_string()],
+            "Lesson 829: top-level fallbacks should be lifted into model.fallbacks"
+        );
+        let primary = cfg
+            .pointer("/agents/defaults/model/primary")
+            .and_then(|v| v.as_str());
+        assert_eq!(
+            primary,
+            Some("maic/milagro-oc-kimi"),
+            "primary preserved (already prefixed)"
+        );
+    }
+
+    #[test]
     fn lesson_824_prefixes_bare_existing_primary() {
-        // David's bug: agents.defaults.model = "milagro-oc-kimi" (bare).
-        // The writer must recognize that bare id, prefix it with `maic/`,
-        // and persist the file. This is the fix for the rc55.12 chat
-        // picker showing only 4 models.
+        // David's bug: agents.defaults.model.primary = "milagro-oc-kimi"
+        // (bare). The writer must recognize that bare id, prefix it
+        // with `maic/`, and persist the file. This is the fix for the
+        // rc55.12 chat picker showing only 4 models (gateway
+        // dispatched via `inferUniqueProviderFromCatalog` to
+        // `openai/<id>` and MAIC rejected it).
         let _env = lock_env();
         let _g = fresh_openclaw_with_maic_models_and_primary(
             Some("milagro-oc-kimi"),
@@ -9129,14 +9206,17 @@ mod tests {
         let path = openclaw_json_path();
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let model = cfg.pointer("/agents/defaults/model").and_then(|v| v.as_str());
+        // Lesson 829: primary lives at /agents/defaults/model/primary.
+        let model = cfg
+            .pointer("/agents/defaults/model/primary")
+            .and_then(|v| v.as_str());
         assert_eq!(
             model,
             Some("maic/milagro-oc-kimi"),
             "bare primary must be prefixed with 'maic/'"
         );
         let fallbacks: Vec<String> = cfg
-            .pointer("/agents/defaults/fallbacks")
+            .pointer("/agents/defaults/model/fallbacks")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
@@ -9180,23 +9260,14 @@ mod tests {
 
         let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
             .expect("writer should succeed");
-        // Bare unknown ids → no prefix rewrite, but seed path will still
-        // overwrite the primary because `existing_primary == None`
-        // (we treat None or empty as needing seed, but a non-empty bare
-        // id we DON'T recognize should be left alone). Document the
-        // behavior explicitly here.
+        // Bare unknown ids → no prefix rewrite, no seed (non-empty primary),
+        // net effect: file unchanged, wrote=false.
         let path = openclaw_json_path();
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        // The writer seeded the pro primary because needs_seed resolved
-        // to true on the bare existing_primary (it's "unknown-model-id",
-        // a non-empty string, so needs_seed=false per current logic).
-        // Then it tried the prefix rewrite: the bare id isn't in the
-        // catalog, so no rewrite happens. Net effect: file unchanged,
-        // wrote=false.
         assert!(!wrote, "unknown bare primary must not trigger a write");
         let model = cfg
-            .pointer("/agents/defaults/model")
+            .pointer("/agents/defaults/model/primary")
             .and_then(|v| v.as_str())
             .unwrap_or_default();
         assert_eq!(

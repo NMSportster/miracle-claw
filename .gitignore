@@ -69,3 +69,4 @@ brand/lockup-horizontal.svg
 # Lock files
 .build-windows-docker.lock
 .build-linux.lock
+dist.OLD.root-owned/
