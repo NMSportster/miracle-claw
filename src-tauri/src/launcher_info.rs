@@ -19,11 +19,26 @@ pub const LAUNCHER_BINARY_NAME: &str = "miracle-claw-launcher";
 /// Files we copy from `resources/maic-plugin/` into the user's openclaw
 /// extensions directory on first run. Add new entries here when the MAIC
 /// plugin gains new files.
+///
+/// Lesson 759 (2026-08-29 18:25 MDT, David): include `miracle-claw-tools.exe`
+/// (Windows) / `miracle-claw-tools` (*nix) so the install copies the
+/// fresh sidecar next to the plugin JS in the user's AppData. Before
+/// this, the sidecar shipped in `<resources>/miracle-claw-tools.exe`
+/// (Program Files install path) was the only fresh copy; the AppData
+/// sidecar (sitting next to `<APPDATA>/MiracleClaw/extensions/maic/
+/// index.js`) was stale from an earlier install and got picked first by
+/// the plugin's `toolsBinaryPath()` ancestor walk — meaning apply_patch
+/// fixes in newer builds silently never reached end users until they
+/// nuked the AppData dir. Adding the sidecar to this list means every
+/// upgrade copies the new binary, and `compute_hashes_manifest` notices
+/// the SHA change and re-runs the install.
 pub const MAIC_PLUGIN_FILENAMES: &[&str] = &[
     "openclaw.plugin.json",
     "index.js",
     "package.json",
     "test_plugin.js",
+    "miracle-claw-tools.exe", // Windows-only; missing-file fallback in copy_maic_plugin_if_needed skips it on *nix
+    "miracle-claw-tools",     // *nix-only; same fallback
 ];
 
 #[inline]

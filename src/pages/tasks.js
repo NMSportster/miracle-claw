@@ -94,9 +94,32 @@ export const tasksPage = {
 
     // Stash header element so _rerenderHeader can replace it in-place.
     state._headerEl = this._renderHeader(state);
+    // Lesson 759 (2026-08-29 18:25 MDT, David): wrap header + body in
+    // a single <div class="tasks-page"> child of #root. #root is itself
+    // `display: flex; flex-direction: row; justify-content: center;
+    // padding: 24px;` (see src/styles.css line 51). When we appended
+    // header + body as two SIBLINGS into that flex row, the page content
+    // became two flex items side-by-side: header (no max-width, fills
+    // its content) + body (max-width 760px, margin: 0 auto). With two
+    // children whose natural combined width > (viewport - 48px), #root
+    // overflowed horizontally and the page "scrolled right instead of
+    // up and down" — and because justify-content:center left the body
+    // centered, the form/inputs appeared to float in the middle.
+    //
+    // The fix mirrors how every other page works (secrets.js wraps in
+    // <div class="secrets-page">, files.js wraps in <div class="files-page">,
+    // dashboard wraps in <div class="dashboard">). One child of #root,
+    // styled flex-column inside the wrapper. Two callers below
+    // (_rerenderHeader's "replace in-place" logic, and any future
+    // re-render path) operate on `state._headerEl` / `state._bodyEl`
+    // directly so we don't accidentally re-wrap.
+    state._bodyEl = this._renderBody(state, ctx);
+    state._pageEl = el("div", { class: "tasks-page" }, [
+      state._headerEl,
+      state._bodyEl,
+    ]);
     root.innerHTML = "";
-    root.appendChild(state._headerEl);
-    root.appendChild(this._renderBody(state, ctx));
+    root.appendChild(state._pageEl);
     await this._reload(state, ctx);
     // Lesson 736: auto-sync from MAIC on page mount so the user sees
     // any task changes the MAIC agent made in a chat turn. Fire-and-

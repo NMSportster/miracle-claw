@@ -172,8 +172,15 @@ else
     echo "    target dir: $TARGET_DIR"
     # Build tools binary first (no JS embed; fast). Then `npm run tauri build`
     # builds miracle-claw + bundles into the requested bundle types.
+    #
+    # Lesson 759 (2026-08-29 18:25 MDT, David): also copy the fresh
+    # sidecar into resources/maic-plugin/ so the runtime install copies
+    # it next to the plugin JS in <stateDir>/extensions/maic/. Without
+    # this copy, the sidecar at <stateDir>/extensions/maic/ stays stale
+    # across upgrades and apply_patch fixes silently never reach users.
     ( cd "$REPO_ROOT/src-tauri" && cargo build --release --bin miracle-claw-tools ) && \
     cp -f "$TOOLS_EXE" "$REPO_ROOT/src-tauri/resources/miracle-claw-tools.exe" && \
+    cp -f "$TOOLS_EXE" "$REPO_ROOT/src-tauri/resources/maic-plugin/miracle-claw-tools" && \
     ( cd "$REPO_ROOT" && npm run tauri -- build --bundles "$BUNDLES" )
 fi
 

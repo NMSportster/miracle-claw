@@ -4089,6 +4089,30 @@ kbd {
 }
 
 /* MC Tasks (Lesson 725, 2026-08-28 21:30 MDT, David) */
+
+/* Lesson 759 (2026-08-29 18:25 MDT, David): wrapper that becomes the
+   single child of #root. #root is `display: flex; flex-direction: row;
+   justify-content: center; padding: 24px;` — without this wrapper the
+   Tasks page mounts header + body as two siblings in that flex row,
+   which stacks them side-by-side with the body centered (justify-
+   content: center), causing "content floats in the middle, page scrolls
+   right instead of up/down" when the natural combined width > viewport.
+   The wrapper gives us one flex-column child of #root and matches the
+   pattern used by every other page (secrets.js → .secrets-page,
+   files.js → .files-page, dashboard → .dashboard). */
+.tasks-page {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 880px;
+  gap: 16px;
+  /* Without overflow:hidden (or visible + min-width:0), a flex item's
+     intrinsic min-width is its content min-content, so a wide child
+     could still push the wrapper past its max-width. min-width:0 lets
+     the wrapper constrain its children. */
+  min-width: 0;
+}
+
 .mc-tasks-header {
   padding: 16px 24px 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);

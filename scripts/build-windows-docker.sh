@@ -155,7 +155,15 @@ else
     # (which validates all resources/* paths in tauri.conf.json)
     # doesn't fail. The `cp` after the build overwrites the
     # placeholder with the real binary.
-    CMD='cd /io/src-tauri && touch resources/miracle-claw-tools.exe && cargo xwin build --release --target x86_64-pc-windows-msvc --bin miracle-claw-tools && cp target/x86_64-pc-windows-msvc/release/miracle-claw-tools.exe resources/miracle-claw-tools.exe && cd /io && npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis'
+    #
+    # Lesson 759 (2026-08-29 18:25 MDT, David): also copy the fresh
+    # sidecar into resources/maic-plugin/ so the runtime install copies
+    # it to <APPDATA>/MiracleClaw/extensions/maic/ next to the plugin JS.
+    # The plugin's toolsBinaryPath() walks ancestors and finds the binary
+    # there first (before the Program Files resources/), so without this
+    # copy the AppData sidecar stays stale across upgrades and apply_patch
+    # fixes silently never reach end users.
+    CMD='cd /io/src-tauri && touch resources/miracle-claw-tools.exe && cargo xwin build --release --target x86_64-pc-windows-msvc --bin miracle-claw-tools && cp target/x86_64-pc-windows-msvc/release/miracle-claw-tools.exe resources/miracle-claw-tools.exe && cp target/x86_64-pc-windows-msvc/release/miracle-claw-tools.exe resources/maic-plugin/miracle-claw-tools.exe && cd /io && npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis'
 fi
 
 docker run --rm \
