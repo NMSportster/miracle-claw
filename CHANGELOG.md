@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.0.1 polish queue
 
+### v1.1.0-rc55.8 — 2026-08-29 (Lesson 760 FIX: actually edit the plugin)
+
+- **Lesson 760 (CORRECTED 2026-08-29 21:18 MDT, David): the rc55.7 commit
+  `341d4b6` did NOT edit the plugin.** Both `depot/maic-plugin/` and
+  `src-tauri/resources/maic-plugin/` are gitignored, so my "Lesson 760"
+  commit was a version bump + CHANGELOG entry with no code change. The
+  plugin still spread `tool_execution: "client"` at the top level of
+  `patch`, which OpenClaw's vendored runtime (`extra-params-cce1g0up.js`)
+  ignores — it ONLY reads `patch.extra_body`.
+
+- Symptom (re-confirmed by David's 21:04 MDT test): 6 of 7 paid-tier
+  client tools are still rejected by MAIC with
+  `Error: tool '<name>' is not available. Available tools:
+  get_weather, web_search, get_current_time, calculate, describe_image,
+  mc_task_list, mc_task_add, mc_task_update, mc_task_complete,
+  mc_task_delete.` That's MAIC's `_BY_NAME` server-side registry saying
+  "I don't know that tool" — confirming `tool_execution` was missing
+  from the payload and MAIC took the `else` branch (server mode) which
+  stripped the client tools.
+
+- MAIC's DEBUG-760 log confirmed the diagnosis:
+  `caller_tools_count=33 tool_execution_in_payload=False` →
+  `[DEBUG-760-MERGE] branch=else-final_tool_count=10`.
+
+- **Fix**: this time, edit `depot/maic-plugin/index.js`'s
+  `resolveMaicExtraParamsForTransport` to:
+  1. Wrap `tool_execution` and `tools` inside `patch.extra_body` (the
+     field the runtime actually reads).
+  2. Preserve `providerParams.extra_body` and `modelParams.extra_body`
+     when computing the merged `extra_body`.
+  3. Still spread `tool_execution` (and `tools` if present) at top
+     level of `patch` for back-compat with older OpenClaw builds.
+  4. Default `tool_execution` to `"client"` when no explicit override
+     (matches MAIC's expected partition).
+
+- Tests: `test_plugin.js` now has 4 new Lesson 760 assertions
+  (total 60 passed / 0 failed). Existing 54 tests still green.
+
+- Files (all manual cp from depot → resources — gitignored):
+  - depot/maic-plugin/index.js (md5 923eedd4...)
+  - depot/maic-plugin/test_plugin.js (md5 d05d66f6...)
+  - src-tauri/resources/maic-plugin/index.js (md5 923eedd4...)
+  - src-tauri/resources/maic-plugin/test_plugin.js (md5 d05d66f6...)
+  - package.json, src-tauri/Cargo.toml, src-tauri/tauri.conf.json (version bumps)
+
+- Follow-ups after David confirms 17 tools:
+  - [ ] Remove DEBUG-760 / DEBUG-760-MERGE logs from MAIC chat.py.
+  - [ ] Upstream PR to OpenClaw to add `tool_execution` to the alias
+    map in `extra-params-cce1g0up.js` so plugin authors don't have to
+    know about `extra_body`.
+
 ### v1.1.0-rc55.7 — 2026-08-29 (Lesson 760: tool_execution routed via extra_body)
 
 - **Lesson 760 (NEW 2026-08-29 19:31 MDT, David): tool_execution + tools
