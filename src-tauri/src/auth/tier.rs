@@ -285,7 +285,18 @@ pub fn publish_tier_env(tier: Tier) {
 ///
 /// Free: `milagro-m1-t1` (local Qwen3B-distilled — cheapest local path,
 /// zero Ollama usage, English-only but adequate for simple chat).
-/// Paid: `milagro-oc-kimi` (cloud cascade — best cost/quality for code+chat).
+/// Paid: `milagro-dev` (local 14B — best tool-use discipline of any local model;
+///
+/// Lesson 793 (2026-08-30, David): switched Paid primary
+/// from `milagro-oc-kimi` back to `milagro-dev`. Reason: kimi (100B+ MoE)
+/// prefers OpenClaw built-ins (`web_search`/`web_fetch`) over the 7 paid-tier
+/// plugin tools (`bash_run`, `read_file`, etc.) — and those built-ins are
+/// broken because no Brave API key is configured. RC55.10 verified all 7
+/// paid-tier tools DO reach MAIC (DEBUG-760: caller_tools_count=7,
+/// final_tool_count=17) — the issue was 100% model behavior. 14B has
+/// shown better tool-call discipline than kimi. If kimi is needed later,
+/// add a stronger system prompt or disable built-ins at agent config level.
+/// Previously was `milagro-dev` per Lesson 566 before being changed to kimi.
 ///
 /// This is also what `mc_get_default_model` returns to the dashboard
 /// so the chat panel's pre-selected model matches the tier routing.
@@ -302,14 +313,17 @@ pub fn publish_tier_env(tier: Tier) {
 ///
 /// Lesson 566 history: was `milagro-dev` (claimed local 14B but
 /// routes to ollama-cloud `minimax-m3:cloud` on Hetzner-prod).
+/// previously was cloud Kimi — reverted to 14B local for tool discipline (Lesson 793).
 pub fn tier_default_model_id(tier: Tier) -> &'static str {
     match tier {
         Tier::Free => "milagro-m1-t1",
-        // Pro / ProPlus / Team / Enterprise all use the cloud Kimi default.
-        // MAIC's plan_code → quota gate still applies server-side, so a
+        // Lesson 793 (2026-08-30): reverted to `milagro-dev` (local 14B)
+        // for paid tiers — kimi prefers OpenClaw built-ins over plugin
+        // tools, and built-ins fail without Brave API key. MAIC's
+        // plan_code → quota gate still applies server-side, so a
         // downgraded user on this default just gets a clean error rather
         // than a quota-bypass.
-        _ => "milagro-oc-kimi",
+        _ => "milagro-dev",
     }
 }
 
@@ -352,10 +366,13 @@ pub fn tier_default_fallbacks(tier: Tier) -> &'static [&'static str] {
             "milagro-m1-t3",
             "chat-nemotron-nano",
         ],
+        // Lesson 793: Paid primary is now `milagro-dev` (14B local),
+        // so the fallback chain must NOT include `milagro-dev` (would
+        // loop). Use cloud cascade + local t2/t3 as backup.
         _ => &[
             "milagro-oc-minimax",
             "milagro-oc-glm",
-            "milagro-dev",
+            "milagro-m1-t3",
         ],
     }
 }
@@ -580,8 +597,8 @@ mod tests {
         ] {
             assert_eq!(
                 tier_default_model_id(tier),
-                "milagro-oc-kimi",
-                "{:?} must default to Kimi",
+                "milagro-dev",
+                "{:?} must default to milagro-dev (14B local) per Lesson 793",
                 tier,
             );
         }
@@ -589,6 +606,9 @@ mod tests {
 
     #[test]
     fn paid_fallbacks_are_ordered_minimax_then_glm_then_local() {
+        // Lesson 793: with Paid primary = `milagro-dev`, the local 14B
+        // slot in the fallback chain moved to `milagro-m1-t3` to avoid
+        // a primary/fallback collision (test above enforces distinct).
         for tier in [
             Tier::Starter,
             Tier::StarterPlus,
@@ -601,7 +621,7 @@ mod tests {
             assert_eq!(f.len(), 3, "{:?} should have exactly 3 fallbacks", tier);
             assert_eq!(f[0], "milagro-oc-minimax", "{:?} fallback[0] must be MiniMax-M3", tier);
             assert_eq!(f[1], "milagro-oc-glm",     "{:?} fallback[1] must be GLM", tier);
-            assert_eq!(f[2], "milagro-dev",        "{:?} fallback[2] must be local 14B", tier);
+            assert_eq!(f[2], "milagro-m1-t3",      "{:?} fallback[2] must be local 14B-distilled", tier);
         }
     }
 

@@ -3585,6 +3585,38 @@ The picker is where pricing meets product. Filter there.
   sidecar binary should resolve correctly regardless of which install path
   the runtime loaded the plugin from.
 
+## 1.1.0-rc55.11 (2026-08-30)
+
+**Lesson 793: Switch paid-tier default from `milagro-oc-kimi` → `milagro-dev` (14B local)**
+
+- **Diagnosis (Lesson 792)**: rc55.10 confirmed all 7 paid-tier tools DO reach MAIC.
+  MAIC DEBUG-760 logs: `caller_tools_count=7`, `tool_execution_in_payload=True`,
+  `payload_tool_execution_value=client`, `final_tool_count=17`. Plugin wiring
+  is fully correct. The 7 paid-tier tools are in the model's prompt.
+
+- **Root cause**: `milagro-oc-kimi` (100B+ MoE) prefers OpenClaw built-in tools
+  (`web_search`, `web_fetch`) over the 7 paid-tier plugin tools (`bash_run`,
+  `read_file`, etc.). Built-ins are broken — `web_search` fails with "web_search
+  is disabled or no provider is available" (no Brave API key), `web_fetch`
+  returns 404s. Kimi never calls `bash_run` even though it's available.
+
+- **Anti-pattern AP-792-A**: The `tools=N` field in OpenClaw's "incomplete turn
+  detected" log is `attempt.toolMetas.length` (tool calls ATTEMPTED), NOT tools
+  available. `tools=1` for kimi meant "1 call made" not "1 tool visible".
+
+- **Fix**: Changed `tier_default_model_id(_)` for paid tiers from
+  `milagro-oc-kimi` → `milagro-dev` (local 14B). 14B has shown better tool-call
+  discipline than kimi in past tests. Free tier unchanged (`milagro-m1-t1`).
+
+- **Files changed**:
+  - `src-tauri/src/auth/tier.rs` — `_ => "milagro-dev"` + doc comment + Lesson 793
+  - `src-tauri/src/auth/tier.rs` test — assert_eq now checks `milagro-dev`
+  - `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` — version bump
+
+- **If `milagro-dev` also fails to call paid-tier tools**: try adding a stronger
+  system prompt or disable `web_search`/`web_fetch` at the agent config level.
+  See `/home/adeal/Desktop/MC-rc55.10-diagnosis.md` for full analysis.
+
 ## 1.1.0-rc55.10 (2026-08-29)
 
 **Lesson 779 fix**: Bundled maic plugin was stale (rc54.3 era manifest + index.js without Lesson 738's registerTool). launcher copy only syncs Program Files ↔ AppData, never refreshes from depot. Tool calls in rc55.0-rc55.9 silently returned undefined; model hallucinated plausible-looking results.
