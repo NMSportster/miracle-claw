@@ -196,13 +196,42 @@ rm -f "$RESOURCES_DIR/.buildstamp" \
 # the build host (install with `npm install -g pnpm@11`).
 # --prod omits dev deps; we skip --no-frozen-lockfile because we don't ship a
 # lockfile (the bundle-runtime regenerates deps from package.json).
+#
+# --config.strict-dep-builds=false is REQUIRED: pnpm 11 changed
+# strictDepBuilds default to true, which promotes [ERR_PNPM_IGNORED_BUILDS]
+# from a warning to exit 1. openclaw's tree pulls in @google/genai,
+# protobufjs, and tree-sitter-bash, all of which have postinstall scripts
+# that pnpm refuses to run unless explicitly allowBuild'd. We don't need
+# the compiled native modules at runtime (they're optional), so disabling
+# strict dep builds is safe — the install still succeeds and node_modules
+# is fully populated. If a future openclaw dep requires its build script
+# (e.g. a native module with no prebuilt binary), switch to allowBuilds
+# in pnpm-workspace.yaml instead (Lesson 847).
 echo "[bundle-runtime] running pnpm install --prod..."
 if ! command -v pnpm >/dev/null 2>&1; then
     echo "[bundle-runtime] FATAL: pnpm not found on PATH" >&2
     echo "  Install it with: npm install -g pnpm@11" >&2
     exit 1
 fi
-( cd "$RESOURCES_DIR" && pnpm install --prod --no-frozen-lockfile --config.nodeLinker=hoisted 2>&1 | tail -10 ) || true
+RUN_PNPM_INSTALL() {
+    ( cd "$RESOURCES_DIR" && pnpm install \
+        --prod \
+        --no-frozen-lockfile \
+        --config.nodeLinker=hoisted \
+        --config.strict-dep-builds=false 2>&1 | tail -15 )
+}
+if ! RUN_PNPM_INSTALL; then
+    echo "[bundle-runtime] FATAL: pnpm install failed (Lesson 847: pnpm 11 strict dep builds)" >&2
+    echo "  Try manually: cd $RESOURCES_DIR && pnpm install --prod --no-frozen-lockfile --config.nodeLinker=hoisted --config.strict-dep-builds=false" >&2
+    exit 1
+fi
+# Sanity check: ensure node_modules actually exists and has content
+# (pnpm 11 can exit 0 with empty node_modules if the lockfile is broken).
+if [[ ! -d "$RESOURCES_DIR/node_modules" ]] || [[ -z "$(ls -A "$RESOURCES_DIR/node_modules" 2>/dev/null)" ]]; then
+    echo "[bundle-runtime] FATAL: pnpm install exited 0 but $RESOURCES_DIR/node_modules" >&2
+    echo "  is missing or empty. Tauri build will fail. Aborting." >&2
+    exit 1
+fi
 
 # 4b. Unpack Node binary into resources/.
 TMP_NODE="$(mktemp -d)"
