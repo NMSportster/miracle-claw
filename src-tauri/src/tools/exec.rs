@@ -604,6 +604,128 @@ fn normalize_python_c_paths(command: &str) -> String {
     result
 }
 
+/// Lesson 848 (2026-08-30 17:40 MDT, David): detect `python ... -c "<code>"`
+/// in a shell command and split it so we can invoke python directly
+/// (bypassing cmd /C's quote-stripping on Windows).
+///
+/// Returns:
+///   - `Some((py_args, leftover_args))` if the head word is python/python3/py
+///     and -c with a quoted code string was found. `py_args` is the full
+///     argv to invoke (e.g. `["python.exe", "-c", "print('hi')"]`);
+///     `leftover_args` are any trailing args (e.g. `["; exit(7)"]`)
+///     passed after the closing quote, normalized.
+///   - `None` if the head word isn't python, or -c with quoted code
+///     isn't present. Caller falls back to plain `cmd /C` / `sh -c`.
+///
+/// We do NOT try to handle every Python invocation — only the simple
+/// `python -c "<code>"` form that cmd's quote handling mangles. More
+/// complex forms (pipes, redirects, conditionals) still go through the
+/// shell and the user can keep using the .py-file workaround.
+fn split_python_c_command(command: &str) -> Option<(Vec<String>, Vec<String>)> {
+    let trimmed = command.trim_start();
+    let bytes = trimmed.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    // Read the head word.
+    let mut i = 0;
+    while i < bytes.len() && !(bytes[i] as char).is_whitespace() {
+        i += 1;
+    }
+    let head = &trimmed[..i];
+    let head_lower = head.to_ascii_lowercase();
+    let head_stem = head_lower
+        .strip_suffix(".exe")
+        .or_else(|| head_lower.strip_suffix(".bat"))
+        .unwrap_or(&head_lower);
+    if !matches!(head_stem, "python" | "python3" | "py") {
+        return None;
+    }
+
+    // Walk tokens looking for `-c` or `--command` followed by a quoted code.
+    // Tokens can be separated by spaces; quoted strings are a single token.
+    // Note: `j` starts at `i` (which is AFTER the head), so tokens[0] is
+    // the first arg after the head, not the head itself.
+    let mut tokens: Vec<String> = Vec::new();
+    let mut j = i;
+    while j < bytes.len() {
+        // Skip whitespace.
+        while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+            j += 1;
+        }
+        if j >= bytes.len() {
+            break;
+        }
+        let c = bytes[j] as char;
+        if c == '"' || c == '\'' {
+            // Quoted token: scan to matching close quote.
+            let quote = c;
+            let start = j + 1;
+            let mut k = start;
+            while k < bytes.len() {
+                let cc = bytes[k] as char;
+                if cc == '\\' && k + 1 < bytes.len() {
+                    k += 2;
+                    continue;
+                }
+                if cc == quote {
+                    break;
+                }
+                k += 1;
+            }
+            if k >= bytes.len() {
+                return None; // unmatched
+            }
+            tokens.push(trimmed[start..k].to_string());
+            j = k + 1;
+        } else {
+            // Bare token.
+            let start = j;
+            while j < bytes.len() && !(bytes[j] as char).is_whitespace() {
+                j += 1;
+            }
+            tokens.push(trimmed[start..j].to_string());
+        }
+    }
+
+    // Look for -c or --command (with optional value as next token).
+    // c_idx is the index in `tokens` (NOT including the head).
+    let mut c_idx: Option<usize> = None;
+    for (idx, tok) in tokens.iter().enumerate() {
+        if tok == "-c" || tok == "--command" {
+            c_idx = Some(idx);
+            break;
+        }
+    }
+    let c_idx = c_idx?;
+    // The code is the token AFTER -c.
+    if c_idx + 1 >= tokens.len() {
+        return None;
+    }
+    let code = tokens[c_idx + 1].clone();
+
+    // py_args = [head, ...args_before_c, "-c", code]
+    let mut py_args: Vec<String> = Vec::with_capacity(c_idx + 3);
+    py_args.push(head.to_string());
+    for tok in &tokens[..c_idx] {
+        py_args.push(tok.clone());
+    }
+    py_args.push("-c".to_string());
+    py_args.push(code);
+
+    // leftover_args = anything after the code token (e.g. `; exit(7)`).
+    // We pass them as additional argv AFTER python has its -c + code
+    // consumed. Python ignores trailing args (it warns "extra args ignored"
+    // but doesn't fail), so this is safer than sending them through cmd.
+    let leftover_args: Vec<String> = if c_idx + 2 < tokens.len() {
+        tokens[c_idx + 2..].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    Some((py_args, leftover_args))
+}
+
 fn bash_run(params: &serde_json::Value) -> Result<String, String> {
     let command = params
         .get("command")
@@ -660,6 +782,50 @@ fn bash_run(params: &serde_json::Value) -> Result<String, String> {
     // not the outer shell args, so this is safe for legitimate uses
     // of `\n` in Python source.
     let command = normalize_python_c_paths(&command).to_string();
+
+    // Lesson 848 (2026-08-30 17:40 MDT, David): inline `python -c "..."`
+    // quoting fails on Windows because cmd /C strips the outer quotes
+    // before passing args to python. Example: `cmd /C python -c "print('hello')"`
+    // becomes `cmd /C python -c print('hello')` after cmd parses it,
+    // and Python sees `python -c print` (SyntaxError: invalid syntax).
+    // Even semicolon-separated cases (`python -c "x=2; print(x)"`) hit
+    // the same wall because cmd splits on `;` first. The workaround of
+    // writing the code to a .py file and running that works because we
+    // pass it as a single argv, not via cmd's string parsing.
+    //
+    // Fix: when we detect a `python ... -c "<code>"` head, extract the
+    // code string ourselves and invoke `python.exe` directly with -c
+    // as a SEPARATE argv. Bypasses cmd's quote-stripping entirely.
+    if let Some((py_args, leftover_args)) = split_python_c_command(&command) {
+        let mut cmd = Command::new(&py_args[0]);
+        for a in &py_args[1..] {
+            cmd.arg(a);
+        }
+        for a in &leftover_args {
+            cmd.arg(a);
+        }
+        if let Some(c) = &cwd_path {
+            cmd.current_dir(c);
+        }
+        let output = cmd
+            .output()
+            .map_err(|e| format!("bash_run: failed to spawn python: {}", e))?;
+        let mut out = String::new();
+        out.push_str(&String::from_utf8_lossy(&output.stdout));
+        if !output.stderr.is_empty() {
+            out.push_str("\n--- stderr ---\n");
+            out.push_str(&String::from_utf8_lossy(&output.stderr));
+        }
+        if !output.status.success() {
+            return Err(format!(
+                "bash_run: python command exited with code {}\n{}",
+                output.status.code().unwrap_or(-1),
+                out
+            ));
+        }
+        let _ = timeout_ms;
+        return Ok(out);
+    }
 
     let shell = if cfg!(windows) { "cmd" } else { "sh" };
     let flag = if cfg!(windows) { "/C" } else { "-c" };
@@ -1089,6 +1255,100 @@ mod tests {
         let cmd = r#"python -c "print('unterminated)""#;
         let fixed = normalize_python_c_paths(cmd);
         assert_eq!(fixed, cmd);
+    }
+
+    // Lesson 848 (2026-08-30 17:40 MDT, David): split_python_c_command
+    // detects `python ... -c "<code>"` so we can invoke python directly
+    // and bypass cmd /C's quote-stripping on Windows.
+    #[test]
+    fn lesson_848_split_python_c_simple() {
+        let cmd = r#"python -c "print('hello')""#;
+        let (py, leftover) = split_python_c_command(cmd).expect("must split");
+        assert_eq!(py[0], "python");
+        assert_eq!(py[1], "-c");
+        assert_eq!(py[2], "print('hello')");
+        assert!(leftover.is_empty());
+    }
+
+    #[test]
+    fn lesson_848_split_python_c_with_semicolons() {
+        let cmd = r#"python -c "x=2+2; print(x)""#;
+        let (py, _) = split_python_c_command(cmd).expect("must split");
+        assert_eq!(py[0], "python");
+        assert_eq!(py[1], "-c");
+        assert_eq!(py[2], "x=2+2; print(x)");
+    }
+
+    #[test]
+    fn lesson_848_split_python_c_with_paths() {
+        let cmd = r#"python -c "open('C:\Users\foo\file.txt').read()""#;
+        let (py, _) = split_python_c_command(cmd).expect("must split");
+        // The splitter returns the inner code verbatim; normalize_python_c_paths
+        // runs in production and rewrites backslashes to forward slashes.
+        assert_eq!(py[2], r"open('C:\Users\foo\file.txt').read()");
+    }
+
+    #[test]
+    fn lesson_848_split_python_c_handles_python3_py() {
+        for head in ["python3", "python3.exe", "py", "py.exe"] {
+            let cmd = format!(r#"{head} -c "print(1)""#);
+            let (py, _) = split_python_c_command(&cmd)
+                .unwrap_or_else(|| panic!("must split for head={head}"));
+            // The head is the first element, with .exe preserved as-is.
+            assert!(
+                py[0].to_ascii_lowercase().starts_with(head.replace(".exe", "").as_str()),
+                "head should start with {head}, got {}",
+                py[0]
+            );
+            assert_eq!(py[2], "print(1)");
+        }
+    }
+
+    #[test]
+    fn lesson_848_split_python_c_handles_leading_args() {
+        // `python -O -c "code"` should preserve -O before -c.
+        let cmd = r#"python -O -c "print(1)""#;
+        let (py, _) = split_python_c_command(cmd).expect("must split");
+        assert_eq!(py[0], "python");
+        assert_eq!(py[1], "-O");
+        assert_eq!(py[2], "-c");
+        assert_eq!(py[3], "print(1)");
+    }
+
+    #[test]
+    fn lesson_848_split_python_c_handles_trailing_leftover() {
+        // Anything after the closing quote should be returned as leftover.
+        // Python warns "extra args ignored" but doesn't fail.
+        let cmd = r#"python -c "print(1)" --some-flag value"#;
+        let (py, leftover) = split_python_c_command(cmd).expect("must split");
+        assert_eq!(py.len(), 3);
+        assert_eq!(leftover, vec!["--some-flag", "value"]);
+    }
+
+    #[test]
+    fn lesson_848_split_python_c_returns_none_for_non_python() {
+        assert!(split_python_c_command(r#"echo "hello""#).is_none());
+        assert!(split_python_c_command(r#"python script.py"#).is_none());
+        // `python -c no_quotes` still routes through the direct python
+        // invocation path (better than going through cmd /C). Python will
+        // reject the code, but the argv split keeps the unquoted token
+        // intact instead of letting cmd eat part of it.
+        let cmd = r#"python -c no_quotes"#;
+        let (py, _) = split_python_c_command(cmd).expect("must split unquoted -c");
+        assert_eq!(py, vec!["python", "-c", "no_quotes"]);
+    }
+
+    #[test]
+    fn lesson_848_split_python_c_unmatched_quote_returns_none() {
+        let cmd = r#"python -c "unterminated"#;
+        assert!(split_python_c_command(cmd).is_none());
+    }
+
+    #[test]
+    fn lesson_848_split_python_c_single_quotes() {
+        let cmd = r#"python -c 'print("hello")'"#;
+        let (py, _) = split_python_c_command(cmd).expect("must split single-quoted");
+        assert_eq!(py[2], r#"print("hello")"#);
     }
 
     #[test]
