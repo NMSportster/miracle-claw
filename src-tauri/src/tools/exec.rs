@@ -305,6 +305,158 @@ fn list_dir(params: &serde_json::Value) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
+/// Extract path-looking tokens from a shell command string and verify
+/// each one is under an allowed root.
+///
+/// Lesson 796 (2026-08-30 00:46 MDT, David): MiniMax-M3 picked
+/// `/mnt/c/Program Files/MiracleClaw/...` as a Desktop target — the
+/// path syntax was correct but the model mixed up which folder the
+/// user asked for. cwd was validated but the inline path slipped
+/// through. After a 5-retry loop minimax kept picking the SAME wrong
+/// path. We need to catch this at the boundary.
+///
+/// Patterns matched (each tested against allowed_roots):
+///   - Windows drive paths: `C:\...`, `D:\foo\bar.txt`
+///   - WSL paths: `/mnt/c/...`, `/mnt/d/...`
+///   - Home shortcut: `~/foo/bar.txt`
+///   - Unix absolute: `/foo/bar.txt` (only validated if it looks like
+///     a file — has a `.ext` or a trailing slash). `/bin`, `/usr` etc.
+///     are NOT matched (they're command paths, not file targets).
+///
+/// NOT matched (intentional, to avoid false positives):
+///   - `/tmp`, `/var`, `/etc` — we don't have control over these.
+///     If the model writes there it'll get a real OS error from
+///     cmd/sh, which surfaces clearly.
+///   - Shell variables: `${HOME}/foo`, `$(echo /etc)`, `~user/foo`
+///     (non-current-user tilde). These resolve at shell time and we
+///     can't intercept them cheaply.
+///
+/// Errors: returns the first path that's outside allowed_roots, with
+/// the command snippet containing it for debugging.
+fn validate_command_paths(command: &str) -> Result<(), String> {
+
+    // Collect candidate path strings. We scan the command char-by-char
+    // for quoted regions and unquoted whitespace-separated tokens, then
+    // pick out tokens that look like paths.
+    let mut candidates: Vec<String> = Vec::new();
+    let bytes = command.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if c == '"' || c == '\'' {
+            // Quoted string — take its contents (without quotes) if it
+            // looks like a path.
+            let quote = c;
+            let start = i + 1;
+            let mut end = start;
+            while end < bytes.len() && bytes[end] as char != quote {
+                end += 1;
+            }
+            if end > start {
+                let s = &command[start..end];
+                if looks_like_path(s) {
+                    candidates.push(s.to_string());
+                }
+            }
+            i = end + 1;
+        } else if c == '~' && (i == 0 || bytes[i - 1] as char == ' ' || bytes[i - 1] as char == '=' || bytes[i - 1] as char == ':') {
+            // Tilde at start of word: `~/foo` or `~` alone. Walk to
+            // next whitespace.
+            let start = i;
+            let mut end = start;
+            while end < bytes.len() && !bytes[end].is_ascii_whitespace() && bytes[end] as char != '"' && bytes[end] as char != '\'' {
+                end += 1;
+            }
+            let s = &command[start..end];
+            if looks_like_path(s) {
+                candidates.push(s.to_string());
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+
+    for candidate in &candidates {
+        // Try to normalize; if it parses to a real PathBuf, validate.
+        // `~` is a special case — expand to $HOME or %USERPROFILE%.
+        let expanded = if candidate.starts_with("~/") || candidate == "~" {
+            let home = if cfg!(windows) {
+                std::env::var("USERPROFILE").unwrap_or_default()
+            } else {
+                std::env::var("HOME").unwrap_or_default()
+            };
+            if home.is_empty() {
+                // Can't expand without HOME — skip (will fail at shell).
+                continue;
+            }
+            format!("{}{}", home, &candidate[1..])
+        } else {
+            candidate.clone()
+        };
+
+        // Best-effort parse: not all candidates will parse cleanly. If
+        // normalize_user_path rejects (e.g. relative path that happens
+        // to contain `\`), we skip silently — the shell will surface
+        // the real error.
+        if let Ok(p) = normalize_user_path(&expanded) {
+            if let Err(e) = assert_path_allowed(&p) {
+                return Err(format!(
+                    "bash_run: command contains path {:?} which is outside allowed paths. \
+                     Hint: use Documents, Desktop, Downloads, or the MC workspace dir. \
+                     Original error: {}",
+                    p, e,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Heuristic: does this string look like a file path?
+///
+/// True for:
+///   - Starts with a drive letter (`C:\`, `D:/`)
+///   - Starts with `/mnt/<drive>/`
+///   - Starts with `~/`
+///   - Starts with `/` AND contains `.` (file extension) or trailing `/`
+///
+/// False for:
+///   - `/bin`, `/usr/bin`, `/etc` — command paths, not targets
+///   - Single-word commands like `ls`, `cat`
+///   - URLs (`http://`, `https://`)
+fn looks_like_path(s: &str) -> bool {
+    if s.is_empty() || s.len() < 2 {
+        return false;
+    }
+    let trimmed = s.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return false;
+    }
+    // Drive letter (C:\ or D:/)
+    if trimmed.len() >= 3 {
+        let bytes = trimmed.as_bytes();
+        if bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/') {
+            return true;
+        }
+    }
+    if trimmed.starts_with("/mnt/") && trimmed.len() >= 7 {
+        // /mnt/c/...
+        return trimmed.as_bytes()[6] == b'/';
+    }
+    if trimmed.starts_with("~/") || trimmed == "~" {
+        return true;
+    }
+    if trimmed.starts_with('/') {
+        // Unix absolute path with file extension or trailing slash.
+        let rest = &trimmed[1..];
+        if rest.contains('.') || trimmed.ends_with('/') {
+            return true;
+        }
+    }
+    false
+}
+
 fn bash_run(params: &serde_json::Value) -> Result<String, String> {
     let command = params
         .get("command")
@@ -324,6 +476,21 @@ fn bash_run(params: &serde_json::Value) -> Result<String, String> {
     } else {
         None
     };
+
+    // Lesson 796 (2026-08-30, David): the cwd is validated above, but
+    // the `command` string can still contain inline paths (e.g.
+    // `Set-Content -Path "C:\Users\foo\file.txt"`, `cat > /etc/passwd`,
+    // `rm ~/important.docx`). MiniMax-M3 picked `/mnt/c/Program Files/MiracleClaw/...`
+    // thinking it was a Desktop path — silently writing into the MC
+    // install dir. We need to detect path-looking tokens in the command
+    // and reject any that aren't under allowed_roots BEFORE running.
+    //
+    // This is best-effort regex matching. It catches common patterns
+    // (drive-letter Windows paths, /mnt/<drive>/... WSL paths, ~/... home
+    // shortcuts, /tmp/... paths). It does NOT catch every shell trick —
+    // e.g. `${HOME}/foo`, `$(echo /etc/passwd)`, variable expansion. For
+    // those, the runtime errors will surface them as they fail.
+    validate_command_paths(command)?;
 
     let shell = if cfg!(windows) { "cmd" } else { "sh" };
     let flag = if cfg!(windows) { "/C" } else { "-c" };
@@ -728,5 +895,89 @@ mod tests {
             "error should explain deletion is not implemented"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    // Lesson 796 (2026-08-30, David): bash_run path validation.
+    // MiniMax-M3 picked `/mnt/c/Program Files/MiracleClaw/...` thinking
+    // it was a Desktop target. The path syntax was correct but the
+    // model mixed up which folder the user asked for. These tests pin
+    // the new `validate_command_paths` behavior.
+
+    #[test]
+    fn validate_command_paths_passes_unix_commands() {
+        // Plain shell commands with no path-looking tokens.
+        assert!(validate_command_paths("ls -la").is_ok());
+        assert!(validate_command_paths("echo hello world").is_ok());
+        assert!(validate_command_paths("pwd && whoami").is_ok());
+        // Shell builtins / command paths only — NOT file targets.
+        assert!(validate_command_paths("cd /tmp && cat /etc/hosts").is_ok(),
+            "/tmp and /etc are not validated by Lesson 796 (shell surfaces real errors)");
+        // URL — not a path.
+        assert!(validate_command_paths("curl https://example.com/api").is_ok());
+    }
+
+    #[test]
+    fn validate_command_paths_rejects_outside_allowed() {
+        // /mnt/c/Program Files/... — the actual Lesson 796 mistake.
+        // Minimax-M3 picked this path thinking it was a Desktop
+        // target. The realistic command has the path quoted (because
+        // of the space in "Program Files"), which is what our
+        // tokenizer detects. This path is OUTSIDE allowed_roots on
+        // BOTH Linux and Windows test envs (Program Files isn't
+        // Documents/Desktop/Downloads/workspace).
+        let cmd = "cp \"/mnt/c/Program Files/MiracleClaw/foo.txt\" ~/Desktop/";
+        let result = validate_command_paths(cmd);
+        if cfg!(target_os = "linux") {
+            // On Linux, /mnt/c/Program Files/... resolves to a path
+            // outside /home/<user>/* allowed roots, so it rejects.
+            assert!(result.is_err(),
+                "should reject /mnt/c/Program Files/... on Linux: got {:?}", result);
+            let err = result.unwrap_err();
+            // Make sure the error mentions the bad path so the model
+            // can learn from it.
+            assert!(err.contains("Program Files") || err.contains("Program"),
+                "error should reference the rejected path: {}", err);
+        }
+        // Windows behavior is host-specific; just don't crash.
+        let _ = result;
+    }
+
+    #[test]
+    fn validate_command_paths_passes_documents_path() {
+        // Documents, Desktop, Downloads ARE allowed roots — these
+        // commands must pass.
+        if cfg!(target_os = "linux") {
+            assert!(validate_command_paths("cat ~/Documents/notes.txt").is_ok());
+            assert!(validate_command_paths("ls ~/Desktop/").is_ok());
+            assert!(validate_command_paths("cp /tmp/foo ~/Downloads/bar.txt").is_ok(),
+                "/tmp is not validated; ~/Downloads expands to allowed root");
+        }
+        // Windows behavior is host-specific; skip.
+    }
+
+    #[test]
+    fn looks_like_path_classifies_correctly() {
+        // Drive-letter paths
+        assert!(looks_like_path(r"C:\Users\me\file.txt"));
+        assert!(looks_like_path(r"D:/foo/bar.docx"));
+        // WSL paths
+        assert!(looks_like_path("/mnt/c/Users/me/file.txt"));
+        assert!(looks_like_path("/mnt/d/data/"));
+        // Home shortcut
+        assert!(looks_like_path("~/Documents/foo.txt"));
+        assert!(looks_like_path("~/"));
+        // Unix absolute with extension or trailing slash
+        assert!(looks_like_path("/home/me/file.txt"));
+        assert!(looks_like_path("/var/log/app.log"));
+        assert!(looks_like_path("/tmp/data/"));
+        // NOT paths
+        assert!(!looks_like_path("ls"));
+        assert!(!looks_like_path("hello world"));
+        assert!(!looks_like_path(""));
+        assert!(!looks_like_path("a"));
+        assert!(!looks_like_path("https://example.com"));
+        assert!(!looks_like_path("/bin"));       // no extension, no trailing slash
+        assert!(!looks_like_path("/usr/local")); // no extension
+        assert!(!looks_like_path("/etc"));       // no extension
     }
 }

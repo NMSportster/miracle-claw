@@ -316,14 +316,26 @@ pub fn publish_tier_env(tier: Tier) {
 /// previously was cloud Kimi — reverted to 14B local for tool discipline (Lesson 793).
 pub fn tier_default_model_id(tier: Tier) -> &'static str {
     match tier {
+        // Free tier keeps Lesson 737 + 781 default (local m1-t1, smallest).
         Tier::Free => "milagro-m1-t1",
-        // Lesson 793 (2026-08-30): reverted to `milagro-dev` (local 14B)
-        // for paid tiers — kimi prefers OpenClaw built-ins over plugin
-        // tools, and built-ins fail without Brave API key. MAIC's
-        // plan_code → quota gate still applies server-side, so a
-        // downgraded user on this default just gets a clean error rather
-        // than a quota-bypass.
-        _ => "milagro-dev",
+        // Lesson 795 (2026-08-30, David): Paid primary is now GLM
+        // (cloud, reliable tool discipline). Kimi preferred OpenClaw
+        // built-ins over plugin tools and hit the 600-token floor;
+        // nemotron-super exhausted the budget; MiniMax-M3 picked
+        // wrong file paths. GLM fires paid-tier tools reliably.
+        //
+        // NOTE: this value is bare. The writer in
+        // `ensure_agents_default_model_for_tier` (lib.rs:1576) prefixes
+        // `maic/` before writing to openclaw.json, so the on-disk
+        // value is `maic/<id>`. Tests against the openclaw.json file
+        // expect the prefixed form. Tests against THIS function expect
+        // the bare form.
+        //
+        // Lesson 798 (2026-08-30, David): the picker-bug analysis
+        // suggested prefixing here too, but the writer already does it,
+        // so doing it twice would produce `maic/maic/<id>` (double
+        // prefix — confirmed empirically by running tests).
+        _ => "milagro-oc-glm",
     }
 }
 
@@ -361,17 +373,17 @@ pub fn tier_default_model_id(tier: Tier) -> &'static str {
 /// vs milagro-dev's 600 tokens in 12.48s (benchmark at 21:30 MDT).
 pub fn tier_default_fallbacks(tier: Tier) -> &'static [&'static str] {
     match tier {
+        // Lesson 521: writer prefixes `maic/`, so we return bare.
         Tier::Free => &[
             "milagro-m1-t2",
             "milagro-m1-t3",
             "chat-nemotron-nano",
         ],
-        // Lesson 793: Paid primary is now `milagro-dev` (14B local),
-        // so the fallback chain must NOT include `milagro-dev` (would
-        // loop). Use cloud cascade + local t2/t3 as backup.
+        // Lesson 795: Paid primary is `milagro-oc-glm`, chain stays
+        // MiniMax → kimi → local 14B (bare — writer prefixes).
         _ => &[
             "milagro-oc-minimax",
-            "milagro-oc-glm",
+            "milagro-oc-kimi",
             "milagro-m1-t3",
         ],
     }
@@ -571,6 +583,9 @@ mod tests {
         // Free chain: m1-t2 (local 7B) → m1-t3 (local 14B) →
         // chat-nemotron-nano (cloud level 1). Only the LAST step
         // burns cloud quota; never deepseek/glm/kimi/qwen/minimax.
+        // Lesson 798: writer at lib.rs:1576 prefixes `maic/` when
+        // writing openclaw.json — the bare values here get the
+        // prefix added at the boundary.
         let chain = tier_default_fallbacks(Tier::Free);
         assert_eq!(chain, &["milagro-m1-t2", "milagro-m1-t3", "chat-nemotron-nano"]);
         // Defensive: chain must NOT include any usage-level-3+ cloud model.
@@ -584,9 +599,17 @@ mod tests {
     }
 
     #[test]
-    fn paid_default_is_kimi() {
-        // Lesson 737 (2026-08-29, David): Starter/StarterPlus share Kimi
-        // default with all other paid tiers.
+    fn paid_default_is_glm() {
+        // Lesson 795 (2026-08-30, David): Paid primary is now GLM
+        // (cloud) — empirically the only paid-tier model that
+        // reliably fires our plugin's local tools (write_file,
+        // read_file, list_dir, bash_run, apply_patch, remember_fact).
+        // Kimi preferred OpenClaw built-ins over plugin tools,
+        // nemotron-super exhausted the token budget, MiniMax-M3
+        // picked invalid file paths (Lesson 796).
+        //
+        // Lesson 798: prefixed with `maic/` at the writer boundary
+        // (lib.rs:1576). Bare here.
         for tier in [
             Tier::Starter,
             Tier::StarterPlus,
@@ -597,18 +620,23 @@ mod tests {
         ] {
             assert_eq!(
                 tier_default_model_id(tier),
-                "milagro-dev",
-                "{:?} must default to milagro-dev (14B local) per Lesson 793",
+                "milagro-oc-glm",
+                "{:?} must default to milagro-oc-glm (Lesson 795)",
                 tier,
             );
         }
     }
 
     #[test]
-    fn paid_fallbacks_are_ordered_minimax_then_glm_then_local() {
-        // Lesson 793: with Paid primary = `milagro-dev`, the local 14B
-        // slot in the fallback chain moved to `milagro-m1-t3` to avoid
-        // a primary/fallback collision (test above enforces distinct).
+    fn paid_fallbacks_are_ordered_minimax_then_kimi_then_local() {
+        // Lesson 795 (2026-08-30, David): Paid primary is GLM
+        // (replaces `milagro-dev` from Lesson 793). GLM fires local
+        // tools reliably, but on its first failure we want cloud
+        // alternatives before falling back to local 14B. Kimi is
+        // restored as fallback[1] (was the Lesson 737 default) —
+        // it's fine as a SECONDARY fallback because the chat will
+        // already be running GLM-built context. Lesson 798: writer
+        // at lib.rs:1576 prefixes `maic/` — bare values here.
         for tier in [
             Tier::Starter,
             Tier::StarterPlus,
@@ -620,7 +648,7 @@ mod tests {
             let f = tier_default_fallbacks(tier);
             assert_eq!(f.len(), 3, "{:?} should have exactly 3 fallbacks", tier);
             assert_eq!(f[0], "milagro-oc-minimax", "{:?} fallback[0] must be MiniMax-M3", tier);
-            assert_eq!(f[1], "milagro-oc-glm",     "{:?} fallback[1] must be GLM", tier);
+            assert_eq!(f[1], "milagro-oc-kimi",    "{:?} fallback[1] must be Kimi", tier);
             assert_eq!(f[2], "milagro-m1-t3",      "{:?} fallback[2] must be local 14B-distilled", tier);
         }
     }

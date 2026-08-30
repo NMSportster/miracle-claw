@@ -8548,9 +8548,12 @@ mod tests {
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         // Lesson 521: paid primary + fallbacks all carry `maic/` prefix.
+        // Lesson 795 (2026-08-30, David): primary swapped Kimi → GLM
+        // (empirically the only paid-tier model that reliably fires
+        // our plugin's local tools). Lesson 798: prefixed at writer.
         assert_eq!(
             cfg.pointer("/agents/defaults/model/primary").unwrap(),
-            "maic/milagro-oc-kimi"
+            "maic/milagro-oc-glm"
         );
         let fallbacks: Vec<String> = cfg
             .pointer("/agents/defaults/model/fallbacks")
@@ -8560,9 +8563,10 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
+        // Lesson 795: chain is MiniMax → Kimi → local 14B-distilled.
         assert_eq!(
             fallbacks,
-            vec!["maic/milagro-oc-minimax", "maic/milagro-oc-glm", "maic/milagro-dev"]
+            vec!["maic/milagro-oc-minimax", "maic/milagro-oc-kimi", "maic/milagro-m1-t3"]
         );
     }
 
@@ -8599,20 +8603,20 @@ mod tests {
         let path = openclaw_json_path();
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        // Lesson 521: provider-prefixed.
+        // Lesson 795 (2026-08-30): primary is GLM, not Kimi.
         assert_eq!(
             cfg.pointer("/agents/defaults/model/primary").unwrap(),
-            "maic/milagro-oc-kimi"
+            "maic/milagro-oc-glm"
         );
     }
 
     #[test]
     fn lesson_517_pro_plus_team_enterprise_share_routing() {
         let _env = lock_env();
-        // Sanity: ProPlus, Team, Enterprise all route to the same Kimi +
-        // MiniMax + GLM + local chain. This is the invariant the user's
-        // request ("paid accounts use Kimi, fallback Minimax-m3, fallback
-        // glm") pins.
+        // Sanity: ProPlus, Team, Enterprise all route to the same GLM +
+        // MiniMax + Kimi + local chain. Lesson 795 (2026-08-30, David):
+        // primary is GLM (not Kimi) because GLM is the only paid-tier
+        // model that reliably fires our plugin's local tools.
         // Lesson 737 (2026-08-29, David): Starter/StarterPlus share the
         // same routing as Pro. Token bucket is the only differentiator.
         for tier in [
@@ -8631,10 +8635,11 @@ mod tests {
             let cfg: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             // Lesson 521: provider-prefixed primary + fallbacks.
+            // Lesson 795: primary is GLM.
             assert_eq!(
                 cfg.pointer("/agents/defaults/model/primary").unwrap(),
-                "maic/milagro-oc-kimi",
-                "{:?} primary must be Kimi",
+                "maic/milagro-oc-glm",
+                "{:?} primary must be GLM (Lesson 795)",
                 tier,
             );
             let fallbacks: Vec<String> = cfg
@@ -8647,8 +8652,8 @@ mod tests {
                 .collect();
             assert_eq!(fallbacks.len(), 3, "{:?} should have 3 fallbacks", tier);
             assert_eq!(fallbacks[0], "maic/milagro-oc-minimax");
-            assert_eq!(fallbacks[1], "maic/milagro-oc-glm");
-            assert_eq!(fallbacks[2], "maic/milagro-dev");
+            assert_eq!(fallbacks[1], "maic/milagro-oc-kimi");
+            assert_eq!(fallbacks[2], "maic/milagro-m1-t3");
         }
     }
 

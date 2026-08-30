@@ -3625,3 +3625,87 @@ The picker is where pricing meets product. Filter there.
 - bundled maic-plugin/index.js: rebuilt from depot (now includes api.registerTool() for the 7 paid-tier tools)
 - verified bundled md5 == depot md5 post-build (Lesson 762/776 enforcement)
 
+
+## 1.1.0-rc55.12 (2026-08-30)
+
+**Lesson 794 + 795 + 796 + 798 — three paid-tier tool bugs fixed in one pass**
+
+### Lesson 798: Chat UI model picker shows only 4 models (root cause)
+
+The runtime log has been firing this warning since 2026-08-29 22:04 MDT:
+
+```
+[model-selection] Model "milagro-oc-kimi" specified without provider. Falling back to "openai/milagro-oc-kimi".
+```
+
+**What was happening**: OpenClaw's `inferUniqueProviderFromConfiguredModels`
+in `model-selection-shared-iHJcI8fT.js` failed in production runtime for our
+MAIC config — bare model IDs in `agents.defaults.model.{primary,fallbacks}`
+got silently re-prefixed to `openai/<id>`, and the chat UI model picker
+filtered against the wrong provider's catalog. Result: 4 models shown
+instead of 20.
+
+**Why it was confusing**: chat routing still worked (provider=maic api=openai-completions
+logs show successful POSTs to https://maicserver.com/v1/chat/completions).
+The MAIC plugin's transport layer reads config directly and routes correctly.
+Only the UI picker was broken.
+
+**Empirical fix**: prefix all model IDs in `openclaw.json` with `"maic/"`.
+Prefixed IDs go through `parseModelRef` and bypass the broken inference.
+
+### Lesson 794: `max_tokens: 600` floor killing all MAIC models
+
+MAIC's `enforce_min_max_tokens` (chat.py:235-242) silently sets `max_tokens=600`
+for unknown models. 600 tokens fits a tool_call but not a tool result
+summary, so any multi-step workflow hits `stopReason=length` with `tools=0`
+attempts and surfaces "Agent couldn't generate a response."
+
+**Fix (deferred to RC55.13)**: per-model `max_tokens: 4000` override in
+`openclaw.json` `agents.defaults.models.<model>.params.max_tokens`. This
+release ships the model swap (Lesson 795) which mitigates the symptom.
+
+### Lesson 795: Swap paid-tier primary kimi → GLM
+
+David tested all four paid-tier models empirically:
+- **GLM** (cloud): reliably fires all 7 paid-tier tools (`bash_run`,
+  `read_file`, `write_file`, `edit_file`, `list_dir`, `apply_patch`,
+  `remember_fact`). Best paid-tier primary.
+- **Kimi** (cloud): prefers OpenClaw built-ins over plugin tools;
+  hits 600-token floor.
+- **Nemotron-Super** (cloud): exhausts token budget on long contexts.
+- **MiniMax-M3** (cloud): picks invalid file paths (Lesson 796).
+
+**Fix**: `tier_default_model_id(paid)` returns `"maic/milagro-oc-glm"`
+(was `"milagro-dev"` 14B local). Fallback chain reshuffles:
+`milagro-oc-minimax` → `milagro-oc-kimi` → `milagro-m1-t3` (local).
+
+### Lesson 796: MiniMax-M3 picks invalid file paths
+
+When asked to write a Desktop file, MiniMax-M3 picked
+`/mnt/c/Program Files/MiracleClaw/...` — Program Files is NOT a Desktop
+folder. After 5 retries minimax kept picking the SAME wrong path. cwd
+was validated but the inline path in the command string was not.
+
+**Fix**: new `validate_command_paths(command)` function in
+`src-tauri/src/tools/exec.rs` scans the bash_run command for path-looking
+tokens (drive-letter Windows paths, `/mnt/<drive>/...`, `~/...`,
+Unix absolute paths with extensions), normalizes each via
+`normalize_user_path` + `assert_path_allowed`, and rejects the command
+before shell execution if any path is outside allowed roots.
+
+4 new tests: `validate_command_paths_passes_unix_commands`,
+`validate_command_paths_rejects_outside_allowed`,
+`validate_command_paths_passes_documents_path`,
+`looks_like_path_classifies_correctly`.
+
+### Files changed
+
+- `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`:
+  1.1.0-rc55.11 → 1.1.0-rc55.12
+- `src-tauri/src/auth/tier.rs`: prefix all return values with `"maic/"`
+  (Lesson 798); paid primary swapped to `milagro-oc-glm` (Lesson 795);
+  paid fallback[1] `milagro-oc-glm` → `milagro-oc-kimi` (Lesson 795);
+  4 test assertions updated.
+- `src-tauri/src/tools/exec.rs`: added `validate_command_paths` +
+  `looks_like_path` helpers; `bash_run` calls `validate_command_paths`
+  after cwd validation; 4 new tests.
