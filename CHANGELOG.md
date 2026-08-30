@@ -3557,3 +3557,39 @@ they can use, and the dropdown itself becomes the upgrade CTA
 "Cost control belongs in the model picker, not in the API." If
 a user can pick a model they can't afford, you have a UX bug.
 The picker is where pricing meets product. Filter there.
+
+### v1.1.0-rc55.9 — 2026-08-29 (Lesson 772: toolsBinaryPath tries multiple candidates)
+
+- **Lesson 772 (NEW)**: MAIC plugin's `toolsBinaryPath()` was hard-coded to
+  look for `miracle-claw-tools.exe` 2 directories up from the plugin's
+  `import.meta.url`. When the plugin loads from
+  `AppData\Roaming\MiracleClaw\extensions\maic\`, the resolved path
+  pointed to `AppData\Roaming\MiracleClaw\miracle-claw-tools.exe` — which
+  doesn't exist. Result: model called `list_dir`/`bash_run`, MAIC correctly
+  emitted handoff (verified via `stream→tool-handoff: 1 client, 0 server`),
+  MC's runtime executed the local tool, but the sidecar binary couldn't be
+  found.
+
+- **Fix**: `toolsBinaryPath()` now tries multiple candidate paths in order:
+  1. `<resources>/miracle-claw-tools[.exe]` (bundled location, 2 dirs up)
+  2. `<plugin-dir>/miracle-claw-tools[.exe]` (next to plugin file)
+  3. `<plugin-dir>/../miracle-claw-tools[.exe]` (1 dir up)
+  4. `<plugin-dir>/../../miracle-claw-tools[.exe]` (2 dirs up)
+  
+  Also added diagnostic logging (`[maic-plugin DIAG] toolsBinaryPath resolved: <path>`)
+  so future failures are debuggable from the gateway log.
+
+- **Tested**: OpenClaw runtime sends `extra_body.tools` correctly (rc55.8
+  Lesson 760 fix), MAIC merges to 17 tools (10 server + 7 client),
+  MAIC emits `milagro_handoff` for client tool calls. With this fix, the
+  sidecar binary should resolve correctly regardless of which install path
+  the runtime loaded the plugin from.
+
+## 1.1.0-rc55.10 (2026-08-29)
+
+**Lesson 779 fix**: Bundled maic plugin was stale (rc54.3 era manifest + index.js without Lesson 738's registerTool). launcher copy only syncs Program Files ↔ AppData, never refreshes from depot. Tool calls in rc55.0-rc55.9 silently returned undefined; model hallucinated plausible-looking results.
+
+- bundled maic-plugin/openclaw.plugin.json: added contracts.tools array (was missing — runtime rejected registerTool calls)
+- bundled maic-plugin/index.js: rebuilt from depot (now includes api.registerTool() for the 7 paid-tier tools)
+- verified bundled md5 == depot md5 post-build (Lesson 762/776 enforcement)
+
