@@ -107,7 +107,7 @@ pub fn read_file() -> LocalTool {
                 },
                 "max_bytes": {
                     "type": "integer",
-                    "description": "Maximum bytes to return (default 65536). Refuse if file is larger.",
+                    "description": "Maximum bytes to return (default 1048576 = 1 MiB, hard cap 10 MiB). Refuse if file is larger.",
                     "minimum": 1,
                     "maximum": 10485760
                 }

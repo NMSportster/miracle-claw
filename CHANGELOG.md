@@ -5,6 +5,44 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0-rc55.17] — 2026-08-30 (HOTFIX: Lessons 841 + 842 + 794 mitigation)
+
+**Symptoms David reported after RC55.16** (`Desktop/MC-openclaw info.txt`):
+
+1. ✅ **Already fixed in RC55.16**: Windows tool calls broken since rc55.13. Lesson 837 (rc55.16) verified 0 instances of `argv[2] is not valid JSON` in live log. David's report likely from pre-rc55.16 binary OR downstream of Lesson 794 token-cap malformed JSON.
+2. 🔴 **Tool set truncated**: David's `openclaw.json` had **7 tools** instead of 8. The 8th tool (`web_fetch`, added in rc55.13) was missing from the advertised list — model couldn't call what it didn't see. Binary executed `web_fetch` correctly when invoked manually.
+3. 🟡 **Less verbose tool calls than expected**: Model conservatively asked for `max_bytes=12000` on `read_file`. Plugin schema said "default 65536", binary actually uses 1 MiB — model followed the (wrong) schema docs.
+
+**Root cause** (Lesson 842): `write_tier_gated_tool_execution_and_tools` had Lesson 525's idempotency rule — "if `params.tools` array is non-empty, leave it alone." David's pre-rc55.13 config (7 tools, no `_stamped_tools_version`) was preserved forever. The model literally could not call `web_fetch` because it was not advertised.
+
+### Lesson 842 — Auto-detect stale `params.tools` and re-stamp
+
+**Fix** (`src-tauri/src/lib.rs`):
+- Stamp `_stamped_tools_version: CURRENT_STAMP_VERSION` alongside the `params.tools` array.
+- Re-stamp when `stamp_version < CURRENT_STAMP_VERSION` (build added tools since the user's last stamp). This catches upgrades where a tool like `web_fetch` was added between the user's current build and the new one.
+- Re-stamp when the `tools` array is missing or empty (Lesson 525 fallback preserved).
+- Do NOT re-stamp when `stamp_version == CURRENT_STAMP_VERSION` and length matches — that's a user customization (Lesson 525) and we leave it alone.
+- **Also fixed**: the WRITE PATH (fresh install, no existing entry) was never calling `write_tier_gated_tool_execution_and_tools` at all — fresh installs had no `params.tools` written. Added the call to both code paths.
+
+**New tests** (`src-tauri/src/lib.rs`):
+- `tools_array_stale_build_adds_new_tools` — simulates David's exact scenario: pre-rc55.13 7-tool config → upgrade → 8 tools + `_stamped_tools_version: 8`.
+- `tools_array_write_path_stamps_too` — fresh install: write path stamps tools + stamp_version.
+
+### Lesson 841 — `read_file.max_bytes` schema description drift (cosmetic)
+
+**Verified**: schema description already updated in rc55.16 work (claims 1048576 = 1 MiB, binary uses `1_048_576`). No further code change needed.
+
+### Lesson 794 mitigation — stamp `params.max_tokens: 4000`
+
+**Fix** (`src-tauri/src/lib.rs`, `write_tier_gated_tool_execution_and_tools`):
+- Stamp `params.max_tokens = 4000` to bypass MAIC's 600-token floor (Lesson 794, dominant failure mode in David's live log — `stopReason=length tools=0` 24 instances today).
+- User's existing `max_tokens` is preserved (idempotent via `entry().or_insert()`).
+- 4000 gives reasoning models (kimi/GLM/nemotron) enough headroom for multi-tool turns without truncating mid-write_file.
+
+### Anti-overengineering rule
+
+Lesson 835: don't ship schema fixes without confirming the underlying bug first. The Lesson 841 description fix was applied and committed in RC55.16's prep cycle; the Lesson 842 fix is the *real* fix for the truncated-tool-list symptom.
+
 ## [v1.1.0-rc55.16] — 2026-08-30 (HOTFIX: Lesson 837 — restore broken local tool dispatch)
 
 **Symptom**: After installing rc55.14/rc55.15, every `bash_run`, `read_file`, `edit_file`, `write_file`, etc. failed on Windows with:

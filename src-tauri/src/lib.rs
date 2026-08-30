@@ -819,6 +819,26 @@ fn ensure_maic_provider_config_for_tier(
             params
                 .entry("tool_execution".to_string())
                 .or_insert(Value::String("client".to_string()));
+            // Lesson 794 mitigation (NEW 2026-08-30 15:55 MDT): MAIC's
+            // `min_max_tokens_per_model` floor pins per-model caps at 600
+            // tokens for reasoning models (kimi, GLM, deepseek,
+            // nemotron-super). This causes `stopReason=length tools=0`
+            // failures when the model tries to plan + emit tool_calls in
+            // a single turn — it hits the 600-token floor before the
+            // tool_call JSON is complete. David observed 24 such failures
+            // in one session on RC55.16.
+            //
+            // Fix: stamp `params.max_tokens = 4000` (idempotent, only
+            // when not already set). MAIC's `enforce_min_max_tokens()`
+            // raises the request's max_tokens to per-model floor (600),
+            // so 4000 here is the effective cap on the OUTBOUND request.
+            // Models with natural caps lower than 4000 (e.g., smaller
+            // distilled models) won't be hurt — MAIC clamps down to
+            // their native cap. Models with caps ≥ 4000 will simply be
+            // able to plan + emit tool calls without hitting the floor.
+            params
+                .entry("max_tokens".to_string())
+                .or_insert(Value::Number(serde_json::Number::from(4000u32)));
             // Lesson 523 + 525: tier-gated tools array. Free → empty; paid → all 7.
             //
             // Lesson 525 (NEW 2026-08-21): empty array `[]` ALSO counts as
@@ -830,9 +850,40 @@ fn ensure_maic_provider_config_for_tier(
             // stayed on empty tools even after rc23. Now we treat empty
             // array the same as missing key: re-stamp on every bootstrap.
             // User-customized schemas (non-empty array) are still preserved.
+            //
+            // Lesson 842 (NEW 2026-08-30 15:50 MDT): also re-stamp when the
+            // build has added new tools since the user's last stamp.
+            // Before this fix, David's openclaw.json (last stamped by a
+            // build before rc55.13 added web_fetch) had 7 tools and the
+            // writer correctly treated it as "user owns this, don't
+            // touch" — but the user never got the new tool. Symptom:
+            // model can't see `web_fetch` even though the plugin
+            // registers it and the binary dispatches it. Fix: stamp a
+            // version number alongside the tools array. When the stamp
+            // is MISSING (old build never wrote it) or LOWER than the
+            // current build's stamp, re-stamp. When the stamp matches,
+            // trust the user — even if that means they've removed tools.
+            //
+            // CURRENT_STAMP_VERSION is bumped whenever a new tool is added
+            // to ALL_LOCAL_TOOL_NAMES. Today it's 8; next addition → 9, etc.
+            const CURRENT_STAMP_VERSION: u32 = 8;
+            let stamp_version: u32 = params
+                .get("_stamped_tools_version")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32)
+                .unwrap_or(0);
+            // Re-stamp when:
+            //   - tools array is missing/empty (Lesson 525)
+            //   - stamp version is older than current (Lesson 842 — build added new tools)
+            // We do NOT compare tools array length to stamp version: that
+            // would clobber user customizations (e.g. user removes a tool
+            // they don't want). The stamp is only the BUILD version that
+            // last wrote the array; user edits after stamping are preserved.
             let needs_tools_stamp = match params.get("tools") {
                 None => true,
-                Some(Value::Array(a)) => a.is_empty(),
+                Some(Value::Array(a)) => {
+                    a.is_empty() || stamp_version < CURRENT_STAMP_VERSION
+                },
                 Some(_) => false, // non-empty, non-array — leave alone
             };
             if needs_tools_stamp {
@@ -846,6 +897,13 @@ fn ensure_maic_provider_config_for_tier(
                 let tools_arr =
                     crate::tools::schemas::local_tools_to_openai_array(&filtered);
                 params.insert("tools".to_string(), tools_arr);
+                // Lesson 842: stamp the version so future boots can detect
+                // user-removed tools (length != stamp) vs build-removed
+                // tools (stamp < current).
+                params.insert(
+                    "_stamped_tools_version".to_string(),
+                    Value::Number(serde_json::Number::from(CURRENT_STAMP_VERSION)),
+                );
             }
             // Write the modified params back into the entry.
             if let Some(e) = cfg
@@ -1391,6 +1449,12 @@ fn ensure_maic_provider_config_for_tier(
     // (existing complete entry) calls this same helper below so both
     // paths produce identical plugin entry state on disk.
     stamp_maic_plugin_entry(&mut cfg);
+
+    // Lesson 842: also stamp tier-gated tools + tool_execution + max_tokens
+    // in the write path. (The existing-entry early-return path calls this
+    // helper above; without this call, fresh installs and upgrades with
+    // missing/incomplete entries would skip tools stamping.)
+    write_tier_gated_tool_execution_and_tools(&mut cfg, tier);
 
     // Serialize back. We preserve the user's other fields exactly (no
     // schema-strip pass) — openclaw's gateway does its own validation
@@ -8322,6 +8386,96 @@ mod tests {
             Some(1),
             "user's custom 1-tool array must be preserved across logins"
         );
+    }
+
+    #[test]
+    fn tools_array_stale_build_adds_new_tools() {
+        // Lesson 842: David's RC55.16 test scenario. His openclaw.json
+        // was stamped by an older build (pre-rc55.13, before
+        // `web_fetch` was added) and contained 7 tools. With the
+        // old Lesson 525 idempotency, the 7-tool array was preserved
+        // forever and the model never saw `web_fetch` advertised.
+        //
+        // Fix: stamp `_stamped_tools_version` alongside the tools
+        // array, and re-stamp when stamp_version < CURRENT_STAMP_VERSION
+        // (build added tools since the user's last stamp).
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "any-key");
+
+        // Simulate a pre-rc55.13 install: stamp is missing (treated as 0),
+        // tools array has 7 entries (the old full set).
+        let path = openclaw_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let pre_stamp = serde_json::json!({
+            "models": {"providers": {
+                "maic": {
+                    "apiKey": "any-key",
+                    "baseUrl": "https://maicserver.com/v1",
+                    "api": "openai-completions",
+                    "params": {
+                        "tool_execution": "client",
+                        "tools": [
+                            {"type":"function","function":{"name":"read_file"}},
+                            {"type":"function","function":{"name":"write_file"}},
+                            {"type":"function","function":{"name":"edit_file"}},
+                            {"type":"function","function":{"name":"list_dir"}},
+                            {"type":"function","function":{"name":"bash_run"}},
+                            {"type":"function","function":{"name":"apply_patch"}},
+                            {"type":"function","function":{"name":"remember_fact"}}
+                        ]
+                    }
+                }
+            }},
+            "plugins": {"entries": {"maic": {"enabled": true}}}
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&pre_stamp).unwrap()).unwrap();
+
+        // Boot: Lesson 842 must detect the missing `web_fetch` (and
+        // bump to the build's CURRENT_STAMP_VERSION).
+        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro).expect("ok");
+
+        let len = read_tools_array_len().expect("params.tools present");
+        assert_eq!(
+            len, 8,
+            "stale 7-tool config must be re-stamped to current 8 (Lesson 842); web_fetch added in rc55.13"
+        );
+
+        // Verify _stamped_tools_version was written so future boots
+        // know this array is up-to-date.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let stamp = cfg["models"]["providers"]["maic"]["params"]
+            .get("_stamped_tools_version")
+            .and_then(|v| v.as_u64())
+            .expect("_stamped_tools_version must be written");
+        assert!(
+            stamp >= 8,
+            "stamp_version must be >= 8 (CURRENT_STAMP_VERSION) after re-stamp; got {stamp}"
+        );
+    }
+
+    #[test]
+    fn tools_array_write_path_stamps_too() {
+        // Lesson 842 fix verification: the WRITE PATH (when there's
+        // no existing entry) must also call write_tier_gated so
+        // fresh installs get params.tools + params.max_tokens stamped.
+        // Without this, fresh installs would have NO tools array and
+        // the model would see only MAIC's 4 server tools.
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "any-key");
+
+        // Ensure path's parent exists; the function creates the file
+        // when nothing exists.
+        ensure_maic_provider_config().expect("ok");
+        let raw = std::fs::read_to_string(openclaw_json_path()).unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let stamp = cfg["models"]["providers"]["maic"]["params"]
+            .get("_stamped_tools_version")
+            .and_then(|v| v.as_u64())
+            .expect("write path must stamp _stamped_tools_version");
+        assert!(stamp >= 8, "write path stamp must be >= 8; got {stamp}");
     }
 
     // =====================================================================
