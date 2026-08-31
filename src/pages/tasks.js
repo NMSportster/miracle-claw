@@ -18,6 +18,14 @@
 // the `__TAURI_INTERNALS__.invoke` shim. We catch the structured error
 // response `{code: "paid_tier_required"}` and render the upgrade panel
 // instead of a generic error toast.
+//
+// rc55.18 (2026-08-30, David): ❔ Help button in the header opens the
+// Tasks help overlay (src/pages/tasks-help.js, content in
+// src/data/tasks-help.js). Visible to all tiers so free users can
+// learn what Tasks is before deciding to upgrade. Mirrors the ❔ Help
+// button pattern in src/pages/modules.js → openModuleHelp(id).
+
+import { openTasksHelp } from "./tasks-help.js";
 
 const PRIORITY_LABEL = { low: "Low", medium: "Medium", high: "High" };
 const PRIORITY_COLOR = { low: "#7aa2f7", medium: "#e0af68", high: "#f7768e" };
@@ -211,6 +219,19 @@ export const tasksPage = {
       title: "Reload from disk",
     }, ["↻ Refresh"]);
 
+    // rc55.18 (2026-08-30, David): ❔ Help button. Visible to all
+    // tiers (free sees it too — gives free users a chance to learn
+    // what Tasks is before deciding to upgrade). Mirrors the ❔ button
+    // pattern in modules.js → openModuleHelp(id), but Tasks isn't a
+    // module card so we use a parallel tasks-help system
+    // (src/pages/tasks-help.js + src/data/tasks-help.js).
+    const helpBtn = el("button", {
+      class: "mc-tasks-help-btn",
+      title: "Help: how to use Tasks",
+      "aria-label": "Help: how to use Tasks",
+      onClick: () => openTasksHelp(),
+    }, ["❔"]);
+
     // Lesson 756: two-row header. Row 1: title + tier + sync status
     // (so it has room to breathe). Row 2: back button (left) + actions
     // (right). Cleaner visual hierarchy than cramming everything into
@@ -221,6 +242,7 @@ export const tasksPage = {
         el("div", { class: "mc-tasks-header-title" }, [
           el("h1", { class: "mc-tasks-title" }, ["✅ Tasks"]),
           tierBadge,
+          helpBtn,
         ]),
         el("div", { class: "mc-tasks-header-meta" }, [
           el("span", { class: "mc-tasks-sync-info" }, [lastSync]),

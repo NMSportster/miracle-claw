@@ -5,6 +5,33 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0-rc55.18] — 2026-08-30 (Tasks help/tutorial + bash_run `python -c` quoting)
+
+### Tasks help/tutorial page (David's 2026-08-30 request)
+
+**Symptom**: David asked for "a help file in Tasks and tutorial for users that might want help using that page" — originally deferred from 2026-08-29 18:30 MDT (Lessons 759 follow-up: "Tasks help/tutorial page: David requested a help/tutorial page for Tasks. DEFERRED until tool regression is fixed."). Tools regression was fixed in rc55.16 (Lesson 837), so the deferral condition is now satisfied.
+
+**Fix** (3 new files + 2 edits):
+
+- **`src/data/tasks-help.js`** (NEW, 9200 bytes): structured help content — `whoFor`, `whyUseIt`, `whatItDoes`, 4 `windowsUI` surfaces (Tasks page walkthrough / Header buttons / Date groupings / Syncing with MAIC), 6 `examples` (natural-language MAIC prompts), 7 `chat` slash commands, 7 `troubleshooting` entries. Mirrors the schema in `src/data/module-help.js` (David's 2026-08-26 "newer type user" framing: plain language first, technical second).
+- **`src/pages/tasks-help.js`** (NEW, 8800 bytes): `openTasksHelp()` / `closeTasksHelp()`. Renders a full-screen overlay reusing the `.mhelp-*` CSS (41 selectors, no new CSS). Same Escape-key + click-backdrop handlers as `openModuleHelp()`. Independent file (not a metadata-override on module-help) — Tasks isn't an Add-On Module card, so no regression risk to existing module help.
+- **`src/pages/tasks.js`** (modified): added ❔ Help button in the page header (next to title + tier badge, before sync meta). Visible to all tiers (free sees it too — they need to know what Tasks is before deciding to upgrade). Click → `openTasksHelp()`.
+- **`src/styles.css`** (modified): new `.mc-tasks-help-btn` block (12 lines) — mirrors `.modules-help-btn` style. Subtle outline on hover/focus, transparent default. Sits cleanly in `.mc-tasks-header-title` flex row (gap: 12px).
+
+**Verified**:
+- `node --check` passes for all 3 new files
+- `npx vite build` clean (36 modules transformed, no errors)
+- `npm run test:js` — 19/19 pass (no regressions)
+- Help data has 4 UI surfaces, 6 examples, 7 chat commands, 7 troubleshooting entries
+
+### Lesson 848 — bash_run inline `python -c "..."` quoting (Windows)
+
+**Symptom** (David, RC55.17 test): `python -c "print('hello')"` → SyntaxError or silent no-op on Windows. `python script.py` (file-based) works fine.
+
+**Root cause**: `bash_run` uses `cmd /C <command>` on Windows. `cmd.exe` strips the outer quotes before python sees them — `python -c "print('hello')"` becomes `python -c print('hello')` to python, which is invalid syntax. Same for semicolons (cmd separates on `;`) and single-quote forms.
+
+**Fix** (`src-tauri/src/tools/exec.rs`): new `split_python_c_command()` helper detects `python/python3/py ... -c "<code>"` patterns and invokes `python.exe` directly with `-c` as a SEPARATE argv, bypassing cmd's quote-stripping entirely. Falls through to `cmd /C` for everything else (unchanged). 9 new unit tests + 8 existing lesson_805 + 13 others = 30 tools tests pass.
+
 ## [v1.1.0-rc55.17] — 2026-08-30 (HOTFIX: Lessons 841 + 842 + 794 mitigation)
 
 **Symptoms David reported after RC55.16** (`Desktop/MC-openclaw info.txt`):

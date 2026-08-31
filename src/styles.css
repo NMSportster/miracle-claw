@@ -4198,6 +4198,34 @@ kbd {
   background: rgba(122, 162, 247, 0.18);
   color: #7aa2f7;
 }
+
+/* rc55.18 (2026-08-30, David): ❔ Help button in the Tasks page
+   header. Mirrors the modules-help-btn style (src/pages/modules.js →
+   openModuleHelp) but lives in the page header next to the title.
+   Visible to all tiers (free sees it too — they need to know what
+   Tasks is before deciding to upgrade). Click → openTasksHelp()
+   from src/pages/tasks-help.js, content from src/data/tasks-help.js. */
+.mc-tasks-help-btn {
+  flex: 0 0 auto;
+  background: transparent;
+  color: var(--muted, #888);
+  border: 1px solid var(--border, #333);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.mc-tasks-help-btn:hover {
+  background: rgba(99, 102, 241, 0.08);
+  color: var(--accent, #6366f1);
+  border-color: var(--accent, #6366f1);
+}
+.mc-tasks-help-btn:focus-visible {
+  outline: 2px solid var(--accent, #6366f1);
+  outline-offset: 2px;
+}
 .mc-tasks-sync-info {
   font-size: 12px;
   color: #888;
