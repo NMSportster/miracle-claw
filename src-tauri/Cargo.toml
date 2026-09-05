@@ -79,6 +79,16 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "linux-
 aes-gcm = "0.10"
 rand = "0.8"
 base64 = "0.22"
+
+# Phase 3 mobile pairing (spec: docs/specs/mobile-desktop-pairing.md).
+# Wire-compatible with the Dart side using the `cryptography 2.9.0` package.
+# x25519-dalek for the ephemeral/static DH; hkdf + sha2 + hmac for the
+# session-key derivation and per-request HMAC binding; aes-gcm was already
+# pinned at 0.10 for secrets_encryption.rs. Keep these in sync with the
+# Dart test fixtures in miracle-claw-mobile/test/pairing_compat_test.dart.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+hkdf = "0.12"
+hmac = "0.12"
 # Used by auto_relogin to zero out decrypted secrets before drop, so they don't
 # linger in process memory.
 zeroize = { version = "1", features = ["zeroize_derive"] }

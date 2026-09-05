@@ -76,6 +76,9 @@ mod tasks;
 
 // v1.0.7: tier fetching + token-quota nudges.
 pub mod auth;
+// Phase 3 mobile pairing (spec: docs/specs/mobile-desktop-pairing.md).
+// Crypto primitives only — Tauri command wiring is in a follow-up commit.
+pub mod pairing_crypto;
 // v1.0.7: 7 local tool schemas (paid tier only). Marked `pub` so the
 // `miracle-claw-tools` binary can `use` them via `crate::tools::...`.
 pub mod tools;
