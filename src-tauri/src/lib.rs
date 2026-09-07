@@ -79,6 +79,14 @@ pub mod auth;
 // Phase 3 mobile pairing (spec: docs/specs/mobile-desktop-pairing.md).
 // Crypto primitives only — Tauri command wiring is in a follow-up commit.
 pub mod pairing_crypto;
+// Phase 2.2: in-memory session map (Spec: docs/specs/mobile-desktop-pairing.md).
+pub mod pairing_state;
+// Phase 2.2: 6 Tauri commands (mc_register_desktop, etc.) + MAIC HTTP layer.
+// Spec: docs/specs/mobile-desktop-pairing.md.
+// Phase 2.2: pairing_init sets up PairingCommands from the env (JWT + endpoint).
+// Spec: docs/specs/mobile-desktop-pairing.md.
+mod pairing_init;
+pub mod pairing_commands;
 // v1.0.7: 7 local tool schemas (paid tier only). Marked `pub` so the
 // `miracle-claw-tools` binary can `use` them via `crate::tools::...`.
 pub mod tools;
@@ -7330,6 +7338,7 @@ pub fn run() {
         // dashboard doesn't depend on the webview being focused.
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState::default())
+        .manage(pairing_init::build_pairing_state())
         .invoke_handler(tauri::generate_handler![
             first_run_report,
             // Lesson TBD (2026-08-27): on-demand voice diagnostics probe.
@@ -7440,7 +7449,15 @@ pub fn run() {
             tasks::mc_task_done,
             tasks::mc_task_delete,
             tasks::mc_task_sync,
-            tasks::mc_task_login
+            tasks::mc_task_login,
+            // Phase 2.2: Mobile ↔ Desktop pairing commands.
+            mc_register_desktop,
+            mc_unregister_desktop,
+            mc_initiate_pair,
+            mc_paired_devices,
+            mc_revoke_device,
+            mc_set_drop_folder,
+            mc_get_pairing_status
         ])
         .setup(|app| {
             setup(app)?;
@@ -7460,6 +7477,84 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+// ----------------------------------------------------------------------------
+// Mobile ↔ Desktop pairing Tauri commands (Phase 2.2).
+// ----------------------------------------------------------------------------
+//
+// Spec: docs/specs/mobile-desktop-pairing.md.
+//
+// Seven commands. All gated by MAIC JWT auth (user must be logged in).
+// State is managed via `tauri::State<PairingCommands>` — wired up in setup().
+//
+//   mc_register_desktop       — register this MC install with MAIC
+//   mc_unregister_desktop     — graceful shutdown, revoke all sessions
+//   mc_initiate_pair          — desktop-side handshake (called from HTTP server)
+//   mc_paired_devices         — list phones currently paired (per MAIC)
+//   mc_revoke_device          — remove a phone (MAIC DELETE + local session revoke)
+//   mc_set_drop_folder        — set/clear the phone's filesystem sandbox root
+//   mc_get_pairing_status     — quick status snapshot for the Settings page
+//
+// Note: mc_initiate_pair is also called directly from the HTTP server thread
+// (see pairing_server::handle_pair_initiate). The Tauri command version is
+// the same code path; both call into pairing_commands::initiate_pair.
+
+#[tauri::command]
+fn mc_register_desktop(
+    cmds: tauri::State<'_, pairing_commands::PairingCommands>,
+    desktop_pubkey_b64: String,
+    fingerprint: String,
+) -> Result<pairing_commands::DesktopRegistration, String> {
+    pairing_commands::register_desktop(&cmds, desktop_pubkey_b64, fingerprint)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn mc_unregister_desktop(
+    cmds: tauri::State<'_, pairing_commands::PairingCommands>,
+) -> Result<(), String> {
+    pairing_commands::unregister_desktop(&cmds).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn mc_initiate_pair(
+    cmds: tauri::State<'_, pairing_commands::PairingCommands>,
+    phone_pubkey_b64: String,
+    device_name: String,
+) -> Result<pairing_commands::HandshakeResponse, String> {
+    pairing_commands::initiate_pair(&cmds, phone_pubkey_b64, device_name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn mc_paired_devices(
+    cmds: tauri::State<'_, pairing_commands::PairingCommands>,
+) -> Result<Vec<pairing_commands::PairedDeviceInfo>, String> {
+    pairing_commands::paired_devices(&cmds).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn mc_revoke_device(
+    cmds: tauri::State<'_, pairing_commands::PairingCommands>,
+    device_id: i64,
+) -> Result<(), String> {
+    pairing_commands::revoke_device(&cmds, device_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn mc_set_drop_folder(
+    cmds: tauri::State<'_, pairing_commands::PairingCommands>,
+    folder: String,
+) -> Result<String, String> {
+    pairing_commands::set_drop_folder(&cmds, folder).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn mc_get_pairing_status(
+    cmds: tauri::State<'_, pairing_commands::PairingCommands>,
+) -> Result<pairing_commands::PairingStatus, String> {
+    pairing_commands::get_pairing_status(&cmds).map_err(|e| e.to_string())
 }
 
 // ----------------------------------------------------------------------------

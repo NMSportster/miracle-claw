@@ -89,6 +89,21 @@ base64 = "0.22"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 hkdf = "0.12"
 hmac = "0.12"
+
+# Phase 3 mobile pairing — mDNS advertisement deferred to a follow-up
+# commit. The desktop LAN shortcut uses the zeroconf crate which pulls in
+# avahi-sys on Linux and bindgen, requiring libclang to build. The pairing
+# spec says mDNS is opportunistic — MAIC presence relay is primary — so
+# shipping the 6 Tauri commands without it is correct. When libclang is
+# available in the dev environment, add:
+#   zeroconf = "0.18"
+
+# Tiny HTTP server for accepting phone-side pairing requests (LAN or via
+# MAIC-relayed HTTPS tunnel). tiny_http is the simplest sync HTTP server
+# that doesn't pull in tokio. The phone hits POST /v1/pair/initiate with
+# {phone_pubkey, device_name}, and gets back the handshake response. Same
+# endpoint validates per-request HMACs for ongoing session traffic.
+tiny_http = "0.12"
 # Used by auto_relogin to zero out decrypted secrets before drop, so they don't
 # linger in process memory.
 zeroize = { version = "1", features = ["zeroize_derive"] }
