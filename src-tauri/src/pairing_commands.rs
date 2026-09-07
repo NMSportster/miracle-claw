@@ -146,6 +146,18 @@ pub trait MaicHttp: Send + Sync {
         instance_id: &str,
         device_id: i64,
     ) -> PairingResult<()>;
+
+    /// Phase 2.3: PUT /v1/users/me/desktops/{id}/heartbeat (60s ticker).
+    /// Body shape: {endpoint?, endpoint_kind?, capabilities_hash?}.
+    /// MAIC returns 204 on success; 404 means "desktop_not_registered"
+    /// (cold-boot race, caller hasn't registered yet — heartbeat loop
+    /// tolerates and retries).
+    fn put_heartbeat(
+        &self,
+        instance_id: &str,
+        body: &serde_json::Value,
+    ) -> PairingResult<()>;
+
     fn post_drop_folder(
         &self,
         instance_id: &str,
@@ -285,6 +297,17 @@ impl MaicHttp for LiveMaicHttp {
         self.delete_json(&path)?;
         Ok(())
     }
+    fn put_heartbeat(
+        &self,
+        instance_id: &str,
+        body: &serde_json::Value,
+    ) -> PairingResult<()> {
+        let path = format!("/v1/users/me/desktops/{}/heartbeat", instance_id);
+        // MAIC returns 204 No Content; we ignore the (empty) response.
+        self.put_json(&path, &body.to_string())?;
+        Ok(())
+    }
+
     fn post_drop_folder(
         &self,
         instance_id: &str,

@@ -35,7 +35,9 @@ use std::io;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+use crate::pairing_commands::PairingCommands;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -87,6 +89,13 @@ pub mod pairing_state;
 // Spec: docs/specs/mobile-desktop-pairing.md.
 mod pairing_init;
 pub mod pairing_commands;
+// Phase 2.3: tiny_http listener for phone-side pairing (POST /pair/initiate, GET /pair/health).
+// Spawned from setup(); heartbeat thread reads bound_port() to advertise the endpoint to MAIC.
+// Spec: docs/specs/mobile-desktop-pairing.md.
+pub mod pairing_server;
+// Phase 2.3: 60s heartbeat ticker + cleanup task. Reads PairingServerState.bound_port()
+// to advertise endpoint; spawns from setup(). Spec: docs/specs/mobile-desktop-pairing.md.
+pub mod pairing_heartbeat;
 // v1.0.7: 7 local tool schemas (paid tier only). Marked `pub` so the
 // `miracle-claw-tools` binary can `use` them via `crate::tools::...`.
 pub mod tools;
@@ -169,6 +178,15 @@ struct AppState {
     /// here for consistency with sibling fields and to make it easy
     /// to swap the registry out atomically in the future.
     modules: Mutex<crate::modules::registry::Registry>,
+    /// Phase 2.3 (rc55.19): phone-pairing HTTP listener state. `None`
+    /// until `setup()` binds the socket; `Some` once running. The
+    /// `RunEvent::Exit` handler reads this to know whether to call
+    /// `pairing_server::stop` on shutdown. Held as `Arc` so the
+    /// heartbeat thread can hold an independent reference.
+    pairing_server: Mutex<Option<Arc<crate::pairing_server::PairingServerState>>>,
+    /// Phase 2.3 (rc55.19): phone-pairing heartbeat thread state.
+    /// Same pattern as `pairing_server`.
+    pairing_heartbeat: Mutex<Option<crate::pairing_heartbeat::PairingHeartbeatState>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -3816,6 +3834,61 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     );
     if let Some(state) = app_handle.try_state::<AppState>() {
         *state.modules.lock().unwrap() = discovered;
+    }
+
+    // 7. Phase 2.3 (rc55.19): spawn the phone-pairing HTTP server + 60s
+    //    heartbeat ticker.
+    //
+    //    Wire format spec: docs/specs/mobile-desktop-pairing.md. We bind
+    //    0.0.0.0:0 (OS picks an ephemeral port) so we don't trigger a
+    //    Windows firewall prompt on first run. The bound port is
+    //    advertised to MAIC via the heartbeat, and the phone learns it
+    //    from `GET /v1/users/me/desktop`.
+    //
+    //    Best-effort spawn: a bind failure here doesn't crash the app —
+    //    pairing is a side feature, not the main product. We log and
+    //    move on; the Settings page can show "pairing unavailable" if
+    //    the user tries to use it.
+    if let Some(state) = app_handle.try_state::<AppState>() {
+        // pairing_init::build_pairing_state() returns Arc<PairingCommands>,
+        // so the registered Tauri state type is Arc<PairingCommands>.
+        // Pull the Arc out (cloned) to share with the HTTP server thread
+        // and the heartbeat thread.
+        let cmds: Arc<PairingCommands> = app_handle
+            .state::<Arc<PairingCommands>>()
+            .inner()
+            .clone();
+        let bind_addr: std::net::SocketAddr =
+            std::env::var("MC_PAIRING_BIND")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
+        match crate::pairing_server::start(0, cmds.clone(), bind_addr) {
+            Ok(server_state_arc) => {
+                let port = server_state_arc.bound_port();
+                eprintln!(
+                    "[miracle-claw] pairing HTTP server listening on 0.0.0.0:{} (PID {})",
+                    port,
+                    std::process::id()
+                );
+
+                // Spawn the heartbeat with a clone of the Arc. The
+                // heartbeat reads the server's bound_port each tick to
+                // build the endpoint URL advertised to MAIC.
+                let hb_state = crate::pairing_heartbeat::start(
+                    cmds.clone(),
+                    Arc::clone(&server_state_arc),
+                );
+                *state.pairing_heartbeat.lock().unwrap() = Some(hb_state);
+                *state.pairing_server.lock().unwrap() = Some(server_state_arc);
+            }
+            Err(e) => {
+                eprintln!(
+                    "[miracle-claw] pairing HTTP server FAILED to bind: {} — phone pairing disabled",
+                    e
+                );
+            }
+        }
     }
 
     Ok(())
@@ -7472,6 +7545,18 @@ pub fn run() {
                     if let Some(child) = state.launcher_child.lock().unwrap().take() {
                         // tauri-plugin-shell v2's CommandChild::kill takes &self.
                         let _ = child.kill();
+                    }
+                    // Phase 2.3 (rc55.19): stop the phone-pairing
+                    // heartbeat first (cheap, ~1s), then stop the
+                    // pairing HTTP server (joins the request handler
+                    // thread). Both are idempotent so safe even if
+                    // setup() never spawned them (e.g. LoginRequired
+                    // path on cold boot — no instance_id yet).
+                    if let Some(hb) = state.pairing_heartbeat.lock().unwrap().take() {
+                        crate::pairing_heartbeat::stop(&hb);
+                    }
+                    if let Some(srv) = state.pairing_server.lock().unwrap().take() {
+                        crate::pairing_server::stop(&srv);
                     }
                 }
             }

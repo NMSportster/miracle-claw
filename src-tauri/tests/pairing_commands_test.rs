@@ -213,6 +213,25 @@ impl MaicHttp for FakeMaic {
         }
         Ok(json!({ "mobile_drop_folder": normalized }))
     }
+
+    fn put_heartbeat(
+        &self,
+        instance_id: &str,
+        body: &Value,
+    ) -> Result<(), PairingError> {
+        // Phase 2.3: record and return Ok. Tests can inspect
+        // .requests() to verify the heartbeat fired with the expected
+        // body shape. We do NOT simulate the MAIC 404 "desktop not
+        // registered" path here because the heartbeat loop tolerates
+        // 404 in production (cold-boot race); the production behavior
+        // is verified at the pairing_heartbeat layer.
+        self.record(
+            "PUT",
+            &format!("/v1/users/me/desktops/{}/heartbeat", instance_id),
+            body.clone(),
+        );
+        Ok(())
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -498,4 +517,294 @@ fn full_pair_then_revoke_pair_again_cycle() {
     let list2 = paired_devices(&cmds).unwrap();
     assert_eq!(list2.len(), 1);
     assert_ne!(list2[0].device_id, device_id, "new device_id after re-pair");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// pairing_server integration tests (Phase 2.3, rc55.19)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Drives the real `pairing_server` over loopback HTTP. Uses a minimal
+// stdlib-only HTTP/1.1 client (no reqwest dep) so the test stays hermetic.
+//
+// Reuses FakeMaic from above for MAIC-side assertions.
+
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::time::Duration;
+
+use miracle_claw_lib::pairing_server;
+
+// Tiny HTTP/1.1 client. Returns (status_code, body).
+fn http_request(method: &str, host_port: &str, path: &str, body: Option<&str>) -> (u16, String) {
+    let body_bytes = body.unwrap_or("").as_bytes();
+    let mut stream =
+        TcpStream::connect(host_port).expect("test client should be able to connect to localhost");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set_read_timeout");
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .expect("set_write_timeout");
+
+    let req = format!(
+        "{method} {path} HTTP/1.1\r\n\
+         Host: {host_port}\r\n\
+         Connection: close\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         \r\n",
+        body_bytes.len()
+    );
+    stream.write_all(req.as_bytes()).expect("write request line + headers");
+    if !body_bytes.is_empty() {
+        stream.write_all(body_bytes).expect("write body");
+    }
+
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).expect("read full response (Connection: close EOF)");
+    let text = String::from_utf8_lossy(&raw).into_owned();
+
+    let status_line = text.lines().next().unwrap_or("");
+    let status_code: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let body_start = text.find("\r\n\r\n").map(|i| i + 4).unwrap_or(text.len());
+    let body = text[body_start..].to_string();
+    (status_code, body)
+}
+
+fn ephemeral_addr() -> std::net::SocketAddr {
+    "127.0.0.1:0".parse().unwrap()
+}
+
+#[test]
+fn server_health_returns_200_with_bound_port_when_no_instance_id_yet() {
+    let (cmds, _fake) = build_pairing();
+    let srv = pairing_server::start(0, cmds, ephemeral_addr()).expect("server should bind on 127.0.0.1:0");
+    let port = srv.bound_port();
+    assert!(port > 0, "OS should have assigned a real port, got {port}");
+
+    let (status, body) = http_request("GET", &format!("127.0.0.1:{port}"), "/pair/health", None);
+    assert_eq!(status, 200, "GET /pair/health must return 200");
+
+    let parsed: Value = serde_json::from_str(&body).expect("body must be JSON");
+    assert_eq!(parsed["ok"], Value::Bool(true));
+    assert_eq!(parsed["instance_id"], Value::Null, "no register_desktop yet");
+    assert_eq!(
+        parsed["bound_port"].as_u64().unwrap() as u16,
+        port,
+        "bound_port in body must match actual port"
+    );
+
+    pairing_server::stop(&srv);
+}
+
+#[test]
+fn server_health_returns_instance_id_after_register_desktop() {
+    let (cmds, _fake) = build_pairing();
+    register_desktop(
+        &cmds,
+        "PUB_b64_at_least_16_chars".into(),
+        "FP_b64_at_least_16_chars".into(),
+    )
+    .expect("register_desktop");
+
+    let srv = pairing_server::start(0, cmds, ephemeral_addr()).expect("server should bind");
+    let port = srv.bound_port();
+
+    let (status, body) = http_request("GET", &format!("127.0.0.1:{port}"), "/pair/health", None);
+    assert_eq!(status, 200);
+    let parsed: Value = serde_json::from_str(&body).unwrap();
+    let id = parsed["instance_id"].as_str().expect("instance_id must be a string");
+    assert!(!id.is_empty(), "instance_id must be populated");
+    assert!(
+        id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+        "instance_id must be MAIC-shaped (UUID-like), got {id:?}"
+    );
+
+    pairing_server::stop(&srv);
+}
+
+#[test]
+fn server_initiate_returns_503_when_not_registered_yet() {
+    let (cmds, _fake) = build_pairing();
+    let srv = pairing_server::start(0, cmds, ephemeral_addr()).expect("server should bind");
+    let port = srv.bound_port();
+
+    let (_priv, pub_b64) = make_phone_keypair();
+    let body = json!({
+        "phone_pubkey_b64": pub_b64,
+        "device_name": "Pixel 8",
+    })
+    .to_string();
+
+    let (status, resp_body) = http_request(
+        "POST",
+        &format!("127.0.0.1:{port}"),
+        "/pair/initiate",
+        Some(&body),
+    );
+    assert_eq!(status, 503, "must return 503 when desktop not registered");
+    let parsed: Value = serde_json::from_str(&resp_body).unwrap();
+    assert_eq!(parsed["error"], "not_initialized");
+
+    pairing_server::stop(&srv);
+}
+
+#[test]
+fn server_initiate_returns_400_on_malformed_json() {
+    let (cmds, _fake) = build_pairing();
+    register_desktop(
+        &cmds,
+        "PUB_b64_at_least_16_chars".into(),
+        "FP_b64_at_least_16_chars".into(),
+    )
+    .unwrap();
+
+    let srv = pairing_server::start(0, cmds, ephemeral_addr()).expect("server should bind");
+    let port = srv.bound_port();
+
+    let (status, resp_body) = http_request(
+        "POST",
+        &format!("127.0.0.1:{port}"),
+        "/pair/initiate",
+        Some("not valid json"),
+    );
+    assert_eq!(status, 400);
+    let parsed: Value = serde_json::from_str(&resp_body).unwrap();
+    assert_eq!(parsed["error"], "bad_request");
+
+    pairing_server::stop(&srv);
+}
+
+#[test]
+fn server_initiate_returns_400_on_missing_device_name() {
+    let (cmds, _fake) = build_pairing();
+    register_desktop(
+        &cmds,
+        "PUB_b64_at_least_16_chars".into(),
+        "FP_b64_at_least_16_chars".into(),
+    )
+    .unwrap();
+
+    let srv = pairing_server::start(0, cmds, ephemeral_addr()).expect("server should bind");
+    let port = srv.bound_port();
+
+    let (_priv, pub_b64) = make_phone_keypair();
+    let body = json!({ "phone_pubkey_b64": pub_b64 }).to_string();
+    let (status, resp_body) = http_request(
+        "POST",
+        &format!("127.0.0.1:{port}"),
+        "/pair/initiate",
+        Some(&body),
+    );
+    assert_eq!(status, 400, "missing device_name must 400");
+    let parsed: Value = serde_json::from_str(&resp_body).unwrap();
+    assert_eq!(parsed["error"], "bad_request");
+
+    pairing_server::stop(&srv);
+}
+
+#[test]
+fn server_returns_404_on_unknown_path() {
+    let (cmds, _fake) = build_pairing();
+    let srv = pairing_server::start(0, cmds, ephemeral_addr()).expect("server should bind");
+    let port = srv.bound_port();
+
+    let (status, body) =
+        http_request("GET", &format!("127.0.0.1:{port}"), "/pair/no-such-thing", None);
+    assert_eq!(status, 404);
+    let parsed: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["error"], "not_found");
+
+    pairing_server::stop(&srv);
+}
+
+#[test]
+fn server_returns_405_on_post_to_health() {
+    let (cmds, _fake) = build_pairing();
+    let srv = pairing_server::start(0, cmds, ephemeral_addr()).expect("server should bind");
+    let port = srv.bound_port();
+
+    let (status, body) = http_request(
+        "POST",
+        &format!("127.0.0.1:{port}"),
+        "/pair/health",
+        Some("{}"),
+    );
+    assert_eq!(status, 405, "POST /pair/health must be 405");
+    let parsed: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["error"], "method_not_allowed");
+
+    pairing_server::stop(&srv);
+}
+
+#[test]
+fn server_full_handshake_decrypts_to_recoverable_session_secret() {
+    // End-to-end: register desktop → start server → POST /pair/initiate →
+    // phone decrypts the handshake using phone_decrypt_handshake and
+    // recovers a 32-byte session_secret. Proves the HTTP layer passes
+    // through Phase 2.1 crypto unchanged.
+    let (cmds, fake) = build_pairing();
+    register_desktop(
+        &cmds,
+        "PUB_b64_at_least_16_chars".into(),
+        "FP_b64_at_least_16_chars".into(),
+    )
+    .unwrap();
+
+    let srv = pairing_server::start(0, cmds, ephemeral_addr()).expect("server should bind");
+    let port = srv.bound_port();
+
+    let (phone_priv, phone_pub_b64) = make_phone_keypair();
+    let body = json!({
+        "phone_pubkey_b64": phone_pub_b64,
+        "device_name": "Test Phone",
+    })
+    .to_string();
+
+    let (status, resp_body) = http_request(
+        "POST",
+        &format!("127.0.0.1:{port}"),
+        "/pair/initiate",
+        Some(&body),
+    );
+    assert_eq!(status, 200, "POST /pair/initiate must return 200");
+    let parsed: Value = serde_json::from_str(&resp_body).unwrap();
+
+    let session_id_hex = parsed["session_id"].as_str().expect("session_id");
+    let encrypted_secret_b64 = parsed["encrypted_secret_b64"].as_str().expect("encrypted_secret_b64");
+    let ephemeral_pubkey_b64 = parsed["ephemeral_pubkey_b64"].as_str().expect("ephemeral_pubkey_b64");
+
+    // session_id is a hex string (32 chars from 16 random bytes per
+    // SESSION_ID_LEN) — see pairing_commands::new_session_id_string.
+    let session_id = miracle_claw_lib::pairing_commands::session_id_raw_from_string(session_id_hex);
+
+    // Phone-side decrypt using a [u8; 32] for the static priv key.
+    let mut priv_arr = [0u8; 32];
+    priv_arr.copy_from_slice(&phone_priv);
+    let recovered: [u8; SESSION_SECRET_LEN] = phone_decrypt_handshake(
+        &priv_arr,
+        &session_id,
+        ephemeral_pubkey_b64,
+        encrypted_secret_b64,
+    )
+    .expect("phone must be able to decrypt the handshake");
+    assert_eq!(
+        recovered.len(),
+        32,
+        "session_secret must be 32 bytes (SESSION_SECRET_LEN)"
+    );
+
+    // MAIC saw a POST to /paired-devices
+    let recorded = fake.requests.lock().unwrap();
+    let paired_post = recorded
+        .iter()
+        .find(|r| r.method == "POST" && r.path.contains("/paired-devices"))
+        .expect("MAIC must have received POST /paired-devices");
+    assert_eq!(paired_post.body["device_name"], "Test Phone");
+
+    pairing_server::stop(&srv);
 }
