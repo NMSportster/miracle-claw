@@ -5,6 +5,34 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0-rc55.21] — 2026-09-07 (Silence toolsBinaryPath DIAG noise from Terminal chat)
+
+David reported the line `[maic-plugin DIAG] toolsBinaryPath resolved: C:\Users\Adeal\AppData\Roaming\MiracleClaw\extensions\maic\miracle-claw-tools.exe` was repeating in Terminal chat output — once per tool call (`bash_run`, `read_file`, `list_dir`, etc.). Customers don't need to see diagnostic resolution logging in their chat; that's a load-bearing chat stream, not a log.
+
+**Fix** (`~/.openclaw/extensions/maic/index.js`, function `toolsBinaryPath`):
+
+1. **Memoize the resolved path** so the lookup runs once per process. With 8 tool calls in a session, the diag used to fire 8 times; now it fires once (or zero in customer mode).
+2. **Gate the diagnostic behind `MC_DEBUG_PLUGIN=1` (or `MC_DEBUG_TOOLS=1`)**. Customer default is silent. Tauri can still set this env var for opt-in troubleshooting.
+3. **Always log FAILED** to stderr (real install-bug signal belongs in logs even when chat is silenced). The OpenClaw side-car log file at `<temp>/openclaw/openclaw-YYYY-MM-DD.log` will still capture install errors.
+
+Plugin catalog version bumped 0.3.2 → 0.3.3 so the installer carries the latest manifest alongside the index.js fix.
+
+**No rebuild required for this fix alone** — the file lives at the persisted AppData location (`C:\Users\Adeal\AppData\Roaming\MiracleClaw\extensions\maic\index.js`), so editing MAIC_LIVE_DIR is enough for current installs. The depot + resources copies are synced for the next installer build.
+
+## [v1.1.0-rc55.20] — 2026-09-07 (Fix Kimi truncation for paid users — Lesson 826)
+
+David hit "⚠️ Agent couldn't generate a response" on every Terminal chat turn after ~4 turns on `milagro-oc-kimi`. Root cause: Kimi's `reasoning_content` + tool-call planning + visible answer routinely exceeded the previous `max_tokens: 4000` ceiling on enterprise prompt histories (27+ tools, 4+ turn history). MAIC only enforces a **floor**, never a ceiling, so the MC Tauri stamper's value was the effective cap.
+
+**Three-layer fix** (defense-in-depth — protects all three call paths: MC Tauri, mobile/scripts, future plugin updates):
+
+1. **MC Tauri stamper** (`src-tauri/src/lib.rs:854-887`): `params.max_tokens` 4000 → **8000**. Idempotent — only writes when not already set.
+2. **MAIC server** (`/opt/maic/api/config.py` `min_max_tokens_per_model`): `milagro-oc-kimi` / `milagro-oc-deepseek` / `milagro-coder` 600 → **8000**; `milagro-oc-glm` 500 → **4000**. Floor, not ceiling — catches callers that don't stamp (mobile app, scripts, raw curl).
+3. **Plugin model catalog** (`src-tauri/resources/maic-plugin/openclaw.plugin.json`): added `maxOutputTokens` to all 28 model entries. Cascade reasoning (kimi, deepseek, glm) → 8000; cascade cloud (minimax, qwen) → 8000/6000; local models → 4096. Plugin version bumped 0.3.1 → 0.3.2.
+
+**Verified**: Direct Ollama Cloud probe of `kimi-k2.7-code:cloud` showed 1883-token prompt returns `finish_reason: stop` cleanly; cap-killing prompts at 4000+ trigger truncation. With MAIC floor now 8000, `milagro_meta.max_tokens.applied=8000, enforced=True` is confirmed on the live gateway.
+
+**No breaking changes**: smaller models still get capped at their native limits by the model itself.
+
 ## [v1.1.0-rc55.19] — 2026-09-07 (Phone pairing: Phase 2.3 — HTTP server + 60s heartbeat)
 
 Adds the missing glue between Phase 2.2's Tauri commands and a real phone on the network: a loopback HTTP server that the phone talks to (POST /pair/initiate), and a 60-second heartbeat that tells MAIC where to dial back.

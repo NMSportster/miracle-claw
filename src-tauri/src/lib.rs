@@ -848,26 +848,48 @@ fn ensure_maic_provider_config_for_tier(
             params
                 .entry("tool_execution".to_string())
                 .or_insert(Value::String("client".to_string()));
-            // Lesson 794 mitigation (NEW 2026-08-30 15:55 MDT): MAIC's
-            // `min_max_tokens_per_model` floor pins per-model caps at 600
-            // tokens for reasoning models (kimi, GLM, deepseek,
-            // nemotron-super). This causes `stopReason=length tools=0`
-            // failures when the model tries to plan + emit tool_calls in
-            // a single turn — it hits the 600-token floor before the
-            // tool_call JSON is complete. David observed 24 such failures
-            // in one session on RC55.16.
+            // Lesson 794 + 826 mitigation (NEW 2026-08-30 15:55 MDT,
+            // updated 2026-09-07): MAIC's `min_max_tokens_per_model`
+            // floor pins per-model caps at 600 tokens for reasoning
+            // models (kimi, GLM, deepseek, nemotron-super). This caused
+            // `stopReason=length tools=0` failures when the model tried
+            // to plan + emit tool_calls in a single turn — it hit the
+            // 600-token floor before the tool_call JSON was complete.
+            // David observed 24 such failures in one session on RC55.16.
             //
-            // Fix: stamp `params.max_tokens = 4000` (idempotent, only
+            // Lesson 826 (2026-09-07): the original Lesson 794 fix
+            // bumped 600 → 4000, which worked for a few weeks. After
+            // Kimi traffic shifted to heavier enterprise prompts (27+
+            // tools, 4+ turn history, full audit responses), 4000 was
+            // no longer enough: Kimi's reasoning_content + tool planning
+            // + visible answer routinely exceeded 4000 tokens and hit
+            // `stopReason=length` mid-thought, surfacing as
+            // "⚠️ Agent couldn't generate a response" to paid users.
+            // Empirical cap probe of `kimi-k2.7-code:cloud` via Ollama
+            // Cloud confirmed 1883 tokens completes cleanly with
+            // `finish_reason=stop`; 4000+ triggers truncation.
+            //
+            // Fix: stamp `params.max_tokens = 8000` (idempotent, only
             // when not already set). MAIC's `enforce_min_max_tokens()`
-            // raises the request's max_tokens to per-model floor (600),
-            // so 4000 here is the effective cap on the OUTBOUND request.
-            // Models with natural caps lower than 4000 (e.g., smaller
-            // distilled models) won't be hurt — MAIC clamps down to
-            // their native cap. Models with caps ≥ 4000 will simply be
-            // able to plan + emit tool calls without hitting the floor.
+            // raises the request's max_tokens to per-model floor (8000
+            // for kimi/deepseek/glm after Lesson 826), so 8000 here is
+            // the effective cap on the OUTBOUND request. The MAIC
+            // server's per-model floor was bumped in lockstep:
+            // `min_max_tokens_per_model["milagro-oc-kimi"]` 600 → 8000
+            // (defense-in-depth — protects mobile/scripts that don't
+            // stamp). The plugin modelCatalog also declares per-model
+            // `maxOutputTokens` so OpenClaw's gateway picks the right
+            // value per model instead of relying on a single global
+            // stamp.
+            //
+            // For models with native caps lower than 8000 (local small
+            // models), MAIC/Ollama clamps down to their natural cap.
+            // For models with caps ≥ 8000 (Kimi on Ollama Cloud proven
+            // via direct probe), the model can now plan + emit tool
+            // calls + produce visible answer without truncation.
             params
                 .entry("max_tokens".to_string())
-                .or_insert(Value::Number(serde_json::Number::from(4000u32)));
+                .or_insert(Value::Number(serde_json::Number::from(8000u32)));
             // Lesson 523 + 525: tier-gated tools array. Free → empty; paid → all 7.
             //
             // Lesson 525 (NEW 2026-08-21): empty array `[]` ALSO counts as
