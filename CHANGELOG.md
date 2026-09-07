@@ -5,6 +5,29 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0-rc55.19] — 2026-09-07 (Phone pairing: Phase 2.3 — HTTP server + 60s heartbeat)
+
+Adds the missing glue between Phase 2.2's Tauri commands and a real phone on the network: a loopback HTTP server that the phone talks to (POST /pair/initiate), and a 60-second heartbeat that tells MAIC where to dial back.
+
+**New files**:
+- **`src-tauri/src/pairing_server.rs`** (~19.7KB): tiny_http 0.12 listener bound to `0.0.0.0:0` (ephemeral port — OS picks, no firewall dialogs). Endpoints:
+  - `GET  /pair/health` → `{ok, instance_id, bound_port}`
+  - `POST /pair/initiate` → `{session_id, encrypted_secret_b64, ephemeral_pubkey_b64, capabilities, expires_at}`
+  Returns 200/400/404/405/503 with `{error, message}` JSON. `start()` returns `Arc<PairingServerState>` so the heartbeat thread + Tauri shutdown handler share ownership.
+- **`src-tauri/src/pairing_heartbeat.rs`** (~14.9KB): 60s ticker → `PUT /v1/users/me/desktops/{id}/heartbeat` with the local endpoint URL (Tailscale IP if available, else 127.0.0.1) so MAIC can dial back. Caches the IP+port in `CachedEndpoint`. Tolerates MAIC 404 (cold-boot race — caller hasn't registered yet → retries next tick). `stop()` flips a shared `Arc<AtomicBool>` shutdown flag (rc55.18 WIP bug fix: stop() previously owned the only Arc, the thread had no exit signal).
+
+**Modified**:
+- **`src-tauri/src/lib.rs`**: spawns `pairing_server::start` then `pairing_heartbeat::start` at end of `setup()` (best-effort, bind failure logs and continues). `RunEvent::Exit` / `ExitRequested` stops both in reverse order (heartbeat first, then server). `AppState` gained two `Mutex<Option<...>>` fields for the join handles. Bind address overridable via `MC_PAIRING_BIND` env var (default `0.0.0.0:0`).
+- **`src-tauri/src/pairing_commands.rs`**: `MaicHttp` trait gained `put_heartbeat()` with `LiveMaicHttp` impl (PUT path + body shape).
+
+**Tests**:
+- **`src-tauri/tests/pairing_commands_test.rs`** (+309 lines): 7 new integration tests driving the real `pairing_server` over loopback HTTP — health (empty + post-register), initiate 503/400 paths, 404/405 unknown routes, and a full end-to-end handshake that decrypts via `phone_decrypt_handshake` to confirm wire-compat survives the HTTP layer.
+
+**Verified**:
+- `cargo test --lib` — 218 pass
+- `cargo test --test pairing_commands_test` — 20 pass (13 prior + 7 new)
+- WIP on rc55.18 → clean commit on rc55.18; bumped to rc55.19
+
 ## [v1.1.0-rc55.18] — 2026-08-30 (Tasks help/tutorial + bash_run `python -c` quoting)
 
 ### Tasks help/tutorial page (David's 2026-08-30 request)
