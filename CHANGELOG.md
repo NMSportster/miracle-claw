@@ -5,6 +5,75 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0-rc55.22] — 2026-09-08 (Workflows / specialists — OpenProse integration)
+
+Adds subagent-style parallel workflows to MC without bolting on a custom orchestrator. We bundle and surface the existing OpenProse extension, stamp it on at bootstrap (Lesson 535 pattern), and ship a curated 6-workflow + 6-specialist library plus a Workflow Center UI. This is the feature customers ask about most after seeing Claude Code's "tasks" — but ours uses plain English, no `.prose` filenames, and works from the Terminal tile too.
+
+**User-facing framing** (Lesson 832):
+- `.prose` program → **Workflow**
+- `agent name:` → **Specialist**
+- "Workers" window → **Workflow Center**
+- "subagents running" → "3 specialists working in parallel"
+
+**New surfaces**:
+- **Workflow Center page** (`src/pages/workflows.js`): gradient hero, 6 workflow tiles + 6 specialist tiles, run modal with one text field, live transcript, completion receipt.
+- **Dashboard tile**: ✨ "Workflows" with description of the parallel-specialists model.
+- **Cmd-K palette**: `workflow, specialist, team, parallel, review, plan, explore, debug` keywords + 6 "Quick workflow" entries (Explore 🔍, Code Review 🔎, Fix Tests 🛠, Plan a Project 📋, Pair Debug 🐞, Docs From Code 📝).
+- **Terminal `prose>` REPL**: a third shell option in the Terminal tile picker. Lets keyboard-first users run workflows from inside the TUI without opening a separate page.
+
+**Built-in library** (`src-tauri/resources/prose-library/`):
+- **6 workflows**: `explore.prose`, `code-review.prose`, `fix-tests.prose`, `plan-project.prose`, `pair-debug.prose`, `docs-from-code.prose`.
+- **6 specialists**: `@explorer`, `@reviewer`, `@tester`, `@docwriter`, `@planner`, `@debugger`.
+- Each `.prose` file ships in git AND in the installer (`tauri.conf.json` resources list); library resolution looks in `prose-library/` first, then falls back to the bundled `dist/extensions/open-prose/skills/prose/examples/`.
+
+**Tauri commands** (`src-tauri/src/prose_host.rs`):
+- `prose_run(file_or_slug, user_input)` — compiles, stamps OpenProse plugin enabled, spawns node child, returns `session_id`
+- `prose_compile(file_or_slug)` — pre-flight syntax check
+- `prose_poll(session_id, last_seq)` — buffered chunks since last seq, plus `finished: bool`
+- `prose_kill(session_id)` — graceful SIGTERM
+- `prose_examples()` — list bundled workflows/specialists for the picker
+
+**Model alias rewriter** (`src-tauri/src/prose_model_map.rs`): strips hard-coded model names like `sonnet` / `haiku` from `.prose` files at compile time and rewrites them to local MAIC aliases (`milagro-dev`, `milagro-m1-t2`, etc.) so user-authored files run on whatever MAIC has available. The original `.prose` file on disk is **never** modified — the rewrite happens to a temp file before the VM spawns.
+
+**Real-time streaming** (Phase 2):
+- `ProseHandle` emits `prose:chunk` + `prose:status` Tauri events as the child writes output.
+- Frontend listens once per mount, filters by `session_id`, auto-scrolls only if user is within 80px of bottom.
+- 1s poll loop stays as a safety net (catches chunks during backgrounded webviews).
+- Status pill animates 600ms ease-out on transition only — calm steady-state by default.
+
+**Dashboard banner** (Phase 5):
+- After kicking off a workflow, user can navigate back to dashboard; a banner above the tiles reads "Code Review is running" with a calm 2.4s pulse.
+- Click the banner → reopens Workflow Center with the live run panel.
+- Banner survives page navigations via `sessionStorage` (`mc.workflows.active_run.v1`); clears on Close.
+
+**Recipes** (Phase 4):
+- Every successful run records `{ workflow, goal, lastUsed }` to `localStorage` under `mc.workflows.recipes.v1`.
+- Recipes tab in the hero opens a panel with full history; "Re-run" prefills the modal, "Forget" deletes.
+- Per-tile "Re-run" hint shows "Last used 2h ago" when a recipe exists.
+
+**Receipts** (Phase 4):
+- On completion, a slide-up card summarizes the run in plain English.
+- "All clear" / "lines looked unusual" / "you stopped this run" / "something went wrong" depending on `status × stderr`.
+- Stats grid: lines streamed, stderr lines, elapsed time.
+
+**Lesson 535 applied** to OpenProse:
+- `stamp_plugin_entry(cfg, "open-prose")` generalizes the existing `maic` stamper.
+- Plugin manifest at `depot/maic-plugin/openclaw.plugin.json` registers the entry so it survives a fresh install.
+
+**Lessons added to MEMORY**:
+- Lesson 829: Terminal tile ≠ headless CLI (interactive REPL vs unattended invocation)
+- Lesson 830: tool catalog unification across chat / Terminal `prose>` / Workers
+- Lesson 831: UI polish contract — Workflows matches MC tile style + Cmd-K integration
+- Lesson 832: user-facing terminology (`.prose` → Workflow, `agent name:` → Specialist)
+- Lesson 833: subagents / workflows design + 5 phases of implementation
+- 16 anti-patterns (AP-833-A through AP-833-O) covering wrong fixes found along the way
+
+**Test counts**: 236 Rust + 13 JS = 249 tests, all passing, zero regressions.
+
+**Notes**:
+- Multi-window integration (open run in a new Tauri window) was dropped from Phase 4 after Lesson 491 — `WebviewWindowBuilder.build()` deterministically hangs David's WebView2 init. The dashboard banner is the working alternative.
+- 7 unpushed commits ahead of origin/master as of build time.
+
 ## [v1.1.0-rc55.21] — 2026-09-07 (Silence toolsBinaryPath DIAG noise from Terminal chat)
 
 David reported the line `[maic-plugin DIAG] toolsBinaryPath resolved: C:\Users\Adeal\AppData\Roaming\MiracleClaw\extensions\maic\miracle-claw-tools.exe` was repeating in Terminal chat output — once per tool call (`bash_run`, `read_file`, `list_dir`, etc.). Customers don't need to see diagnostic resolution logging in their chat; that's a load-bearing chat stream, not a log.
