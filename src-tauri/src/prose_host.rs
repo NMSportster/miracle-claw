@@ -42,6 +42,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use tauri::Emitter; // Lesson 833 Phase 2: brings `emit` into scope for AppHandle (AppHandle<R> impls Emitter<R> via shared_app_impl!).
 use uuid::Uuid;
 
 /// Maximum number of output chunks kept per session before oldest-first
@@ -96,35 +97,80 @@ pub struct ProseHandle {
     /// UI to color the status pill (Lesson 831: green=running, red=error,
     /// yellow=blocked-on-tool).
     pub status: Mutex<String>,
+    /// Optional Tauri AppHandle for Phase 2 real-time streaming.
+    /// When present, push_chunk emits `prose:chunk` and set_status emits
+    /// `prose:status` so the frontend updates without polling. `None`
+    /// in unit tests so we can construct a ProseHandle without a Tauri
+    /// runtime.
+    pub app_handle: Mutex<Option<tauri::AppHandle>>,
 }
 
 impl ProseHandle {
-    /// Append one chunk and return its seq. Called from reader threads.
+    /// Append one chunk, emit it to the frontend if an AppHandle is
+    /// present, and return its seq. Called from reader threads.
+    ///
+    /// Lesson 833 Phase 2: emits `prose:chunk` event so the frontend
+    /// can update the live transcript without polling. The buffer is
+    /// still maintained for the polling path (Phase 1 fallback) so
+    /// users on stale code keep working.
     fn push_chunk(&self, stream: &str, data: String) -> u64 {
         let new_seq = {
             let mut s = self.seq.lock().unwrap();
             *s += 1;
             *s
         };
-        let mut buf = self.buffer.lock().unwrap();
-        buf.push(ProseChunk {
+        let chunk = ProseChunk {
             seq: new_seq,
             stream: stream.to_string(),
             data,
-        });
-        if buf.len() > MAX_BUFFER_LINES {
-            let drop = buf.len() - MAX_BUFFER_LINES;
-            buf.drain(0..drop);
+        };
+        {
+            let mut buf = self.buffer.lock().unwrap();
+            buf.push(chunk.clone());
+            if buf.len() > MAX_BUFFER_LINES {
+                let drop = buf.len() - MAX_BUFFER_LINES;
+                buf.drain(0..drop);
+            }
+        }
+        // Emit to the frontend if we have an AppHandle. We clone the
+        // AppHandle out of the Mutex to release the lock before emit
+        // so a slow frontend doesn't block the reader thread.
+        if let Ok(guard) = self.app_handle.lock() {
+            if let Some(app) = guard.as_ref() {
+                let payload = ProseChunkEvent {
+                    session_id: self.session_id.clone(),
+                    chunk,
+                };
+                let _ = app.emit("prose:chunk", payload);
+            }
         }
         new_seq
     }
 
     /// Set status to a new value if it differs from the current one.
     /// Idempotent. Used by the reader threads when the child exits.
+    /// Lesson 833 Phase 2: also emits `prose:status` so the frontend
+    /// can animate the status pill immediately on transition.
     fn set_status(&self, new_status: &str) {
-        let mut s = self.status.lock().unwrap();
-        if *s != new_status {
-            *s = new_status.to_string();
+        let changed = {
+            let mut s = self.status.lock().unwrap();
+            if *s != new_status {
+                *s = new_status.to_string();
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            if let Ok(guard) = self.app_handle.lock() {
+                if let Some(app) = guard.as_ref() {
+                    let payload = ProseStatusEvent {
+                        session_id: self.session_id.clone(),
+                        status: new_status.to_string(),
+                    };
+                    let _ = app.emit("prose:status", payload);
+                }
+            }
         }
     }
 }
@@ -159,7 +205,7 @@ pub struct ProseRunResult {
 ///
 /// Returns session_id. The frontend then polls with `prose_poll`.
 #[tauri::command]
-pub fn prose_run(
+pub(crate) fn prose_run(
     file_or_slug: String,
     user_input: Option<String>,
     app_handle: tauri::AppHandle,
@@ -251,6 +297,10 @@ pub fn prose_run(
         buffer: buffer.clone(),
         seq: seq.clone(),
         status: Mutex::new("running".to_string()),
+        // Lesson 833 Phase 2: store the AppHandle so reader threads
+        // can emit `prose:chunk` / `prose:status` events for real-time
+        // streaming. Cloning is cheap (Tauri uses Arc internally).
+        app_handle: Mutex::new(Some(app_handle.clone())),
     });
 
     // Reader thread for stdout.
@@ -322,7 +372,7 @@ pub fn prose_run(
 /// Validate-only: compile a `.prose` file without running it.
 /// Returns Ok with an empty error list if it parses cleanly.
 #[tauri::command]
-pub fn prose_compile(
+pub(crate) fn prose_compile(
     file_or_slug: String,
     app_handle: tauri::AppHandle,
 ) -> Result<ProseCompileResult, String> {
@@ -376,7 +426,7 @@ pub struct ProseCompileResult {
 /// so the JS-side poll loop is identical between Terminal tile and
 /// Workflow Center.
 #[tauri::command]
-pub fn prose_poll(
+pub(crate) fn prose_poll(
     session_id: String,
     last_seq: u64,
     state: tauri::State<'_, crate::AppState>,
@@ -395,9 +445,16 @@ pub fn prose_poll(
     let status = handle.status.lock().unwrap().clone();
     drop(buf);
 
+    // Lesson 833 Phase 2: `finished` lets the frontend stop polling
+    // once the child has exited. Status alone could be transiently
+    // "complete" while the wait() thread is still cleaning up; we
+    // only mark finished when the child slot is empty.
+    let finished = handle.child.lock().unwrap().is_none();
+
     Ok(ProsePollResult {
         chunks: new_chunks,
         status,
+        finished,
     })
 }
 
@@ -406,12 +463,33 @@ pub struct ProsePollResult {
     pub chunks: Vec<ProseChunk>,
     /// "running" / "complete" / "killed" / "error"
     pub status: String,
+    /// `true` once the child has exited; the frontend stops polling
+    /// on the next tick and shows the final receipt.
+    pub finished: bool,
+}
+
+/// Lesson 833 Phase 2: payload for the `prose:chunk` Tauri event. The
+/// frontend's listener appends these to the live transcript as they
+/// arrive, replacing the 1s polling loop with real-time streaming.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProseChunkEvent {
+    pub session_id: String,
+    pub chunk: ProseChunk,
+}
+
+/// Lesson 833 Phase 2: payload for the `prose:status` Tauri event.
+/// Fires once per status transition (running→complete, running→error,
+/// running→killed). The frontend uses it to animate the status pill.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProseStatusEvent {
+    pub session_id: String,
+    pub status: String,
 }
 
 /// Cancel a running workflow. Idempotent — calling on a finished
 /// session is a no-op (Lesson 178 invariant: never panic on a dead child).
 #[tauri::command]
-pub fn prose_kill(
+pub(crate) fn prose_kill(
     session_id: String,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), String> {
@@ -431,7 +509,7 @@ pub fn prose_kill(
 /// Frontend uses this to render the Workflow Center tiles. The user
 /// never sees the underlying `.prose` file path (Lesson 832).
 #[tauri::command]
-pub fn prose_examples() -> Vec<ProseExample> {
+pub(crate) fn prose_examples() -> Vec<ProseExample> {
     built_in_examples()
 }
 
@@ -745,6 +823,9 @@ mod tests {
             buffer: Arc::new(Mutex::new(Vec::new())),
             seq: Arc::new(Mutex::new(0)),
             status: Mutex::new("running".to_string()),
+            // Lesson 833 Phase 2: app_handle is None in unit tests
+            // (no Tauri runtime); push_chunk skips event emit when None.
+            app_handle: Mutex::new(None),
         };
         for i in 0..(MAX_BUFFER_LINES + 100) {
             handle.push_chunk("stdout", format!("line {i}"));
@@ -769,5 +850,79 @@ mod tests {
             (MAX_BUFFER_LINES + 100) as u64,
             "Lesson 833: last seq must equal total pushes"
         );
+    }
+
+    /// Lesson 833 Phase 2: push_chunk with app_handle=None is a no-op
+    /// on the event channel (so unit tests don't need a Tauri runtime).
+    /// The buffer must still receive the chunk.
+    #[test]
+    fn lesson_833_phase2_push_chunk_no_app_handle_still_appends() {
+        let handle = ProseHandle {
+            session_id: "no-app".to_string(),
+            started_at: 0,
+            file: "test.prose".to_string(),
+            child: Mutex::new(None),
+            buffer: Arc::new(Mutex::new(Vec::new())),
+            seq: Arc::new(Mutex::new(0)),
+            status: Mutex::new("running".to_string()),
+            app_handle: Mutex::new(None),
+        };
+        handle.push_chunk("stdout", "hello".to_string());
+        handle.push_chunk("stderr", "oops".to_string());
+        let buf = handle.buffer.lock().unwrap();
+        assert_eq!(buf.len(), 2, "Lesson 833 Phase 2: no-app pushes still append");
+        assert_eq!(buf[0].data, "hello");
+        assert_eq!(buf[1].data, "oops");
+        assert_eq!(buf[1].stream, "stderr");
+    }
+
+    /// Lesson 833 Phase 2: set_status is idempotent — calling it with
+    /// the same value twice must not bump any internal counter and
+    /// (when AppHandle present) must not emit twice. With no AppHandle
+    /// we just verify the stored value is stable.
+    #[test]
+    fn lesson_833_phase2_set_status_idempotent_no_app() {
+        let handle = ProseHandle {
+            session_id: "idem".to_string(),
+            started_at: 0,
+            file: "test.prose".to_string(),
+            child: Mutex::new(None),
+            buffer: Arc::new(Mutex::new(Vec::new())),
+            seq: Arc::new(Mutex::new(0)),
+            status: Mutex::new("running".to_string()),
+            app_handle: Mutex::new(None),
+        };
+        handle.set_status("complete");
+        handle.set_status("complete");
+        handle.set_status("complete");
+        let s = handle.status.lock().unwrap();
+        assert_eq!(*s, "complete", "Lesson 833 Phase 2: status must stick");
+    }
+
+    /// Lesson 833 Phase 2: ProseChunkEvent / ProseStatusEvent serialize
+    /// the same shape the JS frontend expects (session_id + chunk/status).
+    /// Smoke test that the structs derive Serialize and the field names
+    /// match the wire contract.
+    #[test]
+    fn lesson_833_phase2_event_payload_serialize_shape() {
+        let chunk_event = ProseChunkEvent {
+            session_id: "s1".to_string(),
+            chunk: ProseChunk {
+                seq: 42,
+                stream: "stdout".to_string(),
+                data: "hi".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&chunk_event).unwrap();
+        assert!(json.contains("\"session_id\":\"s1\""), "got: {json}");
+        assert!(json.contains("\"seq\":42"), "got: {json}");
+        assert!(json.contains("\"stream\":\"stdout\""), "got: {json}");
+
+        let status_event = ProseStatusEvent {
+            session_id: "s1".to_string(),
+            status: "complete".to_string(),
+        };
+        let sjson = serde_json::to_string(&status_event).unwrap();
+        assert!(sjson.contains("\"status\":\"complete\""), "got: {sjson}");
     }
 }

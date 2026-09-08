@@ -4626,6 +4626,19 @@ kbd {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  /* Lesson 831: calm by default. The flash animation only fires when
+     a status transition lands, so steady-state stays quiet. */
+  transition: color 180ms ease;
+}
+
+.workflows-active-status-flash {
+  animation: workflows-status-flash 600ms ease-out 1;
+}
+
+@keyframes workflows-status-flash {
+  0%   { opacity: 0.45; transform: scale(0.94); }
+  60%  { opacity: 1;    transform: scale(1.04); }
+  100% { opacity: 1;    transform: scale(1); }
 }
 
 .workflows-active-output {

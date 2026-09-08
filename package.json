@@ -9,7 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test:js": "node src/secrets/preprocessor.test.mjs"
+    "test:js": "node src/secrets/preprocessor.test.mjs && node --test src/pages/workflows.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

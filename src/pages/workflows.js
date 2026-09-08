@@ -40,6 +40,28 @@ async function invoke(cmd, args) {
   return window.__TAURI_INTERNALS__.invoke(cmd, args);
 }
 
+// Lesson 833 Phase 2: real-time streaming via Tauri events. The Rust
+// prose_host emits `prose:chunk` and `prose:status` for each line
+// written to the buffer, so we can update the live transcript without
+// waiting for the 1s poll cycle. Polling is retained as a safety net
+// (e.g. if the listener misses a chunk during a navigation event).
+async function listen(event, handler) {
+  // Tauri 2 exposes listen on the global window.__TAURI__.event object
+  // when the @tauri-apps/api/event module is bundled in. We try the
+  // dynamic import first; fall back to the internals if needed.
+  try {
+    const ev = await import("@tauri-apps/api/event");
+    return await ev.listen(event, handler);
+  } catch (e) {
+    // Older build: use the legacy window.__TAURI__.event.listen
+    const legacy = window.__TAURI__?.event;
+    if (legacy && typeof legacy.listen === "function") {
+      return await legacy.listen(event, handler);
+    }
+    throw new Error("Tauri event API not available: " + e);
+  }
+}
+
 function el(tag, attrs = {}, children = []) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -104,6 +126,10 @@ const _state = {
   activeWorkflowName: null,
   pollTimer: null,
   lastSeq: 0,
+  // Lesson 833 Phase 2: unlisten handles for Tauri events. Set when
+  // mount() registers listeners, cleared on unmount().
+  unlistenChunk: null,
+  unlistenStatus: null,
 };
 
 async function mount(root) {
@@ -174,6 +200,35 @@ async function mount(root) {
   // Active run panel — only visible when a session is running or just finished.
   _state.activePanel = el("div", { class: "workflows-active", style: "display: none;" });
   wrap.appendChild(_state.activePanel);
+
+  // Lesson 833 Phase 2: register Tauri event listeners for real-time
+  // streaming. The Rust prose_host emits `prose:chunk` and `prose:status`
+  // for each line written to the buffer. Polling stays as a safety net
+  // (1s interval) — events drive the visible update; the poll catches
+  // anything that was missed while the page was hidden.
+  //
+  // We register ONCE per mount (not per run) and filter by session_id
+  // so we don't leak listeners across remounts. The unlisten functions
+  // are stored on _state and called in unmount().
+  try {
+    _state.unlistenChunk = await listen("prose:chunk", (event) => {
+      const payload = event?.payload;
+      if (!payload) return;
+      if (payload.session_id !== _state.activeSessionId) return; // not ours
+      onProseChunk(payload.chunk);
+    });
+    _state.unlistenStatus = await listen("prose:status", (event) => {
+      const payload = event?.payload;
+      if (!payload) return;
+      if (payload.session_id !== _state.activeSessionId) return;
+      onProseStatus(payload.status);
+    });
+  } catch (e) {
+    // No Tauri runtime (e.g. unit test) — fall back to polling only.
+    // The active panel still works via the existing pollOnce path.
+    _state.unlistenChunk = null;
+    _state.unlistenStatus = null;
+  }
 }
 
 function renderWorkflowTile(wf) {
@@ -396,11 +451,26 @@ function showActivePanelComplete(status, chunks) {
   if (!_state.activePanel) return;
   const out = _state.activePanel.querySelector("#workflows-active-output");
   if (out) {
-    // Replace the placeholder with the final output.
-    out.innerHTML = "";
+    // Lesson 833 Phase 2: events have already appended live chunks up
+    // to lastSeq. The final poll may include any chunks emitted after
+    // the last seen event (system receipt line, race window). Dedupe
+    // by seq so the same line never appears twice.
+    const seen = new Set();
+    out.querySelectorAll(".workflows-active-line").forEach((node) => {
+      const seqAttr = node.getAttribute("data-seq");
+      if (seqAttr) seen.add(Number(seqAttr));
+    });
     for (const c of chunks) {
+      if (c.seq <= _state.lastSeq && seen.has(c.seq)) continue;
       out.appendChild(
-        el("div", { class: `workflows-active-line stream-${c.stream}` }, [c.data]),
+        el(
+          "div",
+          {
+            class: `workflows-active-line stream-${c.stream}`,
+            "data-seq": String(c.seq),
+          },
+          [c.data],
+        ),
       );
     }
     // Receipt at the bottom — Lesson 832: tell the user what just happened
@@ -455,6 +525,53 @@ async function killActive() {
 
 // ----- Polling ------------------------------------------------------------
 
+// Lesson 833 Phase 2: real-time streaming via Tauri events. Each chunk
+// arrives as soon as the Rust reader thread writes it to the buffer —
+// no 1s poll lag. The poll loop stays as a safety net (see startPolling)
+// but the user-visible updates come through these handlers first.
+function onProseChunk(chunk) {
+  if (!chunk) return;
+  const out = _state.activePanel?.querySelector("#workflows-active-output");
+  if (!out) return; // panel not visible yet — pollOnce will pick it up
+  // Skip system lines in the live view; we show them in the receipt.
+  if (chunk.stream === "system") {
+    _state.lastSeq = chunk.seq;
+    return;
+  }
+  const placeholder = out.querySelector(".workflows-active-placeholder");
+  if (placeholder) placeholder.remove();
+  out.appendChild(
+    el(
+      "div",
+      {
+        class: `workflows-active-line stream-${chunk.stream}`,
+        "data-seq": String(chunk.seq),
+      },
+      [chunk.data],
+    ),
+  );
+  // Auto-scroll if the user is already at the bottom (don't yank them
+  // away from reading earlier output). Lesson 831: calm UX, no fighting
+  // the user.
+  const nearBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 80;
+  if (nearBottom) {
+    out.scrollTop = out.scrollHeight;
+  }
+  _state.lastSeq = chunk.seq;
+}
+
+function onProseStatus(status) {
+  const headerStatus = _state.activePanel?.querySelector(".workflows-active-status");
+  if (!headerStatus) return;
+  headerStatus.textContent = STATUS_LABEL[status] || status;
+  headerStatus.style.color = STATUS_COLOR[status] || STATUS_COLOR.complete;
+  // Animate on transition (Lesson 831: pulse only when changing).
+  headerStatus.classList.remove("workflows-active-status-flash");
+  // Force reflow so the animation re-triggers even on identical status.
+  void headerStatus.offsetWidth;
+  headerStatus.classList.add("workflows-active-status-flash");
+}
+
 function startPolling() {
   stopPolling();
   _state.pollTimer = setInterval(pollOnce, 1000);
@@ -488,20 +605,30 @@ async function pollOnce() {
 
   const out = _state.activePanel?.querySelector("#workflows-active-output");
   if (out && result.chunks && result.chunks.length > 0) {
-    // Append new chunks live (no re-render of existing lines).
+    // Lesson 833 Phase 2: events drive live appending. The poll here
+    // is a safety net — only render chunks with seq > lastSeq, since
+    // anything <= lastSeq was already shown via the prose:chunk event.
     for (const c of result.chunks) {
+      if (c.seq <= _state.lastSeq) continue;
       // Skip system lines in the live view; we show them in the receipt.
-      if (c.stream === "system") continue;
+      if (c.stream === "system") {
+        _state.lastSeq = c.seq;
+        continue;
+      }
       const placeholder = out.querySelector(".workflows-active-placeholder");
       if (placeholder) placeholder.remove();
       out.appendChild(
-        el("div", { class: `workflows-active-line stream-${c.stream}` }, [c.data]),
+        el(
+          "div",
+          {
+            class: `workflows-active-line stream-${c.stream}`,
+            "data-seq": String(c.seq),
+          },
+          [c.data],
+        ),
       );
       _state.lastSeq = c.seq;
     }
-  } else if (result.chunks && result.chunks.length > 0) {
-    // Still bump lastSeq for system chunks so we don't double-show them.
-    _state.lastSeq = result.chunks[result.chunks.length - 1].seq;
   }
 
   // Update header status pill live.
@@ -538,6 +665,17 @@ function unmount() {
   stopPolling();
   closeModal();
   clearActivePanel();
+  // Lesson 833 Phase 2: detach the Tauri event listeners we registered
+  // in mount(). If we don't, Tauri keeps invoking the handler with
+  // stale closures after the page is gone, leaking memory.
+  if (_state.unlistenChunk) {
+    try { _state.unlistenChunk(); } catch (e) { /* idempotent */ }
+    _state.unlistenChunk = null;
+  }
+  if (_state.unlistenStatus) {
+    try { _state.unlistenStatus(); } catch (e) { /* idempotent */ }
+    _state.unlistenStatus = null;
+  }
 }
 
 register("workflows", {
