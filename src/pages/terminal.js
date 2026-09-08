@@ -91,6 +91,7 @@ function shellOptionsForOS(os) {
   if (os === "windows") {
     return [
       { value: "mc-openclaw", label: "OpenClaw TUI (mc-openclaw)" },
+      { value: "prose", label: "Workflow REPL (prose)" },
       { value: "cmd", label: "Command Prompt (cmd.exe)" },
       { value: "pwsh", label: "PowerShell 7 (pwsh.exe)" },
       { value: "wsl", label: "WSL bash" },
@@ -98,6 +99,7 @@ function shellOptionsForOS(os) {
   }
   return [
     { value: "mc-openclaw", label: "OpenClaw TUI (mc-openclaw)" },
+    { value: "prose", label: "Workflow REPL (prose)" },
     { value: "bash", label: "bash" },
     { value: "sh", label: "sh" },
     { value: "zsh", label: "zsh" },
@@ -176,6 +178,13 @@ export const terminalPage = {
     };
 
     const startSession = async (shell) => {
+      // Lesson 833 Phase 3: "prose" is the Workflow REPL — it manages
+      // its own session lifecycle via the Run button. The shell picker
+      // change should not auto-start a workflow; just no-op.
+      if (shell === "prose") {
+        setStatus("alive", "prose", "workflow REPL ready");
+        return;
+      }
       try {
         sessionId = await invoke("mc_terminal_start", { shell });
         lastSeq = 0;
@@ -348,12 +357,52 @@ export const terminalPage = {
           <button type="submit" class="primary-button">Send</button>
         </form>
 
-        <div class="dashboard-footer">
+        <div class="dashboard-footer terminal-footer-shells">
           <span class="muted small">
             xterm.js terminal emulator — full PTY rendering, scrollback,
             colors. This is an UNSANDBOXED shell — anything you type
             here runs as your user.
           </span>
+        </div>
+
+        <div class="dashboard-footer terminal-footer-prose" style="display:none;">
+          <span class="muted small">
+            Workflow REPL — pick a workflow, give it a goal, and watch
+            your team work. Each run uses your local MAIC models; no API
+            charges.
+          </span>
+        </div>
+
+        <!-- Lesson 833 Phase 3: Workflow REPL inside the Terminal tile.
+             Shown only when the shell picker selects "prose". The
+             workflow dropdown + goal input + Run button + live transcript
+             below replaces the xterm + shell input above. -->
+        <div id="prose-repl" class="prose-repl" style="display:none;">
+          <div class="prose-repl-form">
+            <label class="prose-repl-label">
+              Workflow:
+              <select id="prose-repl-workflow" class="prose-repl-select"></select>
+            </label>
+            <input
+              type="text"
+              id="prose-repl-goal"
+              class="prose-repl-goal"
+              placeholder="What should this workflow look at?"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button type="button" id="prose-repl-run" class="primary-button">
+              Run
+            </button>
+            <button type="button" id="prose-repl-cancel" class="link-button" style="display:none;">
+              Cancel
+            </button>
+          </div>
+          <div class="prose-repl-status">
+            <span id="prose-repl-pill" class="prose-repl-pill" data-state="idle">idle</span>
+            <span id="prose-repl-summary" class="prose-repl-summary"></span>
+          </div>
+          <div id="prose-repl-output" class="prose-repl-output" aria-live="polite"></div>
         </div>
       </div>
     `;
@@ -442,8 +491,31 @@ export const terminalPage = {
 
     const sel = document.getElementById("terminal-shell-select");
     sel.value = initialShell;
+    // Lesson 833 Phase 3: when the user picks "prose" from the shell
+    // dropdown, swap the xterm + shell input row for the workflow
+    // REPL. When they pick anything else, swap back. We don't run a
+    // session on swap; the workflow REPL is session-less until the
+    // user clicks Run.
+    function applyShellVisibility(shellValue) {
+      const isProse = shellValue === "prose";
+      document.getElementById("terminal-output")?.style.setProperty("display", isProse ? "none" : "");
+      document.getElementById("terminal-input-form")?.style.setProperty("display", isProse ? "none" : "");
+      document.querySelector(".terminal-footer-shells")?.style.setProperty("display", isProse ? "none" : "");
+      document.querySelector(".terminal-footer-prose")?.style.setProperty("display", isProse ? "" : "none");
+      document.getElementById("prose-repl")?.style.setProperty("display", isProse ? "" : "none");
+      document.getElementById("terminal-restart")?.style.setProperty("display", isProse ? "none" : "");
+      document.getElementById("terminal-kill")?.style.setProperty("display", isProse ? "none" : "");
+      // xterm renderer + resize hooks don't apply to the prose REPL.
+      if (isProse) term?.blur?.();
+    }
+    applyShellVisibility(initialShell);
     sel.addEventListener("change", async () => {
       safeLocalSet("mc.terminal.shell", sel.value);
+      // If the user switches away from prose while a workflow is
+      // running, kill it cleanly — we don't want orphan sessions.
+      if (proseRepl.sessionId) await killProseReplSession();
+      stopProseReplPolling();
+      applyShellVisibility(sel.value);
       if (sessionId) await killSession();
       await startSession(sel.value);
     });
@@ -462,6 +534,269 @@ export const terminalPage = {
     document.getElementById("terminal-back").addEventListener("click", () => {
       if (onBackToDashboard) onBackToDashboard();
     });
+
+    // ------------------------------------------------------------------
+    // Lesson 833 Phase 3: Workflow REPL inside the Terminal tile.
+    //
+    // When the user picks "prose" from the shell dropdown, the xterm +
+    // shell input row above is hidden and a workflow picker + live
+    // transcript pane (this `prose-repl` block) takes its place. The
+    // implementation reuses the same prose_host Tauri commands and
+    // events as the Workflow Center page; we just stream into a small
+    // transcript <div> instead of an xterm emulator (xterm would mangle
+    // model output that contains backticks, ANSI fragments, etc.).
+    // ------------------------------------------------------------------
+    const proseRepl = {
+      sessionId: null,
+      lastSeq: 0,
+      pollTimer: null,
+      unlistenChunk: null,
+      unlistenStatus: null,
+      workflowFile: null,
+      workflowName: null,
+    };
+
+    async function proseInvoke(cmd, args) {
+      if (!window.__TAURI_INTERNALS__?.invoke) {
+        throw new Error("Tauri runtime not available");
+      }
+      return window.__TAURI_INTERNALS__.invoke(cmd, args);
+    }
+
+    async function proseListen(event, handler) {
+      try {
+        const ev = await import("@tauri-apps/api/event");
+        return await ev.listen(event, handler);
+      } catch (e) {
+        const legacy = window.__TAURI__?.event;
+        if (legacy && typeof legacy.listen === "function") {
+          return await legacy.listen(event, handler);
+        }
+        throw new Error("Tauri event API not available: " + e);
+      }
+    }
+
+    function setProsePill(state, label) {
+      const pill = document.getElementById("prose-repl-pill");
+      if (pill) {
+        pill.dataset.state = state;
+        pill.textContent = label;
+      }
+    }
+
+    function setProseSummary(text) {
+      const sum = document.getElementById("prose-repl-summary");
+      if (sum) sum.textContent = text || "";
+    }
+
+    function clearProseOutput() {
+      const out = document.getElementById("prose-repl-output");
+      if (out) out.innerHTML = "";
+    }
+
+    function appendProseLine(chunk) {
+      const out = document.getElementById("prose-repl-output");
+      if (!out) return;
+      if (chunk.stream === "system") return; // shown in summary instead
+      const line = document.createElement("div");
+      line.className = `prose-repl-line stream-${chunk.stream}`;
+      line.dataset.seq = String(chunk.seq);
+      line.textContent = chunk.data;
+      out.appendChild(line);
+      const nearBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 80;
+      if (nearBottom) out.scrollTop = out.scrollHeight;
+      proseRepl.lastSeq = chunk.seq;
+    }
+
+    function onProseReplChunk(chunk) {
+      // The event listener may fire for sessions other than ours (e.g.
+      // if a previous run was still active). The filter happens in the
+      // handler registered in startProseReplSession; here we trust the
+      // caller.
+      appendProseLine(chunk);
+    }
+
+    function onProseReplStatus(status) {
+      const labels = {
+        running: "running",
+        complete: "done",
+        killed: "cancelled",
+        error: "error",
+        idle: "idle",
+      };
+      setProsePill(status, labels[status] || status);
+      if (status === "complete" || status === "killed" || status === "error") {
+        const name = proseRepl.workflowName || "workflow";
+        setProseSummary(`Last run: ${name} — ${labels[status] || status}`);
+        const runBtn = document.getElementById("prose-repl-run");
+        const cancelBtn = document.getElementById("prose-repl-cancel");
+        if (runBtn) runBtn.disabled = false;
+        if (cancelBtn) cancelBtn.style.display = "none";
+      }
+    }
+
+    async function populateProseWorkflows() {
+      const sel = document.getElementById("prose-repl-workflow");
+      if (!sel) return;
+      try {
+        const examples = await proseInvoke("prose_examples", {});
+        const workflows = examples.filter((e) => e.kind === "workflow");
+        sel.innerHTML = workflows
+          .map(
+            (w) =>
+              `<option value="${escapeHtml(w.file)}">${escapeHtml(w.name)}</option>`,
+          )
+          .join("");
+        if (workflows[0]) {
+          sel.value = workflows[0].file;
+          proseRepl.workflowFile = workflows[0].file;
+          proseRepl.workflowName = workflows[0].name;
+        }
+        sel.addEventListener("change", () => {
+          const chosen = workflows.find((w) => w.file === sel.value);
+          if (chosen) {
+            proseRepl.workflowFile = chosen.file;
+            proseRepl.workflowName = chosen.name;
+          }
+        });
+      } catch (e) {
+        sel.innerHTML = `<option>Could not load workflows: ${escapeHtml(String(e))}</option>`;
+      }
+    }
+
+    async function pollProseReplOnce() {
+      if (!proseRepl.sessionId) return;
+      let result;
+      try {
+        result = await proseInvoke("prose_poll", {
+          sessionId: proseRepl.sessionId,
+          lastSeq: proseRepl.lastSeq,
+        });
+      } catch (e) {
+        setProsePill("error", "error");
+        setProseSummary(`poll failed: ${String(e)}`);
+        return;
+      }
+      if (result.chunks && result.chunks.length > 0) {
+        for (const c of result.chunks) {
+          if (c.seq <= proseRepl.lastSeq) continue;
+          if (c.stream !== "system") appendProseLine(c);
+          else proseRepl.lastSeq = c.seq;
+        }
+      }
+      onProseReplStatus(result.status);
+      if (result.finished) stopProseReplPolling();
+    }
+
+    function startProseReplPolling() {
+      stopProseReplPolling();
+      proseRepl.pollTimer = setInterval(pollProseReplOnce, 1000);
+      pollProseReplOnce();
+    }
+
+    function stopProseReplPolling() {
+      if (proseRepl.pollTimer) {
+        clearInterval(proseRepl.pollTimer);
+        proseRepl.pollTimer = null;
+      }
+    }
+
+    async function startProseReplSession() {
+      const goal = document.getElementById("prose-repl-goal")?.value?.trim();
+      if (!goal) {
+        setProseSummary("Tell the workflow what to look at first.");
+        return;
+      }
+      if (!proseRepl.workflowFile) {
+        setProseSummary("Pick a workflow first.");
+        return;
+      }
+      clearProseOutput();
+      proseRepl.lastSeq = 0;
+      setProsePill("running", "running");
+      setProseSummary(`Starting ${proseRepl.workflowName}…`);
+
+      const runBtn = document.getElementById("prose-repl-run");
+      const cancelBtn = document.getElementById("prose-repl-cancel");
+      if (runBtn) runBtn.disabled = true;
+      if (cancelBtn) cancelBtn.style.display = "";
+
+      let result;
+      try {
+        result = await proseInvoke("prose_run", {
+          fileOrSlug: proseRepl.workflowFile,
+          userInput: goal,
+        });
+      } catch (e) {
+        setProsePill("error", "error");
+        setProseSummary(`Couldn't start: ${String(e)}`);
+        if (runBtn) runBtn.disabled = false;
+        if (cancelBtn) cancelBtn.style.display = "none";
+        return;
+      }
+      proseRepl.sessionId = result.session_id;
+
+      // Register listeners that filter by our session_id. Re-register on
+      // every run so a stale handler from a previous run can't fire
+      // chunks into the new output pane.
+      if (proseRepl.unlistenChunk) {
+        try { proseRepl.unlistenChunk(); } catch (e) { /* idempotent */ }
+      }
+      if (proseRepl.unlistenStatus) {
+        try { proseRepl.unlistenStatus(); } catch (e) { /* idempotent */ }
+      }
+      try {
+        proseRepl.unlistenChunk = await proseListen("prose:chunk", (event) => {
+          const payload = event?.payload;
+          if (!payload || payload.session_id !== proseRepl.sessionId) return;
+          onProseReplChunk(payload.chunk);
+        });
+        proseRepl.unlistenStatus = await proseListen("prose:status", (event) => {
+          const payload = event?.payload;
+          if (!payload || payload.session_id !== proseRepl.sessionId) return;
+          onProseReplStatus(payload.status);
+        });
+      } catch (e) {
+        // No event API — fall back to polling only.
+        proseRepl.unlistenChunk = null;
+        proseRepl.unlistenStatus = null;
+      }
+
+      startProseReplPolling();
+    }
+
+    async function killProseReplSession() {
+      if (!proseRepl.sessionId) return;
+      try {
+        await proseInvoke("prose_kill", { sessionId: proseRepl.sessionId });
+      } catch (e) {
+        /* idempotent */
+      }
+      proseRepl.sessionId = null;
+      const runBtn = document.getElementById("prose-repl-run");
+      const cancelBtn = document.getElementById("prose-repl-cancel");
+      if (runBtn) runBtn.disabled = false;
+      if (cancelBtn) cancelBtn.style.display = "none";
+    }
+
+    // Hook up the form buttons.
+    document.getElementById("prose-repl-run")?.addEventListener("click", () => {
+      startProseReplSession();
+    });
+    document.getElementById("prose-repl-cancel")?.addEventListener("click", () => {
+      killProseReplSession();
+    });
+    document
+      .getElementById("prose-repl-goal")
+      ?.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          startProseReplSession();
+        }
+      });
+
+    // Populate the workflow dropdown once on mount.
+    populateProseWorkflows();
 
     // rc53.5 (feature/secrets-vault): toolbar 🔑 Secrets button.
     // Opens the secrets page as a fullscreen overlay on top of the

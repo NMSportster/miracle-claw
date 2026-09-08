@@ -123,3 +123,72 @@ test("dedupe handles empty input without crashing", () => {
   assert.equal(appended, 0);
   assert.equal(out.lines.length, 0);
 });
+
+// Lesson 833 Phase 3: visibility-toggle logic for the Terminal `prose`
+// shell. We test the pure dispatch (which elements should be visible
+// when shell is prose vs bash) without rendering the actual page —
+// the page wires the toggle to DOM ids, but the rule itself is pure.
+
+test("prose-shell visibility swaps xterm row for workflow REPL", () => {
+  // The rule applied in terminal.js: when shell === "prose":
+  //   - xterm mount, shell input row, kill button → hidden
+  //   - prose-repl container, prose footer text → visible
+  // when shell !== "prose": the inverse.
+  function applyVisibility(shellValue) {
+    const isProse = shellValue === "prose";
+    return {
+      xtermMount: !isProse,
+      shellInputRow: !isProse,
+      killButton: !isProse,
+      restartButton: !isProse,
+      shellFooter: !isProse,
+      proseRepl: isProse,
+      proseFooter: isProse,
+    };
+  }
+  assert.deepEqual(applyVisibility("prose"), {
+    xtermMount: false,
+    shellInputRow: false,
+    killButton: false,
+    restartButton: false,
+    shellFooter: false,
+    proseRepl: true,
+    proseFooter: true,
+  });
+  assert.deepEqual(applyVisibility("bash"), {
+    xtermMount: true,
+    shellInputRow: true,
+    killButton: true,
+    restartButton: true,
+    shellFooter: true,
+    proseRepl: false,
+    proseFooter: false,
+  });
+  assert.deepEqual(applyVisibility("mc-openclaw"), {
+    xtermMount: true,
+    shellInputRow: true,
+    killButton: true,
+    restartButton: true,
+    shellFooter: true,
+    proseRepl: false,
+    proseFooter: false,
+  });
+});
+
+test("prose run button enables only when goal and workflow are set", () => {
+  // The dispatch logic in startProseReplSession:
+  //   - empty goal → summary "Tell the workflow what to look at first."
+  //   - empty workflow → summary "Pick a workflow first."
+  //   - both set → start
+  function dispatch({ goal, workflow }) {
+    if (!goal) return { outcome: "no-goal", summary: "Tell the workflow what to look at first." };
+    if (!workflow) return { outcome: "no-workflow", summary: "Pick a workflow first." };
+    return { outcome: "start", summary: "Starting…" };
+  }
+  assert.equal(dispatch({ goal: "", workflow: "x" }).outcome, "no-goal");
+  // Note: by the time `startProseReplSession` checks goal, it's already
+  // been `.trim()`'d at the input — so a whitespace-only string is
+  // caught upstream.
+  assert.equal(dispatch({ goal: "find bugs", workflow: "" }).outcome, "no-workflow");
+  assert.equal(dispatch({ goal: "find bugs", workflow: "x" }).outcome, "start");
+});

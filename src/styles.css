@@ -4837,3 +4837,139 @@ kbd {
   opacity: 0.6;
   cursor: wait;
 }
+
+/* Lesson 833 Phase 3: Workflow REPL inside the Terminal tile.
+   Activated when the shell picker selects "prose". Visually similar
+   to a chat input area + live transcript, with a status pill that
+   animates on transition (same Lesson 831 calm-by-default rule). */
+.prose-repl {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.prose-repl-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.prose-repl-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.prose-repl-select,
+.prose-repl-goal {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.prose-repl-goal {
+  flex: 1 1 280px;
+  min-width: 200px;
+}
+
+.prose-repl-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.prose-repl-pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(122, 162, 247, 0.18);
+  color: #7aa2f7;
+  border: 1px solid rgba(122, 162, 247, 0.4);
+  transition: color 180ms ease, background-color 180ms ease;
+}
+
+.prose-repl-pill[data-state="running"] {
+  background: rgba(122, 162, 247, 0.22);
+  color: #7aa2f7;
+  border-color: rgba(122, 162, 247, 0.5);
+  animation: prose-repl-pulse 1.8s ease-in-out infinite;
+}
+
+.prose-repl-pill[data-state="complete"] {
+  background: rgba(158, 206, 106, 0.22);
+  color: #9ece6a;
+  border-color: rgba(158, 206, 106, 0.5);
+}
+
+.prose-repl-pill[data-state="error"] {
+  background: rgba(247, 118, 142, 0.22);
+  color: #f7768e;
+  border-color: rgba(247, 118, 142, 0.5);
+}
+
+.prose-repl-pill[data-state="killed"] {
+  background: rgba(247, 118, 142, 0.18);
+  color: #f7768e;
+  border-color: rgba(247, 118, 142, 0.4);
+}
+
+.prose-repl-pill[data-state="idle"] {
+  background: rgba(122, 162, 247, 0.10);
+  color: var(--fg-muted);
+  border-color: var(--border);
+}
+
+@keyframes prose-repl-pulse {
+  0%, 100% { opacity: 0.85; }
+  50%      { opacity: 1; }
+}
+
+.prose-repl-summary {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.prose-repl-output {
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  flex: 1 1 auto;
+  min-height: 240px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.prose-repl-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-bottom: 2px;
+}
+
+.prose-repl-line.stream-stderr {
+  color: #f7768e;
+}
+
+.prose-repl-line.stream-system {
+  color: var(--fg-muted);
+  font-style: italic;
+}
