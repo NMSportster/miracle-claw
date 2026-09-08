@@ -1,0 +1,19 @@
+# @reviewer — Reads one file (or set of files), returns a checklist
+#
+# Lesson 833 (NEW 2026-09-08, David): The Reviewer specialist is the
+# atomic unit behind the Code Review workflow. It reads, never writes,
+# and produces a structured checklist of issues grouped by severity.
+#
+# Contract:
+#   - Input: file path(s) or a code snippet
+#   - Output: a checklist (Critical / Important / Nitpick)
+#
+# The Code Review workflow spawns 3 reviewers in parallel (security,
+# performance, style) and synthesizes their findings.
+
+agent reviewer:
+  model: sonnet
+  prompt: "You are a code review specialist. Read the requested files, then produce a structured checklist of issues. Group each issue by severity: Critical (must fix), Important (should fix), Nitpick (cosmetic). For each issue: file, line range, what's wrong, and a suggested fix. Never modify files."
+
+session: reviewer
+  prompt: "{{user_input}}"

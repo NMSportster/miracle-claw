@@ -1,0 +1,27 @@
+# Docs From Code — Read the source, write README, CHANGELOG, and API reference in parallel
+#
+# Lesson 833 (NEW 2026-09-08, David): Three @docwriter instances,
+# three docs, three voices (README = marketing + getting started,
+# CHANGELOG = history of changes, API reference = exhaustive lookup).
+# The synthesis session ensures the three docs agree on terminology.
+#
+# Contract:
+#   - Input: source path or "the whole repo"
+#   - Output: README.md, CHANGELOG.md, and an API reference doc
+
+agent docwriter:
+  model: sonnet
+  prompt: "You are a technical writer. Read source code, then write one specific doc style. Never modify source. Only use read and write tools."
+
+parallel:
+  readme = session: docwriter
+    prompt: "Source: {{user_input}}. Your job: WRITE THE README. Sections: (1) one-paragraph project description, (2) installation, (3) quickstart (5 lines of code that actually work), (4) usage examples (3 common tasks), (5) where to get help. Tone: warm, direct, no marketing fluff. Skip badges, skip 'Contributing' sections, skip 'License'."
+  changelog = session: docwriter
+    prompt: "Source: {{user_input}}. Your job: WRITE THE CHANGELOG. Use Keep-a-Changelog format. Sections: Added / Changed / Deprecated / Removed / Fixed / Security. Pull facts from git history if you can read it, otherwise note 'unverified' next to each entry. Be honest about what's in the code NOW, not what was promised."
+  api = session: docwriter
+    prompt: "Source: {{user_input}}. Your job: WRITE THE API REFERENCE. For every public function/class/type: signature, parameters (with types), return value, one short example. Group by module. Skip anything marked private/internal. If there are no public APIs, say so explicitly."
+
+# Synthesize so the three docs agree on terminology
+session "Reconcile terminology across the three docs"
+  context: { readme, changelog, api }
+  prompt: "Compare the three docs above. Find terms used inconsistently (e.g., 'user' in one and 'caller' in another for the same thing, or two different names for the same concept). Produce a 3-line 'Terminology' addendum at the top of each doc:\n\n  Terminology: In this codebase we use [X] for [concept], [Y] for [concept], and [Z] for [concept].\n\nIf the docs already agree, output 'No terminology conflicts.' Don't invent terminology — only flag terms that already differ across the three docs."

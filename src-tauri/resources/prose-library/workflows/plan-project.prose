@@ -1,0 +1,33 @@
+# Plan a Project — Five specialists map out features, risks, schedule, dependencies, and questions
+#
+# Lesson 833 (NEW 2026-09-08, David): The biggest parallel workflow.
+# Five @planner instances run in parallel, each focused on one
+# dimension. The synthesis session weaves them into one plan.
+#
+# Contract:
+#   - Input: requirements (text, file, or "explain what I want")
+#   - Output: one structured plan with Features, Risks, Schedule,
+#     Dependencies, Questions
+#
+# Parallel count: 5 planners + 1 synthesizer = 6 specialists total.
+
+agent planner:
+  model: sonnet
+  prompt: "You are a project planner. Produce one specific section of a structured plan. Never modify files. Only use read tools."
+
+parallel:
+  features = session: planner
+    prompt: "Given these requirements: {{user_input}}. Produce ONLY the Features section: a bullet list of user-visible capabilities, grouped by milestone. Each bullet: 1 sentence, concrete, testable."
+  risks = session: planner
+    prompt: "Given these requirements: {{user_input}}. Produce ONLY the Risks section: a list of things that could go wrong, ranked by likelihood × impact. For each risk: name it, describe it, suggest a mitigation."
+  schedule = session: planner
+    prompt: "Given these requirements: {{user_input}}. Produce ONLY the Schedule section: rough milestones (week-level). For each milestone: title, deliverables, dependencies on earlier milestones."
+  dependencies = session: planner
+    prompt: "Given these requirements: {{user_input}}. Produce ONLY the Dependencies section: external services, libraries, third-party decisions, and internal blockers. Group by type: External / Library / Decision / Blocker."
+  questions = session: planner
+    prompt: "Given these requirements: {{user_input}}. Produce ONLY the Questions section: ambiguities that must be resolved before implementation starts. Each question: one sentence, phrased so the user can answer it directly."
+
+# Synthesize into one consistent plan
+session "Combine the five plan sections into one document"
+  context: { features, risks, schedule, dependencies, questions }
+  prompt: "Weave the five sections above into one cohesive plan. Keep each section's content faithful to its source — your job is structure, not invention. Reorder sections so Dependencies and Questions come FIRST (they're blockers), then Schedule, then Features, then Risks. At the top, add a 2-3 sentence summary. At the bottom, add a 'Next step' line that points to the most important question to resolve first."

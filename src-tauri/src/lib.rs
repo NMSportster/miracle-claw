@@ -105,6 +105,25 @@ pub mod tools;
 // follow the same pattern.
 pub mod modules;
 
+// Lesson 833 (NEW 2026-09-08, David): Phase 1 of MC subagents /
+// workflows. The bundled open-prose plugin (subagents / parallel
+// specialists) is surfaced from MC's frontend via five Tauri commands:
+// prose_run, prose_compile, prose_poll, prose_kill, prose_examples.
+// See prose_host.rs for the design + Lesson 832 for the user-facing
+// naming contract (".prose program" → Workflow, "agent" → Specialist).
+pub mod prose_host;
+
+// Lesson 833 (NEW 2026-09-08, David): Pre-VM model alias rewriter.
+// OpenProse uses Anthropic/OpenAI model names (sonnet, opus, gpt-4*)
+// in `.prose` source files. MAIC serves a different family of model
+// ids (milagro-dev, milagro-coder, milagro-oc-*). This module
+// rewrites the source text before the VM sees it, so OpenProse's
+// dispatch logic uses MAIC-native ids. AP-833-B: NEVER hard-code
+// the mapping in `.prose` files themselves — that locks workflows
+// to one model forever. Keep the translation in Rust so the source
+// stays portable.
+pub mod prose_model_map;
+
 // ----------------------------------------------------------------------------
 // Constants
 // ----------------------------------------------------------------------------
@@ -123,7 +142,7 @@ pub(crate) const ENV_VAR_NAME: &str = "MAIC_API_KEY";
 // ----------------------------------------------------------------------------
 
 #[derive(Default)]
-struct AppState {
+pub(crate) struct AppState {
     /// Handle to the launcher sidecar child process (if started).
     /// Mutex because RunEvent handlers + setup() cross thread boundaries.
     launcher_child:
@@ -187,6 +206,15 @@ struct AppState {
     /// Phase 2.3 (rc55.19): phone-pairing heartbeat thread state.
     /// Same pattern as `pairing_server`.
     pairing_heartbeat: Mutex<Option<crate::pairing_heartbeat::PairingHeartbeatState>>,
+
+    /// Lesson 833 (NEW 2026-09-08, David): MC subagents / workflows.
+    /// Map of session_id (UUID) -> Arc<ProseHandle>. Mirrors the
+    /// `terminals` field (rc36) so the read/poll/kill lifecycle is
+    /// identical between Terminal tile and Workflow Center. Sessions
+    /// are kept until the user explicitly kills them or the app exits
+    /// (RunEvent::Exit handler cleans up). Keyed by UUID so multiple
+    /// workflows can run concurrently.
+    prose_sessions: Mutex<std::collections::HashMap<String, std::sync::Arc<crate::prose_host::ProseHandle>>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -1068,6 +1096,16 @@ fn ensure_maic_provider_config_for_tier(
             // the plugin entry stamped on first post-upgrade bootstrap.
             stamp_maic_plugin_entry(&mut cfg);
 
+            // Lesson 833 (NEW 2026-09-08, MC subagents / workflows):
+            // also stamp `plugins.entries.open-prose.enabled = true` so
+            // the OpenProse VM plugin (subagents / parallel specialists)
+            // loads at openclaw startup. Without this, `activation.
+            // onStartup = false` in the bundled plugin manifest prevents
+            // the `/prose` slash command and `.prose` file loader from
+            // being registered, and our Phase 1 chat surface silently
+            // fails when David runs `/prose explore` for the first time.
+            stamp_plugin_entry(&mut cfg, "open-prose");
+
             // Lesson 451: migrate the baseUrl /v1 suffix in-place when it's
             // a stale bare MAIC origin. Persist if we changed anything so
             // the migration is one-shot, not every-launch.
@@ -1501,6 +1539,12 @@ fn ensure_maic_provider_config_for_tier(
     // paths produce identical plugin entry state on disk.
     stamp_maic_plugin_entry(&mut cfg);
 
+    // Lesson 833 (NEW 2026-09-08, MC subagents / workflows): stamp
+    // open-prose the same way on the write path so fresh installs get
+    // both MAIC and OpenProse enabled in one pass. See the matching
+    // call in the existing-entry early-return path for the rationale.
+    stamp_plugin_entry(&mut cfg, "open-prose");
+
     // Lesson 842: also stamp tier-gated tools + tool_execution + max_tokens
     // in the write path. (The existing-entry early-return path calls this
     // helper above; without this call, fresh installs and upgrades with
@@ -1545,10 +1589,29 @@ fn ensure_maic_provider_config_for_tier(
 ///
 /// Idempotent: preserves any user-customized `config: {...}` under the
 /// plugin entry and does not duplicate "maic" in `plugins.allow`.
+///
+/// Lesson 833 (NEW 2026-09-08, MC subagents / workflows): generalized
+/// from `stamp_maic_plugin_entry` so the same helper stamps the
+/// open-prose plugin (subagents / parallel specialists). The MAIC
+/// helper is now a thin wrapper that calls `stamp_plugin_entry("maic")`
+/// to keep both call sites on identical on-disk state.
 fn stamp_maic_plugin_entry(cfg: &mut serde_json::Value) {
-    // Mirrors `ensure_maic_provider_config_for_tier`'s `PROVIDER_ID` const.
-    // The plugin id and provider id are both "maic" by design.
-    const PROVIDER_ID: &str = "maic";
+    stamp_plugin_entry(cfg, "maic");
+}
+
+/// Lesson 833 (NEW 2026-09-08): stamp `plugins.entries.<id>.enabled =
+/// true` and add the plugin id to `plugins.allow` so openclaw 2026.7.1's
+/// activation decision treats non-bundled plugins as explicitly enabled.
+///
+/// Idempotent: preserves any user-customized `config: {...}` under the
+/// plugin entry and does not duplicate `<id>` in `plugins.allow`. Safe
+/// to call on every bootstrap; the helper is a no-op when the entry is
+/// already present.
+///
+/// Used for:
+///   - "maic" — Lesson 535 (chat provider)
+///   - "open-prose" — Lesson 833 (subagents / workflows, OpenProse VM)
+fn stamp_plugin_entry(cfg: &mut serde_json::Value, plugin_id: &str) {
     if !cfg.is_object() {
         *cfg = serde_json::json!({});
     }
@@ -1567,14 +1630,14 @@ fn stamp_maic_plugin_entry(cfg: &mut serde_json::Value) {
         *entries = Value::Object(Default::default());
     }
     let entries_map = entries.as_object_mut().unwrap();
-    let maic_entry = entries_map
-        .entry(PROVIDER_ID.to_string())
+    let plugin_entry = entries_map
+        .entry(plugin_id.to_string())
         .or_insert_with(|| Value::Object(Default::default()));
-    if !maic_entry.is_object() {
-        *maic_entry = Value::Object(Default::default());
+    if !plugin_entry.is_object() {
+        *plugin_entry = Value::Object(Default::default());
     }
-    if let Some(maic_obj) = maic_entry.as_object_mut() {
-        maic_obj
+    if let Some(plugin_obj) = plugin_entry.as_object_mut() {
+        plugin_obj
             .entry("enabled".to_string())
             .or_insert(Value::Bool(true));
     }
@@ -1582,9 +1645,9 @@ fn stamp_maic_plugin_entry(cfg: &mut serde_json::Value) {
         .entry("allow".to_string())
         .or_insert_with(|| Value::Array(Vec::new()));
     if let Some(allow_arr) = allow.as_array_mut() {
-        let has_maic = allow_arr.iter().any(|v| v.as_str() == Some(PROVIDER_ID));
-        if !has_maic {
-            allow_arr.push(Value::String(PROVIDER_ID.to_string()));
+        let has_plugin = allow_arr.iter().any(|v| v.as_str() == Some(plugin_id));
+        if !has_plugin {
+            allow_arr.push(Value::String(plugin_id.to_string()));
         }
     }
 }
@@ -7552,7 +7615,17 @@ pub fn run() {
             mc_paired_devices,
             mc_revoke_device,
             mc_set_drop_folder,
-            mc_get_pairing_status
+            mc_get_pairing_status,
+            // Lesson 833 (NEW 2026-09-08, David): MC subagents /
+            // workflows. Five Tauri commands surface the bundled
+            // open-prose plugin from chat / Terminal tile / Workflow
+            // Center page. See prose_host.rs for design + Lesson 832
+            // for the user-facing naming contract.
+            prose_host::prose_run,
+            prose_host::prose_compile,
+            prose_host::prose_poll,
+            prose_host::prose_kill,
+            prose_host::prose_examples
         ])
         .setup(|app| {
             setup(app)?;
@@ -9896,6 +9969,139 @@ mod tests {
         assert!(
             enabled,
             "Lesson 535: existing-config upgrade path must stamp plugin entry"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Lesson 833 (NEW 2026-09-08, MC subagents / workflows): the same
+    // enablement stamping for the open-prose plugin that MAIC gets in
+    // Lesson 535. The bundled open-prose plugin ships with
+    // `activation.onStartup = false` so without an explicit
+    // `plugins.entries.open-prose.enabled = true` the `/prose` slash
+    // command and `.prose` file loader never register, and Phase 1 of
+    // the MC subagents surface silently fails when the user types
+    // `/prose explore` for the first time.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn lesson_833_open_prose_plugin_entry_enabled_after_bootstrap() {
+        // Mirror of lesson_535_plugin_entry_enabled_after_bootstrap but
+        // for the open-prose plugin. Same pattern, different plugin id.
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var("MAIC_API_KEY", "test-key-833");
+        env::set_var("MAIC_API_URL", "https://maicserver.com/v1");
+
+        let _ = ensure_maic_provider_config().expect("bootstrap");
+        let raw = std::fs::read_to_string(openclaw_json_path()).expect("read cfg");
+        let cfg: serde_json::Value = serde_json::from_str(&raw).expect("parse cfg");
+
+        // Must contain plugins.entries.open-prose.enabled = true
+        let enabled = cfg
+            .pointer("/plugins/entries/open-prose/enabled")
+            .and_then(|v| v.as_bool())
+            .expect(
+                "Lesson 833: plugins.entries.open-prose.enabled must be written by MC bootstrap",
+            );
+        assert!(
+            enabled,
+            "Lesson 833: plugins.entries.open-prose.enabled must be true"
+        );
+
+        // Must also have plugins.allow = ["maic", "open-prose"]
+        let allow = cfg
+            .pointer("/plugins/allow")
+            .and_then(|v| v.as_array())
+            .expect("plugins.allow must be an array");
+        let allow_strs: Vec<&str> = allow.iter().filter_map(|v| v.as_str()).collect();
+        assert!(
+            allow_strs.contains(&"open-prose"),
+            "Lesson 833: plugins.allow must include 'open-prose' (got {allow_strs:?})"
+        );
+        // MAIC must still be in the allow list — Lesson 535 keeps working.
+        assert!(
+            allow_strs.contains(&"maic"),
+            "Lesson 535/833: plugins.allow must still include 'maic' (got {allow_strs:?})"
+        );
+    }
+
+    #[test]
+    fn lesson_833_stamp_plugin_entry_helper_idempotent() {
+        // Direct unit test of the generalized helper: calling it twice
+        // with the same id must not duplicate entries in plugins.allow.
+        let mut cfg = serde_json::json!({});
+        stamp_plugin_entry(&mut cfg, "open-prose");
+        stamp_plugin_entry(&mut cfg, "open-prose");
+
+        let allow = cfg
+            .pointer("/plugins/allow")
+            .and_then(|v| v.as_array())
+            .expect("plugins.allow must be an array");
+        let count = allow
+            .iter()
+            .filter(|v| v.as_str() == Some("open-prose"))
+            .count();
+        assert_eq!(
+            count, 1,
+            "Lesson 833: 'open-prose' must appear exactly once in plugins.allow (got {count})"
+        );
+
+        let enabled = cfg
+            .pointer("/plugins/entries/open-prose/enabled")
+            .and_then(|v| v.as_bool())
+            .expect("enabled flag must be set");
+        assert!(
+            enabled,
+            "Lesson 833: plugins.entries.open-prose.enabled must be true after stamping"
+        );
+    }
+
+    #[test]
+    fn lesson_833_stamp_plugin_entry_preserves_user_config() {
+        // If the user has already customized the open-prose entry with
+        // their own config (e.g. a custom model mapper), the stamp
+        // helper must NOT clobber their config object.
+        let mut cfg = serde_json::json!({
+            "plugins": {
+                "entries": {
+                    "open-prose": {
+                        "enabled": false,
+                        "config": {
+                            "default_model": "milagro-dev",
+                            "max_parallel": 5
+                        }
+                    }
+                }
+            }
+        });
+        stamp_plugin_entry(&mut cfg, "open-prose");
+
+        let entry = cfg
+            .pointer("/plugins/entries/open-prose")
+            .expect("entry must exist");
+        let entry_obj = entry.as_object().expect("entry must be object");
+
+        // The config object the user set must survive the stamp.
+        let user_config = entry_obj.get("config").expect("user config must persist");
+        assert_eq!(
+            user_config.pointer("/default_model").and_then(|v| v.as_str()),
+            Some("milagro-dev"),
+            "Lesson 833: user-customized config.default_model must survive stamp"
+        );
+        assert_eq!(
+            user_config.pointer("/max_parallel").and_then(|v| v.as_i64()),
+            Some(5),
+            "Lesson 833: user-customized config.max_parallel must survive stamp"
+        );
+
+        // `enabled` was false; the helper uses `entry().or_insert()`,
+        // so the user's explicit `false` is preserved. This matches
+        // Lesson 535's documented behavior — the helper only sets a
+        // default when the field is missing, never overwrites.
+        assert_eq!(
+            entry_obj.get("enabled").and_then(|v| v.as_bool()),
+            Some(false),
+            "Lesson 833: helper must not overwrite an explicit enabled=false"
         );
     }
 

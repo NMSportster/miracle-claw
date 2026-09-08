@@ -1,0 +1,32 @@
+# Code Review — Three specialists look at the same files for bugs, performance, and clarity
+#
+# Lesson 833 (NEW 2026-09-08, David): The headline parallel workflow.
+# Three @reviewer instances run in parallel, each with a different
+# lens. The synthesis session then produces one unified report
+# with prioritized findings.
+#
+# Contract:
+#   - Input: file path(s) or a glob pattern
+#   - Output: one unified review report grouped by severity
+#
+# Parallel count: 3 reviewers + 1 synthesizer = 4 specialists total.
+#
+# Model mapper routes `sonnet` → `milagro-dev` (14B).
+
+agent reviewer:
+  model: sonnet
+  prompt: "You are an expert code reviewer. Read carefully, then produce a checklist grouped by severity: Critical / Important / Nitpick. For each: file, line range, what's wrong, suggested fix."
+
+# Three parallel reviews — different lens, same input
+parallel:
+  security = session: reviewer
+    prompt: "Review for security vulnerabilities: injection risks, authentication issues, data exposure, unsafe deserialization, missing input validation. Input: {{user_input}}"
+  perf = session: reviewer
+    prompt: "Review for performance issues: N+1 queries, unnecessary allocations, blocking operations, missing indexes, hot-path string concatenation. Input: {{user_input}}"
+  style = session: reviewer
+    prompt: "Review for code style and readability: code duplication, unclear naming, missing or stale comments, inconsistent error handling. Input: {{user_input}}"
+
+# Synthesize the three lenses into one report
+session "Create one unified code review report"
+  context: { security, perf, style }
+  prompt: "Combine the three reviews above into one report. Group findings by severity (Critical first, then Important, then Nitpick). Within each severity group, order by file path. Use this format for every finding:\n\n  [Severity] file:line — what's wrong\n    Suggested fix: ...\n\nEnd with a short summary: total issues per severity, files affected, and any patterns you noticed."
