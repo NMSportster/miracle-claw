@@ -132,26 +132,17 @@ const _state = {
   unlistenStatus: null,
 };
 
-async function mount(root) {
+async function mount(root, ctx = {}) {
   // Reset state on every mount (Lesson 524: idempotent remount).
   _state.activeSessionId = null;
   _state.activeWorkflowName = null;
   _state.lastSeq = 0;
+  _state.pendingWorkflowHint = typeof ctx.workflowHint === "string" ? ctx.workflowHint : null;
   stopPolling();
 
   root.innerHTML = "";
   const wrap = el("div", { class: "workflows-wrap" });
   root.appendChild(wrap);
-
-  // Header — Lesson 832: plain English, no internal jargon.
-  const header = el("div", { class: "workflows-header" }, [
-    el("h1", {}, ["Workflows"]),
-    el("p", { class: "workflows-subtitle" }, [
-      "Pick a workflow, give it a goal, and watch your team work. ",
-      "Each workflow runs a team of specialists in parallel.",
-    ]),
-  ]);
-  wrap.appendChild(header);
 
   // Load examples (Lesson 833: prose_examples returns 6 workflows + 6 specialists).
   let examples = [];
@@ -169,6 +160,34 @@ async function mount(root) {
 
   const workflows = examples.filter((e) => e.kind === "workflow");
   const specialists = examples.filter((e) => e.kind === "specialist");
+
+  // Lesson 833 Phase 4: gradient hero. We render this AFTER examples
+  // load so the count pill ("6 workflows · 6 specialists") has the
+  // real numbers. The Recipes button is inline so users can reach
+  // saved workflows without scrolling past the grid.
+  const header = el("div", { class: "workflows-hero" }, [
+    el("h1", { class: "workflows-hero-title" }, ["Workflows"]),
+    el("p", { class: "workflows-hero-subtitle" }, [
+      "Pick a workflow, give it a goal, and watch your team work. ",
+      "Each workflow runs a team of specialists in parallel.",
+    ]),
+    el("div", { class: "workflows-hero-actions" }, [
+      el("span", { class: "workflows-hero-pill" }, [
+        `${workflows.length} workflows · ${specialists.length} specialists`,
+      ]),
+      el(
+        "button",
+        {
+          class: "workflows-hero-recipes-btn",
+          id: "workflows-hero-recipes",
+          title: "Browse your saved recipes (workflows you've customized)",
+          onclick: () => openRecipesPanel(),
+        },
+        ["📚 Recipes"],
+      ),
+    ]),
+  ]);
+  wrap.appendChild(header);
 
   // Workflow tiles grid.
   const grid = el("div", { class: "workflows-grid" });
@@ -200,6 +219,25 @@ async function mount(root) {
   // Active run panel — only visible when a session is running or just finished.
   _state.activePanel = el("div", { class: "workflows-active", style: "display: none;" });
   wrap.appendChild(_state.activePanel);
+
+  // Lesson 833 Phase 4: if Cmd-K sent us a workflowHint, scroll the
+  // matching tile into view and open its run modal. We don't open the
+  // modal automatically on *every* mount (would surprise users who
+  // came from the dashboard) — only when a hint was explicitly passed.
+  if (_state.pendingWorkflowHint) {
+    const hint = _state.pendingWorkflowHint;
+    _state.pendingWorkflowHint = null;
+    const target = workflows.find((w) => w.file && w.file.includes(hint))
+      || specialists.find((s) => s.file && s.file.includes(hint));
+    if (target) {
+      // Defer one tick so the DOM has settled before we scroll.
+      setTimeout(() => {
+        const tileEl = wrap.querySelector(`[data-file="${CSS.escape(target.file)}"]`);
+        if (tileEl) tileEl.scrollIntoView({ behavior: "smooth", block: "center" });
+        openRunModal(target);
+      }, 50);
+    }
+  }
 
   // Lesson 833 Phase 2: register Tauri event listeners for real-time
   // streaming. The Rust prose_host emits `prose:chunk` and `prose:status`
@@ -235,12 +273,32 @@ function renderWorkflowTile(wf) {
   const parallelHint = wf.parallel_count > 1
     ? `${wf.parallel_count} specialists in parallel`
     : "1 specialist";
+  // Lesson 833 Phase 4: if the user has a recipe for this workflow,
+  // surface a "Last used 2h ago · open it" hint inline so they can
+  // re-run with one click without opening the Recipes panel first.
+  const recipe = loadRecipes()[wf.file];
+  const recentHint = recipe
+    ? el("div", { class: "workflow-tile-recent", title: recipe.goal }, [
+        el("span", { class: "workflow-tile-recent-label" }, [
+          `Last used ${formatTimeAgo(recipe.lastUsed)}`,
+        ]),
+        el(
+          "button",
+          {
+            class: "workflow-tile-recent-btn",
+            onclick: () => openRunModal(wf, recipe.goal),
+          },
+          ["Re-run"],
+        ),
+      ])
+    : null;
   return el("div", { class: "workflow-tile", "data-file": wf.file }, [
     el("div", { class: "workflow-tile-name" }, [wf.name]),
     el("div", { class: "workflow-tile-desc" }, [wf.description]),
     el("div", { class: "workflow-tile-meta" }, [
       el("span", { class: "workflow-tile-parallel" }, [parallelHint]),
     ]),
+    recentHint,
     el(
       "button",
       {
@@ -274,10 +332,175 @@ function renderSpecialistTile(sp) {
 // extend later via the Recipes tab (Phase 4).
 
 let _modalRoot = null;
+let _recipesPanelRoot = null;
 
-function openRunModal(workflow) {
+// ----- Recipes (Phase 4) --------------------------------------------------
+//
+// A "recipe" is a saved goal + last-used timestamp for a workflow.
+// We persist them to localStorage so users don't have to re-type
+// their common goals. Recipes are surfaced in two places:
+//   1. The 📚 button in the gradient hero opens a full Recipes panel.
+//   2. Each workflow tile shows a "Recent goal" hint when it has one.
+// This is intentionally light — no edit forms, no settings, no
+// server sync. Power users who want more can extend later.
+
+const RECIPES_KEY = "mc.workflows.recipes.v1";
+
+function loadRecipes() {
+  try {
+    const raw = localStorage.getItem(RECIPES_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveRecipes(recipes) {
+  try {
+    localStorage.setItem(RECIPES_KEY, JSON.stringify(recipes));
+  } catch (e) {
+    // Quota exceeded or storage disabled — ignore. The user just won't
+    // see this recipe persist; they can always re-enter it.
+  }
+}
+
+function recordRecipeUse(workflow, goal) {
+  const recipes = loadRecipes();
+  recipes[workflow.file] = {
+    name: workflow.name,
+    goal,
+    lastUsed: Date.now(),
+  };
+  saveRecipes(recipes);
+}
+
+function openRecipesPanel() {
+  if (_recipesPanelRoot) {
+    // Already open — toggle closed.
+    closeRecipesPanel();
+    return;
+  }
+  const recipes = loadRecipes();
+  const entries = Object.entries(recipes).sort(
+    (a, b) => (b[1].lastUsed || 0) - (a[1].lastUsed || 0),
+  );
+  _recipesPanelRoot = el("div", { class: "workflow-recipes-backdrop" });
+  const panel = el("div", { class: "workflow-recipes" }, [
+    el("div", { class: "workflow-recipes-header" }, [
+      el("h2", {}, ["📚 Your saved recipes"]),
+      el(
+        "button",
+        {
+          class: "workflow-recipes-close",
+          title: "Close",
+          "aria-label": "Close recipes panel",
+          onclick: () => closeRecipesPanel(),
+        },
+        ["×"],
+      ),
+    ]),
+  ]);
+
+  if (entries.length === 0) {
+    panel.appendChild(
+      el("div", { class: "workflow-recipes-empty" }, [
+        "No recipes yet. Run a workflow and your goal will be saved here so you can re-run it with one click.",
+      ]),
+    );
+  } else {
+    panel.appendChild(
+      el("p", { class: "workflow-recipes-hint" }, [
+        `You have ${entries.length} saved recipe${entries.length === 1 ? "" : "s"}. Click any one to re-run it.`,
+      ]),
+    );
+    const list = el("div", { class: "workflow-recipes-list" });
+    for (const [file, recipe] of entries) {
+      const snippet =
+        recipe.goal.length > 100
+          ? recipe.goal.slice(0, 100).trimEnd() + "…"
+          : recipe.goal;
+      const lastUsedDate = new Date(recipe.lastUsed || 0);
+      const agoText = formatTimeAgo(recipe.lastUsed || 0);
+      list.appendChild(
+        el("div", { class: "workflow-recipe-card", "data-file": file }, [
+          el("div", { class: "workflow-recipe-name" }, [recipe.name || file]),
+          el("div", { class: "workflow-recipe-snippet" }, [snippet]),
+          el("div", { class: "workflow-recipe-meta" }, [
+            el("span", { class: "workflow-recipe-time" }, [
+              agoText,
+              lastUsedDate.getFullYear() > 1970
+                ? ` (${lastUsedDate.toLocaleDateString()})`
+                : "",
+            ]),
+            el(
+              "button",
+              {
+                class: "workflow-recipe-run",
+                title: "Re-run this workflow with this goal",
+                onclick: () => {
+                  closeRecipesPanel();
+                  // Look up the workflow from the loaded examples.
+                  const wf = (_state.examples || []).find((e) => e.file === file);
+                  if (wf) {
+                    // Pre-fill the modal with the saved goal.
+                    openRunModal(wf, recipe.goal);
+                  } else {
+                    showActivePanelError(file, "That workflow isn't available anymore.");
+                  }
+                },
+              },
+              ["Re-run"],
+            ),
+            el(
+              "button",
+              {
+                class: "workflow-recipe-delete",
+                title: "Forget this recipe",
+                onclick: () => {
+                  const all = loadRecipes();
+                  delete all[file];
+                  saveRecipes(all);
+                  closeRecipesPanel();
+                  openRecipesPanel();
+                },
+              },
+              ["Forget"],
+            ),
+          ]),
+        ]),
+      );
+    }
+    panel.appendChild(list);
+  }
+
+  _recipesPanelRoot.appendChild(panel);
+  document.body.appendChild(_recipesPanelRoot);
+}
+
+function closeRecipesPanel() {
+  if (_recipesPanelRoot && _recipesPanelRoot.parentNode) {
+    _recipesPanelRoot.parentNode.removeChild(_recipesPanelRoot);
+  }
+  _recipesPanelRoot = null;
+}
+
+function formatTimeAgo(ts) {
+  if (!ts) return "unknown";
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d ago`;
+  return `${Math.floor(diff / (7 * 86_400_000))}w ago`;
+}
+
+function openRunModal(workflow, prefillGoal = "") {
   closeModal();
   _modalRoot = el("div", { class: "workflow-modal-backdrop" });
+  // Lesson 833 Phase 4: prefill the textarea when called from a Recipe.
+  // Empty by default — users typing fresh goals see a blank canvas.
   const modal = el("div", { class: "workflow-modal" }, [
     el("h2", {}, [`Run: ${workflow.name}`]),
     el("p", { class: "workflow-modal-desc" }, [workflow.description]),
@@ -291,6 +514,7 @@ function openRunModal(workflow) {
         placeholder: placeholderFor(workflow),
       });
       ta.id = "workflow-modal-goal";
+      ta.value = prefillGoal;
       _modalRoot._inputEl = ta;
       return ta;
     })(),
@@ -387,6 +611,12 @@ async function submitRun(workflow) {
   _state.activeSessionId = result.session_id;
   _state.activeWorkflowName = workflow.name;
   _state.lastSeq = 0;
+  // Lesson 833 Phase 4: save the goal as a recipe so the user can
+  // re-run with one click from the Recipes panel. We persist the
+  // trimmed goal text + a timestamp keyed on the workflow file.
+  // Errors here are silently swallowed (Lesson 831: never block a
+  // successful run on a save failure).
+  try { recordRecipeUse(workflow, goal); } catch (e) { /* non-fatal */ }
   closeModal();
   showActivePanelRunning(workflow);
   startPolling();
@@ -398,6 +628,10 @@ function showActivePanelRunning(workflow) {
   if (!_state.activePanel) return;
   _state.activePanel.innerHTML = "";
   _state.activePanel.style.display = "";
+  // Lesson 833 Phase 4: mark running so the CSS knows which border
+  // color to fade FROM when the run finishes.
+  _state.activePanel.classList.remove("workflows-active-finished");
+  _state.activePanel.classList.add("workflows-active-running");
   _state.activePanel.appendChild(
     el("div", { class: "workflows-active-header" }, [
       el("span", {
@@ -473,15 +707,14 @@ function showActivePanelComplete(status, chunks) {
         ),
       );
     }
-    // Receipt at the bottom — Lesson 832: tell the user what just happened
-    // in plain English with numbers they can verify.
-    const systemChunks = chunks.filter((c) => c.stream === "system");
-    const lastSystem = systemChunks[systemChunks.length - 1];
-    out.appendChild(
-      el("div", { class: "workflows-active-receipt" }, [
-        lastSystem ? lastSystem.data : STATUS_LABEL[status] || "Finished",
-      ]),
-    );
+
+    // Lesson 833 Phase 4: receipt card. We summarize the run with
+    // counts the user can actually verify (output lines, errors, and
+    // a plain-English takeaway). No internal codes, no jargon — same
+    // Lesson 832 contract.
+    const stats = computeReceiptStats(chunks);
+    const receipt = buildReceiptCard(status, stats);
+    out.appendChild(receipt);
   }
   // Replace the Cancel button with a Done button.
   const actions = _state.activePanel.querySelector(".workflows-active-actions");
@@ -503,12 +736,107 @@ function showActivePanelComplete(status, chunks) {
     headerStatus.textContent = STATUS_LABEL[status] || "Finished";
     headerStatus.style.color = STATUS_COLOR[status] || STATUS_COLOR.complete;
   }
+  // Lesson 833 Phase 4: animated completion transition. Add a class
+  // that fades the panel border from running-blue to done-green and
+  // slides the receipt into view. The CSS handles the actual easing.
+  _state.activePanel.classList.remove("workflows-active-running");
+  _state.activePanel.classList.add("workflows-active-finished");
+}
+
+// Compute summary stats for the receipt. Excludes the placeholder
+// "Starting up…" line and system messages so the numbers reflect the
+// actual model output, not housekeeping.
+function computeReceiptStats(chunks) {
+  let lines = 0;
+  let stderr = 0;
+  let system = 0;
+  let firstTs = null;
+  let lastTs = null;
+  for (const c of chunks) {
+    if (c.stream === "system") {
+      system += 1;
+      continue;
+    }
+    if (c.stream === "stderr") stderr += 1;
+    lines += 1;
+    if (firstTs === null) firstTs = c.seq;
+    lastTs = c.seq;
+  }
+  return {
+    lines,
+    stderr,
+    system,
+    firstTs,
+    lastTs,
+  };
+}
+
+function buildReceiptCard(status, stats) {
+  const statusLabel = STATUS_LABEL[status] || "Finished";
+  const isError = status === "error";
+  const isKilled = status === "killed";
+  const isComplete = status === "complete";
+
+  let takeaway;
+  if (isComplete) {
+    takeaway = stats.stderr > 0
+      ? `Finished, but ${stats.stderr} line${stats.stderr === 1 ? "" : "s"} looked unusual — worth a quick look.`
+      : `All clear. The team delivered ${stats.lines} line${stats.lines === 1 ? "" : "s"} of output.`;
+  } else if (isKilled) {
+    takeaway = "You stopped this run. Nothing was saved.";
+  } else if (isError) {
+    takeaway = "Something went wrong before the team could finish.";
+  } else {
+    takeaway = "Finished.";
+  }
+
+  const rows = [];
+  rows.push(
+    el("div", { class: "workflows-receipt-row" }, [
+      el("span", { class: "workflows-receipt-label" }, ["Status"]),
+      el("span", { class: `workflows-receipt-value workflows-receipt-status-${status}` }, [statusLabel]),
+    ]),
+  );
+  rows.push(
+    el("div", { class: "workflows-receipt-row" }, [
+      el("span", { class: "workflows-receipt-label" }, ["Output"]),
+      el("span", { class: "workflows-receipt-value" }, [
+        `${stats.lines} line${stats.lines === 1 ? "" : "s"}`,
+      ]),
+    ]),
+  );
+  if (stats.stderr > 0) {
+    rows.push(
+      el("div", { class: "workflows-receipt-row" }, [
+        el("span", { class: "workflows-receipt-label" }, ["Unusual"]),
+        el("span", { class: "workflows-receipt-value workflows-receipt-warn" }, [
+          `${stats.stderr} line${stats.stderr === 1 ? "" : "s"}`,
+        ]),
+      ]),
+    );
+  }
+
+  return el(
+    "div",
+    {
+      class: "workflows-active-receipt",
+      role: "status",
+      "aria-live": "polite",
+    },
+    [
+      el("div", { class: "workflows-receipt-takeaway" }, [takeaway]),
+      el("div", { class: "workflows-receipt-stats" }, rows),
+    ],
+  );
 }
 
 function clearActivePanel() {
   if (!_state.activePanel) return;
   _state.activePanel.style.display = "none";
   _state.activePanel.innerHTML = "";
+  // Lesson 833 Phase 4: drop the running/finished classes so the next
+  // run starts from the same baseline as the first one.
+  _state.activePanel.classList.remove("workflows-active-running", "workflows-active-finished");
   _state.activeSessionId = null;
   _state.activeWorkflowName = null;
   _state.lastSeq = 0;

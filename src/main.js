@@ -161,7 +161,7 @@ installNavigation({
     ],
     [
       "workflows",
-      () => workflowsCtx(),
+      (extras) => workflowsCtx(extras),
     ],
     [
       "login",
@@ -421,10 +421,14 @@ function tasksCtx() {
 // Lesson 833 (NEW 2026-09-08, David): Workflow Center context. The
 // page is self-contained (no extra callbacks needed beyond the
 // standard back-to-dashboard), so this is intentionally minimal.
-function workflowsCtx() {
+// Lesson 833 Phase 4: accept `extras` so Cmd-K per-workflow shortcuts
+// can pass a `workflowHint` that the page reads to auto-open the run
+// modal for the named workflow.
+function workflowsCtx(extras = {}) {
   return {
     onBackToDashboard: () => navigate("dashboard"),
     onNeedsLogin: mountLogin,
+    workflowHint: typeof extras.workflowHint === "string" ? extras.workflowHint : null,
   };
 }
 

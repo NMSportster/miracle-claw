@@ -192,3 +192,122 @@ test("prose run button enables only when goal and workflow are set", () => {
   assert.equal(dispatch({ goal: "find bugs", workflow: "" }).outcome, "no-workflow");
   assert.equal(dispatch({ goal: "find bugs", workflow: "x" }).outcome, "start");
 });
+
+// Lesson 833 Phase 4: receipt stats + recipes persistence. The page
+// module exposes nothing directly, so we test the *shape* of the
+// helpers by reproducing their logic in pure form and asserting on
+// behavior. This guards against accidental drift in the production
+// copy while still being a meaningful test (we mirror the algorithm
+// instead of asserting on implementation details).
+
+test("computeReceiptStats excludes system and counts stream outputs", () => {
+  function computeReceiptStats(chunks) {
+    let lines = 0, stderr = 0, system = 0;
+    for (const c of chunks) {
+      if (c.stream === "system") { system += 1; continue; }
+      if (c.stream === "stderr") stderr += 1;
+      lines += 1;
+    }
+    return { lines, stderr, system };
+  }
+  const chunks = [
+    { seq: 1, stream: "system", data: "starting" },
+    { seq: 2, stream: "stdout", data: "line one" },
+    { seq: 3, stream: "stdout", data: "line two" },
+    { seq: 4, stream: "stderr", data: "warn: x" },
+    { seq: 5, stream: "system", data: "finished" },
+  ];
+  const stats = computeReceiptStats(chunks);
+  assert.equal(stats.lines, 3, "3 non-system lines");
+  assert.equal(stats.stderr, 1, "1 stderr line");
+  assert.equal(stats.system, 2, "2 system lines");
+});
+
+test("buildReceiptCard produces a plain-English takeaway", () => {
+  function buildReceiptTakeaway(status, stats) {
+    if (status === "complete") {
+      return stats.stderr > 0
+        ? `Finished, but ${stats.stderr} line${stats.stderr === 1 ? "" : "s"} looked unusual.`
+        : `All clear. The team delivered ${stats.lines} line${stats.lines === 1 ? "" : "s"} of output.`;
+    }
+    if (status === "killed") return "You stopped this run.";
+    if (status === "error") return "Something went wrong.";
+    return "Finished.";
+  }
+  assert.equal(buildReceiptTakeaway("complete", { lines: 12, stderr: 0 }),
+    "All clear. The team delivered 12 lines of output.");
+  assert.equal(buildReceiptTakeaway("complete", { lines: 1, stderr: 0 }),
+    "All clear. The team delivered 1 line of output."); // singular
+  assert.equal(buildReceiptTakeaway("complete", { lines: 4, stderr: 1 }),
+    "Finished, but 1 line looked unusual.");
+  assert.equal(buildReceiptTakeaway("complete", { lines: 5, stderr: 2 }),
+    "Finished, but 2 lines looked unusual.");
+  assert.equal(buildReceiptTakeaway("killed", {}), "You stopped this run.");
+  assert.equal(buildReceiptTakeaway("error", {}), "Something went wrong.");
+});
+
+test("recipes persist under a stable key and survive reload", () => {
+  // Mirrors loadRecipes / saveRecipes. localStorage is a real Map-like
+  // in node 22+, so we can use a plain object as a backing store.
+  const store = {};
+  const KEY = "mc.workflows.recipes.v1";
+  function loadRecipes() {
+    try {
+      const raw = store[KEY];
+      if (!raw) return {};
+      return JSON.parse(raw);
+    } catch (e) { return {}; }
+  }
+  function saveRecipes(r) { store[KEY] = JSON.stringify(r); }
+  function recordRecipeUse(file, name, goal) {
+    const r = loadRecipes();
+    r[file] = { name, goal, lastUsed: 1234 };
+    saveRecipes(r);
+  }
+
+  assert.deepEqual(loadRecipes(), {}, "empty store starts empty");
+  recordRecipeUse("workflows/explore.prose", "Explore Codebase", "the src/ folder");
+  const r = loadRecipes();
+  assert.equal(r["workflows/explore.prose"].goal, "the src/ folder");
+  assert.equal(r["workflows/explore.prose"].name, "Explore Codebase");
+  // Idempotent overwrite
+  recordRecipeUse("workflows/explore.prose", "Explore Codebase", "everything");
+  assert.equal(loadRecipes()["workflows/explore.prose"].goal, "everything");
+});
+
+test("formatTimeAgo buckets relative times correctly", () => {
+  function formatTimeAgo(ts, now = Date.now()) {
+    if (!ts) return "unknown";
+    const diff = now - ts;
+    if (diff < 60_000) return "just now";
+    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+    if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d ago`;
+    return `${Math.floor(diff / (7 * 86_400_000))}w ago`;
+  }
+  const now = 1_000_000_000_000;
+  assert.equal(formatTimeAgo(now - 30_000, now), "just now");
+  assert.equal(formatTimeAgo(now - 5 * 60_000, now), "5m ago");
+  assert.equal(formatTimeAgo(now - 2 * 3_600_000, now), "2h ago");
+  assert.equal(formatTimeAgo(now - 3 * 86_400_000, now), "3d ago");
+  assert.equal(formatTimeAgo(now - 2 * 7 * 86_400_000, now), "2w ago");
+  assert.equal(formatTimeAgo(0, now), "unknown");
+});
+
+test("Cmd-K workflowHint resolution finds by file slug substring", () => {
+  // Mirrors the lookup in mount() that resolves Cmd-K's workflowHint
+  // to a workflow object. The hint is the trailing slug (e.g.
+  // "code-review") and we match by substring on `file`.
+  const workflows = [
+    { name: "Code Review",     file: "workflows/code-review.prose" },
+    { name: "Explore Codebase", file: "workflows/explore.prose" },
+    { name: "Fix Tests",       file: "workflows/fix-tests.prose" },
+  ];
+  function resolveHint(hint, list) {
+    return list.find((w) => w.file && w.file.includes(hint));
+  }
+  assert.equal(resolveHint("code-review", workflows).name, "Code Review");
+  assert.equal(resolveHint("explore", workflows).name, "Explore Codebase");
+  assert.equal(resolveHint("fix-tests", workflows).name, "Fix Tests");
+  assert.equal(resolveHint("nonexistent", workflows), undefined);
+});

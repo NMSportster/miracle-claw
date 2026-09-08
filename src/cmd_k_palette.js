@@ -332,6 +332,61 @@ function buildCommands() {
       keywords: ["workflow", "specialist", "team", "parallel", "review", "plan", "explore", "debug"],
       run: () => _deps.navigate("workflows"),
     },
+    // Lesson 833 Phase 4: per-workflow shortcuts. Cmd-K is a fast lane;
+    //    users who already know which workflow they want shouldn't have
+    //    to open the Workflow Center page just to pick it. Each entry
+    //    navigates to the page (so the page can show the run modal) and
+    //    includes a `?workflow=` hint the page can read from URL or
+    //    sessionStorage if it wants to auto-open the modal. For now we
+    //    just navigate; the page shows the tile prominently.
+    {
+      id: "workflow.explore",
+      label: "Explore Codebase",
+      category: "Quick workflow",
+      icon: "🔍",
+      keywords: ["explore", "code", "overview", "discover"],
+      run: () => _deps.navigate("workflows", { workflowHint: "explore" }),
+    },
+    {
+      id: "workflow.review",
+      label: "Code Review",
+      category: "Quick workflow",
+      icon: "🔎",
+      keywords: ["review", "audit", "check", "lint"],
+      run: () => _deps.navigate("workflows", { workflowHint: "code-review" }),
+    },
+    {
+      id: "workflow.fix-tests",
+      label: "Fix Tests",
+      category: "Quick workflow",
+      icon: "🛠",
+      keywords: ["fix", "test", "tests", "failing"],
+      run: () => _deps.navigate("workflows", { workflowHint: "fix-tests" }),
+    },
+    {
+      id: "workflow.plan",
+      label: "Plan a Project",
+      category: "Quick workflow",
+      icon: "📋",
+      keywords: ["plan", "design", "blueprint", "scope"],
+      run: () => _deps.navigate("workflows", { workflowHint: "plan-project" }),
+    },
+    {
+      id: "workflow.debug",
+      label: "Pair Debug",
+      category: "Quick workflow",
+      icon: "🐞",
+      keywords: ["debug", "pair", "investigate", "trace"],
+      run: () => _deps.navigate("workflows", { workflowHint: "pair-debug" }),
+    },
+    {
+      id: "workflow.docs",
+      label: "Docs From Code",
+      category: "Quick workflow",
+      icon: "📝",
+      keywords: ["docs", "documentation", "write", "readme"],
+      run: () => _deps.navigate("workflows", { workflowHint: "docs-from-code" }),
+    },
     {
       id: "page.terminal.local",
       label: "Local Terminal",

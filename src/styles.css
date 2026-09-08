@@ -4487,6 +4487,94 @@ kbd {
   color: var(--fg);
 }
 
+/* Lesson 833 Phase 4: gradient hero on Workflow Center landing.
+   Soft radial glow + linear sweep so the page reads as a "space to
+   work", not a spreadsheet. Tokens are bound to the user's theme via
+   var(--accent) so light/dark both work without a fork. */
+.workflows-hero {
+  position: relative;
+  padding: 36px 28px 32px 28px;
+  margin: 0 0 24px 0;
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 18% 20%, rgba(122, 162, 247, 0.22), transparent 55%),
+    radial-gradient(circle at 88% 0%, rgba(158, 206, 106, 0.16), transparent 50%),
+    linear-gradient(135deg, rgba(122, 162, 247, 0.06), rgba(158, 206, 106, 0.04));
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.workflows-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    circle at 50% 100%,
+    rgba(122, 162, 247, 0.08),
+    transparent 60%
+  );
+  pointer-events: none;
+}
+
+.workflows-hero-title {
+  font-size: 28px;
+  font-weight: 700;
+  margin: 0 0 8px 0;
+  letter-spacing: -0.01em;
+  position: relative;
+  z-index: 1;
+}
+
+.workflows-hero-subtitle {
+  color: var(--fg-muted);
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0;
+  max-width: 64ch;
+  position: relative;
+  z-index: 1;
+}
+
+.workflows-hero-actions {
+  margin-top: 14px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  position: relative;
+  z-index: 1;
+}
+
+.workflows-hero-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: rgba(122, 162, 247, 0.14);
+  color: var(--accent, #7aa2f7);
+  border: 1px solid rgba(122, 162, 247, 0.35);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* Phase 4: Recipes tab trigger — sits inline in the hero so users see
+   it without scrolling past the workflow grid. */
+.workflows-hero-recipes-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+.workflows-hero-recipes-btn:hover {
+  border-color: var(--accent, #7aa2f7);
+  background: rgba(122, 162, 247, 0.06);
+}
+
 .workflows-header h1 {
   font-size: 24px;
   margin: 0 0 4px 0;
@@ -4606,6 +4694,21 @@ kbd {
   border-radius: 10px;
   padding: 16px;
   margin-top: 24px;
+  /* Lesson 833 Phase 4: animated completion transition. Border color
+     and panel box-shadow cross-fade from running-blue to done-green
+     over 600ms when the workflow finishes. Same easing curve as the
+     status pill flash for visual cohesion. */
+  transition: border-color 600ms ease, box-shadow 600ms ease;
+}
+
+.workflows-active-running {
+  border-color: rgba(122, 162, 247, 0.55);
+  box-shadow: 0 0 0 1px rgba(122, 162, 247, 0.18) inset;
+}
+
+.workflows-active-finished {
+  border-color: rgba(158, 206, 106, 0.55);
+  box-shadow: 0 0 0 1px rgba(158, 206, 106, 0.18) inset;
 }
 
 .workflows-active-header {
@@ -4677,14 +4780,80 @@ kbd {
   font-style: italic;
 }
 
+/* Lesson 833 Phase 4: receipt card. Replaces the single line of
+   status text with a plain-English takeaway + a small stats table.
+   Cards slide up on render so the transition reads as "settling",
+   not "snapping into place". */
 .workflows-active-receipt {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-  color: #9ece6a;
-  font-weight: 600;
-  font-style: normal;
+  margin-top: 14px;
+  padding: 14px 16px;
+  background: linear-gradient(
+    135deg,
+    rgba(158, 206, 106, 0.08),
+    rgba(122, 162, 247, 0.06)
+  );
+  border: 1px solid rgba(158, 206, 106, 0.35);
+  border-radius: 8px;
+  color: var(--fg);
   font-family: inherit;
+  font-style: normal;
+  font-weight: 400;
+  animation: workflows-receipt-enter 480ms ease-out 1;
+}
+
+@keyframes workflows-receipt-enter {
+  0%   { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+.workflows-receipt-takeaway {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+
+.workflows-receipt-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px 16px;
+}
+
+.workflows-receipt-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.workflows-receipt-label {
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.workflows-receipt-value {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.workflows-receipt-warn {
+  color: #e0af68;
+}
+
+.workflows-receipt-status-complete {
+  color: #9ece6a;
+}
+
+.workflows-receipt-status-error {
+  color: #f7768e;
+}
+
+.workflows-receipt-status-killed {
+  color: var(--fg-muted);
 }
 
 .workflows-active-actions {
@@ -4972,4 +5141,198 @@ kbd {
 .prose-repl-line.stream-system {
   color: var(--fg-muted);
   font-style: italic;
+}
+
+/* Lesson 833 Phase 4: Recipes panel + tile "Re-run" hint. */
+
+.workflow-tile-recent {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  margin: 8px 0 10px 0;
+  background: rgba(122, 162, 247, 0.08);
+  border: 1px solid rgba(122, 162, 247, 0.22);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.workflow-tile-recent-label {
+  color: var(--fg-muted);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workflow-tile-recent-btn {
+  background: transparent;
+  border: 1px solid rgba(122, 162, 247, 0.35);
+  color: var(--accent, #7aa2f7);
+  border-radius: 5px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+.workflow-tile-recent-btn:hover {
+  background: rgba(122, 162, 247, 0.14);
+}
+
+.workflow-recipes-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: workflows-recipes-fade 200ms ease-out 1;
+}
+
+@keyframes workflows-recipes-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.workflow-recipes {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 720px;
+  width: 100%;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  animation: workflows-recipes-enter 280ms ease-out 1;
+}
+
+@keyframes workflows-recipes-enter {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+
+.workflow-recipes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.workflow-recipes-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.workflow-recipes-close {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.workflow-recipes-close:hover {
+  color: var(--fg);
+  background: rgba(122, 162, 247, 0.1);
+}
+
+.workflow-recipes-empty {
+  padding: 32px 24px;
+  text-align: center;
+  color: var(--fg-muted);
+  background: rgba(122, 162, 247, 0.05);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  line-height: 1.55;
+}
+
+.workflow-recipes-hint {
+  color: var(--fg-muted);
+  margin: 0 0 14px 0;
+  font-size: 13px;
+}
+
+.workflow-recipes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.workflow-recipe-card {
+  padding: 14px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 160ms ease;
+}
+
+.workflow-recipe-card:hover {
+  border-color: rgba(122, 162, 247, 0.5);
+}
+
+.workflow-recipe-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.workflow-recipe-snippet {
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  font-style: italic;
+}
+
+.workflow-recipe-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.workflow-recipe-time {
+  font-size: 12px;
+  color: var(--fg-muted);
+  flex: 1 1 auto;
+}
+
+.workflow-recipe-run {
+  background: rgba(122, 162, 247, 0.18);
+  color: var(--accent, #7aa2f7);
+  border: 1px solid rgba(122, 162, 247, 0.5);
+  border-radius: 5px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+.workflow-recipe-run:hover {
+  background: rgba(122, 162, 247, 0.28);
+}
+
+.workflow-recipe-delete {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  border-radius: 5px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.workflow-recipe-delete:hover {
+  color: #f7768e;
+  border-color: rgba(247, 118, 142, 0.4);
 }
