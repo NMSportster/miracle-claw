@@ -40,6 +40,7 @@ NODE_VERSION="22.23.2"   # satisfies openclaw's engines: node >=22.22.3 <23
 # the live dir is absent.
 MAIC_LIVE_DIR="$HOME/.openclaw/extensions/maic"
 MAIC_VENDORED_DIR="$DEPOT_DIR/maic-plugin"
+PROSE_LIBRARY_DIR="$DEPOT_DIR/prose-library"
 
 # Target arch (affects which Node binary we unpack). Default: host triple.
 TARGET="host"
@@ -286,6 +287,30 @@ rm -rf "$TMP_NODE"
 mkdir -p "$RESOURCES_DIR/maic-plugin"
 cp -f "$MAIC_VENDORED_DIR"/* "$RESOURCES_DIR/maic-plugin/"
 rm -f "$RESOURCES_DIR/maic-plugin/.vendor-stamp"
+
+# 4c.5. Copy MC's built-in prose-library (Lesson 833). Source of truth
+# is depot/prose-library/ (mirrors the MAIC plugin pattern at 4c above).
+# The in-repo copy at src-tauri/resources/prose-library/ is git-tracked
+# for editor convenience but gets wiped by the `rm -rf $RESOURCES_DIR`
+# at the top of this script. We mirror it into depot/ before that wipe
+# happens; if depot/ is missing or stale, fall back to the in-repo copy.
+if [[ ! -d "$PROSE_LIBRARY_DIR/workflows" || ! -d "$PROSE_LIBRARY_DIR/specialists" ]]; then
+    IN_REPO_PROSE="$REPO_ROOT/src-tauri/resources/prose-library"
+    if [[ -d "$IN_REPO_PROSE" ]]; then
+        echo "[bundle-runtime] depot/prose-library missing — mirroring from in-repo copy"
+        mkdir -p "$PROSE_LIBRARY_DIR"
+        cp -rf "$IN_REPO_PROSE"/* "$PROSE_LIBRARY_DIR"/
+    fi
+fi
+if [[ -d "$PROSE_LIBRARY_DIR" ]]; then
+    mkdir -p "$RESOURCES_DIR/prose-library"
+    cp -rf "$PROSE_LIBRARY_DIR"/workflows "$RESOURCES_DIR/prose-library/" 2>/dev/null || true
+    cp -rf "$PROSE_LIBRARY_DIR"/specialists "$RESOURCES_DIR/prose-library/" 2>/dev/null || true
+    prose_count=$(find "$RESOURCES_DIR/prose-library" -name "*.prose" | wc -l)
+    echo "[bundle-runtime] prose-library: $prose_count .prose files staged"
+else
+    echo "[bundle-runtime] NOTE: $PROSE_LIBRARY_DIR not present — installer will ship without built-in workflows" >&2
+fi
 
 # 4d. Write a runtime version file for diagnostics.
 cat > "$RESOURCES_DIR/BUNDLE_VERSION" <<EOF
