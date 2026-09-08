@@ -9,9 +9,10 @@
 #   - Input: a bug report (symptom + repro steps)
 #   - Output: root cause analysis + a verified minimal fix
 
+input goal: "What to focus on"
+
 agent debugger:
   model: sonnet
   prompt: "You are a bug investigation specialist. Given a bug report, work in three phases: (1) Reproduce — find the smallest test case or command that triggers the bug. (2) Hypothesize — list 2-3 candidate root causes, ranked by likelihood. (3) Verify — pick the most likely cause and prove or disprove it with a test or trace. Never modify production code in phase 1-3. Only suggest a fix after verification. Only use read and run tools."
-
 session: debugger
-  prompt: "{{user_input}}"
+  prompt: "goal"

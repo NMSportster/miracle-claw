@@ -4471,3 +4471,356 @@ kbd {
   gap: 8px;
   justify-content: flex-end;
 }
+
+/* ===========================================================================
+ * Workflow Center (Lesson 833, 2026-09-08, David)
+ *
+ * Phase 1 MVP surface. Lesson 832 contract: plain English copy, calm
+ * visuals (no pulsing status indicators), error messages that never
+ * expose internal codes.
+ * ========================================================================= */
+
+.workflows-wrap {
+  padding: 24px;
+  max-width: 1100px;
+  margin: 0 auto;
+  color: var(--fg);
+}
+
+.workflows-header h1 {
+  font-size: 24px;
+  margin: 0 0 4px 0;
+}
+
+.workflows-subtitle {
+  color: var(--fg-muted);
+  margin: 0 0 24px 0;
+  max-width: 60ch;
+  line-height: 1.5;
+}
+
+.workflows-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+.workflows-grid-specialists {
+  margin-top: 12px;
+}
+
+.workflow-tile,
+.specialist-tile {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 120ms ease;
+}
+
+.workflow-tile:hover,
+.specialist-tile:hover {
+  border-color: var(--accent);
+}
+
+.workflow-tile-name,
+.specialist-tile-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.workflow-tile-desc,
+.specialist-tile-desc {
+  color: var(--fg-muted);
+  font-size: 14px;
+  line-height: 1.45;
+  flex: 1;
+}
+
+.workflow-tile-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.workflow-tile-parallel {
+  background: rgba(122, 162, 247, 0.12);
+  color: #7aa2f7;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.workflow-tile-run {
+  background: var(--accent);
+  color: #0f172a;
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 14px;
+  align-self: flex-start;
+}
+
+.workflow-tile-run:hover {
+  background: var(--accent-hover);
+}
+
+.workflow-tile-run:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.workflows-specialists {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 16px;
+}
+
+.workflows-specialists summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--fg);
+  padding: 4px 0;
+}
+
+.workflows-specialists-hint {
+  color: var(--fg-muted);
+  font-size: 13px;
+  margin: 8px 0 0 0;
+  max-width: 70ch;
+  line-height: 1.45;
+}
+
+/* Active run panel */
+
+.workflows-active {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-top: 24px;
+}
+
+.workflows-active-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.workflows-active-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.workflows-active-status {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.workflows-active-output {
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+
+.workflows-active-placeholder {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.workflows-active-line {
+  margin-bottom: 2px;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.workflows-active-line.stream-stdout {
+  color: var(--fg);
+}
+
+.workflows-active-line.stream-stderr {
+  color: #f7768e;
+}
+
+.workflows-active-line.stream-system {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.workflows-active-receipt {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  color: #9ece6a;
+  font-weight: 600;
+  font-style: normal;
+  font-family: inherit;
+}
+
+.workflows-active-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.workflows-active-kill {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.workflows-active-kill:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.workflows-active-done {
+  background: var(--accent);
+  color: #0f172a;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.workflows-error {
+  background: var(--error-bg);
+  color: var(--error-fg);
+  padding: 12px;
+  border-radius: 6px;
+}
+
+/* Modal */
+
+.workflow-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.workflow-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  width: 90%;
+  max-width: 540px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.workflow-modal h2 {
+  margin: 0 0 4px 0;
+  font-size: 20px;
+  color: var(--fg);
+}
+
+.workflow-modal-desc {
+  color: var(--fg-muted);
+  margin: 0 0 16px 0;
+  font-size: 14px;
+}
+
+.workflow-modal-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 6px;
+}
+
+.workflow-modal-input {
+  width: 100%;
+  background: rgba(15, 23, 42, 0.5);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.workflow-modal-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.workflow-modal-hint {
+  color: #e0af68;
+  background: rgba(224, 175, 104, 0.1);
+  border: 1px solid rgba(224, 175, 104, 0.3);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.workflow-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.workflow-modal-cancel {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.workflow-modal-cancel:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.workflow-modal-run {
+  background: var(--accent);
+  color: #0f172a;
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.workflow-modal-run:hover {
+  background: var(--accent-hover);
+}
+
+.workflow-modal-run:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}

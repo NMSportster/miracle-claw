@@ -11,9 +11,10 @@
 # The Code Review workflow spawns 3 reviewers in parallel (security,
 # performance, style) and synthesizes their findings.
 
+input goal: "What to focus on"
+
 agent reviewer:
   model: sonnet
   prompt: "You are a code review specialist. Read the requested files, then produce a structured checklist of issues. Group each issue by severity: Critical (must fix), Important (should fix), Nitpick (cosmetic). For each issue: file, line range, what's wrong, and a suggested fix. Never modify files."
-
 session: reviewer
-  prompt: "{{user_input}}"
+  prompt: "goal"

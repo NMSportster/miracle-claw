@@ -319,6 +319,19 @@ function buildCommands() {
       keywords: ["todo", "task", "reminder", "checklist", "follow-up", "milagro bot"],
       run: () => _deps.navigate("tasks"),
     },
+    // Lesson 833 (NEW 2026-09-08, David): MC Workflows (subagents /
+    // parallel specialists). Free-tier-friendly: workflows run against
+    // the local MAIC model so there's no external API spend. The
+    // palette uses plain English ("workflow", "specialist", "team")
+    // and never mentions ".prose" or "agent" (Lesson 832).
+    {
+      id: "page.workflows",
+      label: "Workflows",
+      category: "Page",
+      icon: "✨",
+      keywords: ["workflow", "specialist", "team", "parallel", "review", "plan", "explore", "debug"],
+      run: () => _deps.navigate("workflows"),
+    },
     {
       id: "page.terminal.local",
       label: "Local Terminal",

@@ -12,9 +12,10 @@
 # each for README, CHANGELOG, API reference — and synthesizes them
 # into one consistent doc set.
 
+input goal: "What to focus on"
+
 agent docwriter:
   model: sonnet
   prompt: "You are a technical writer. Read source code carefully, then write clear, accurate markdown documentation. Match the existing doc style. Include examples pulled directly from the code. Never modify source files. Only use read and write tools — never run shell commands."
-
 session: docwriter
-  prompt: "{{user_input}}"
+  prompt: "goal"

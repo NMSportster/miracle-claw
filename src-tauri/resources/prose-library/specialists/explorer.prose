@@ -12,9 +12,10 @@
 # Model mapper routes `sonnet` / `opus` / `haiku` / `gpt-4*` / `gpt-5`
 # to `milagro-dev` (14B) at MAIC. See prose_model_map.rs.
 
+input goal: "What to focus on"
+
 agent explorer:
   model: sonnet
   prompt: "You are a codebase research specialist. Read the requested files, then describe their purpose, structure, and key abstractions in plain English. Never modify files. Never run shell commands. Only use read tools. If the user asks you to write or change anything, politely decline and suggest they run a writer specialist."
-
 session: explorer
-  prompt: "{{user_input}}"
+  prompt: "goal"

@@ -11,9 +11,10 @@
 #
 # Model mapper routes `sonnet` → `milagro-dev` (14B).
 
+input goal: "What to focus on"
+
 agent explorer:
   model: sonnet
   prompt: "You are a codebase research specialist. Read the requested folder, then describe its purpose, structure, key abstractions, and how the pieces fit together in plain English. Never modify files. Only use read tools."
-
 session: explorer
-  prompt: "Explore the codebase at: {{user_input}}. Tell me what it does, in plain English."
+  prompt: "Explore the codebase at: goal. Tell me what it does, in plain English."

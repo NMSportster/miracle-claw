@@ -10,17 +10,18 @@
 #
 # Parallel count: 3 debuggers + 1 synthesizer = 4 specialists total.
 
+input goal: "What to focus on"
+
 agent debugger:
   model: sonnet
   prompt: "You are a bug investigation specialist. Work in three phases: (1) Reproduce — smallest test case that triggers the bug. (2) Hypothesize — 2-3 candidate root causes, ranked. (3) Verify — prove or disprove the top candidate. Never modify production code in phases 1-3."
-
 parallel:
   repro = session: debugger
-    prompt: "Bug report: {{user_input}}. Your job: REPRODUCE. Find the smallest test case or command that triggers the bug. Report: repro steps, expected vs actual, frequency (always / sometimes / once)."
+    prompt: "Bug report: goal. Your job: REPRODUCE. Find the smallest test case or command that triggers the bug. Report: repro steps, expected vs actual, frequency (always / sometimes / once)."
   hypotheses = session: debugger
-    prompt: "Bug report: {{user_input}}. Your job: HYPOTHESIZE WITHOUT MODIFYING CODE. List 2-3 candidate root causes, ranked by likelihood. For each: the candidate, why you think it, what evidence would confirm or refute it."
+    prompt: "Bug report: goal. Your job: HYPOTHESIZE WITHOUT MODIFYING CODE. List 2-3 candidate root causes, ranked by likelihood. For each: the candidate, why you think it, what evidence would confirm or refute it."
   verify = session: debugger
-    prompt: "Bug report: {{user_input}}. Your job: VERIFY. Pick the most likely root cause from your own analysis (don't read the other debuggers' output). Prove or disprove it with a test, trace, or log. Report: root cause (or 'unclear'), evidence, what would unblock you."
+    prompt: "Bug report: goal. Your job: VERIFY. Pick the most likely root cause from your own analysis (don't read the other debuggers' output). Prove or disprove it with a test, trace, or log. Report: root cause (or 'unclear'), evidence, what would unblock you."
 
 # Synthesize into one root-cause analysis
 session "Combine the three debugging perspectives into one root-cause analysis"

@@ -292,7 +292,7 @@ export const dashboardPage = {
   requiresAuth: true,
 
   mount(root, ctx = {}) {
-    const { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules, onOpenProviderKeys, onOpenTasks } = ctx;
+    const { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules, onOpenProviderKeys, onOpenTasks, onOpenWorkflows } = ctx;
 
     // Lesson 704 (2026-08-27 10:05 MDT, David): wrap the whole mount
     // body in try/catch so a single ReferenceError or template-literal
@@ -331,7 +331,7 @@ export const dashboardPage = {
     })();
   },
 
-  async _doMount(root, ctx, { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules, onOpenProviderKeys, onOpenTasks }) {
+  async _doMount(root, ctx, { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules, onOpenProviderKeys, onOpenTasks, onOpenWorkflows }) {
 
       // Lesson 561 (2026-08-24 16:08 MDT, David): the dashboard's usage
       // line used to render only an em-dash below threshold because
@@ -573,6 +573,25 @@ export const dashboardPage = {
                 <div class="tile-cta">Open tasks →</div>
               </div>
             </button>
+            <!-- Lesson 833 (NEW 2026-09-08, David): MC Workflows tile —
+                 subagents / parallel specialists. User-facing copy:
+                 "Workflows" not ".prose programs", "specialists" not
+                 "agents". Six built-in workflows ship out of the box.
+                 Free-tier friendly: the tile is visible to everyone, and
+                 each workflow runs against the local MAIC model (no
+                 external API spend). -->
+            <button class="tile" id="workflows-tile" type="button">
+              <div class="tile-icon">✨</div>
+              <div class="tile-body">
+                <div class="tile-title">Workflows</div>
+                <div class="tile-description">
+                  Pick a workflow and watch a team of specialists work in parallel.
+                  Six built-in recipes: explore a codebase, run a code review with
+                  three specialists at once, plan a project, and more.
+                </div>
+                <div class="tile-cta">Open workflows →</div>
+              </div>
+            </button>
           </div>
 
           <!-- feature/drag-drop: file attachment staging zone. Drop a
@@ -659,6 +678,14 @@ export const dashboardPage = {
         const tasksTile = document.getElementById("tasks-tile");
         if (tasksTile) {
           tasksTile.addEventListener("click", () => onOpenTasks());
+        }
+      }
+      // Lesson 833 (NEW 2026-09-08, David): Workflows tile handler.
+      // Same defensive pattern as Tasks above.
+      if (onOpenWorkflows) {
+        const workflowsTile = document.getElementById("workflows-tile");
+        if (workflowsTile) {
+          workflowsTile.addEventListener("click", () => onOpenWorkflows());
         }
       }
       document.getElementById("tier-badge").addEventListener("click", () => this.refreshTier(root, ctx));

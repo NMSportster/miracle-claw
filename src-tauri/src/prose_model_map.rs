@@ -122,7 +122,96 @@ pub fn rewrite_to_temp_file(
         format!("Couldn't read the workflow file ({}): {e}", source_path.display())
     })?;
     let rewritten = rewrite_prose_source(&source_text, map);
+    write_rewritten_to_temp(source_path, &rewritten)
+}
 
+/// Read a `.prose` file, rewrite model aliases AND inject a user-provided
+/// `input goal` declaration at the top. The original file on disk is
+/// NEVER modified — only the temp file the VM sees.
+///
+/// Lesson 833: this is the bridge between the Workflow Center modal
+/// (one text field "What should this workflow look at?") and OpenProse's
+/// `input <name>:` top-level binding. We add `input goal: "<text>"` as
+/// the very first non-comment line in the rewritten copy so `goal` is
+/// bound before any session/parallel block references it.
+///
+/// If the source file already has `input goal:` (e.g. a future author
+/// hardcoded one), we REPLACE it rather than duplicating — so the
+/// user's modal text always wins.
+pub fn rewrite_to_temp_file_with_input(
+    source_path: &std::path::Path,
+    user_input: Option<&str>,
+    map: Option<&HashMap<&'static str, &'static str>>,
+) -> Result<PathBuf, String> {
+    let source_text = fs::read_to_string(source_path).map_err(|e| {
+        format!("Couldn't read the workflow file ({}): {e}", source_path.display())
+    })?;
+    let mut rewritten = rewrite_prose_source(&source_text, map);
+    rewritten = inject_user_input(&rewritten, user_input);
+    write_rewritten_to_temp(source_path, &rewritten)
+}
+
+/// Inject `input goal: "<text>"` as the first non-comment line of the
+/// rewritten source. If `text` is None or empty, returns the source
+/// unchanged. If the source already has an `input goal:` declaration,
+/// the user's text REPLACES it (so the modal always wins).
+fn inject_user_input(source: &str, user_input: Option<&str>) -> String {
+    let text = match user_input {
+        Some(t) if !t.trim().is_empty() => t.trim(),
+        _ => return source.to_string(),
+    };
+    // Escape any double quotes in the user's text — OpenProse's input
+    // declaration uses a quoted string literal.
+    let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+    let new_decl = format!("input goal: \"{escaped}\"");
+
+    // Remove any existing input goal: line (replace, don't duplicate).
+    let lines: Vec<&str> = source.lines().collect();
+    let mut filtered: Vec<&str> = Vec::with_capacity(lines.len() + 2);
+    let mut removed = false;
+    for line in &lines {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("input goal:") {
+            if !removed {
+                removed = true;
+                continue;
+            }
+        }
+        filtered.push(line);
+    }
+
+    // Find insertion point: after the last comment/blank line at the top.
+    let mut insert_idx = 0;
+    for (i, line) in filtered.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            insert_idx = i + 1;
+        } else {
+            break;
+        }
+    }
+
+    let mut out = String::with_capacity(source.len() + 64);
+    for (i, line) in filtered.iter().enumerate() {
+        if i == insert_idx {
+            out.push_str(&new_decl);
+            out.push('\n');
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    // Edge case: file was entirely comments/blanks — append at end.
+    if insert_idx >= filtered.len() {
+        out.push_str(&new_decl);
+        out.push('\n');
+    }
+    out
+}
+
+fn write_rewritten_to_temp(
+    source_path: &std::path::Path,
+    rewritten: &str,
+) -> Result<PathBuf, String> {
     // Temp file name: same basename + `.rewritten.prose` suffix in the
     // OS tmpdir. We use the OS tmpdir so we don't pollute the user's
     // project with auto-generated files.
@@ -245,5 +334,73 @@ mod tests {
             out.contains("model: milagro-dev"),
             "Lesson 833: unknown alias must fall through to default, got: {out}"
         );
+    }
+
+    /// Lesson 833: `inject_user_input` must add `input goal: "..."`
+    /// as the first non-comment line so OpenProse binds `goal` before
+    /// any session/parallel block references it.
+    #[test]
+    fn lesson_833_inject_user_input_first_non_comment_line() {
+        let source = "# comment line\n\nagent foo:\n  model: sonnet\nsession: foo\n  prompt: \"goal\"\n";
+        let out = inject_user_input(source, Some("explain the login flow"));
+        // input goal must come BEFORE the agent block.
+        let input_pos = out.find("input goal:").unwrap();
+        let agent_pos = out.find("agent foo:").unwrap();
+        assert!(
+            input_pos < agent_pos,
+            "Lesson 833: input goal must come before agent block (input at {input_pos}, agent at {agent_pos}), got: {out}"
+        );
+        assert!(
+            out.contains("input goal: \"explain the login flow\""),
+            "Lesson 833: user text must be quoted into the input decl, got: {out}"
+        );
+    }
+
+    /// Lesson 833: if the user types a double quote, it must be escaped
+    /// so the resulting `.prose` file still parses. (OpenProse's input
+    /// declaration uses a quoted string literal.)
+    #[test]
+    fn lesson_833_inject_user_input_escapes_double_quotes() {
+        let source = "agent foo:\n  model: sonnet\n";
+        let out = inject_user_input(source, Some("the \"login\" endpoint"));
+        assert!(
+            out.contains("input goal: \"the \\\"login\\\" endpoint\""),
+            "Lesson 833: double quotes in user input must be escaped, got: {out}"
+        );
+    }
+
+    /// Lesson 833: if the source already has an `input goal:` line,
+    /// the user's modal text REPLACES it (so the modal always wins).
+    /// Duplicate `input goal:` declarations would confuse the parser.
+    #[test]
+    fn lesson_833_inject_user_input_replaces_existing_decl() {
+        let source = "input goal: \"placeholder\"\n\nagent foo:\n  model: sonnet\n";
+        let out = inject_user_input(source, Some("user override"));
+        let occurrences = out.matches("input goal:").count();
+        assert_eq!(
+            occurrences, 1,
+            "Lesson 833: must replace (not duplicate) existing input goal decl, got {occurrences} in: {out}"
+        );
+        assert!(
+            out.contains("input goal: \"user override\""),
+            "Lesson 833: replacement must use the user's text, got: {out}"
+        );
+        assert!(
+            !out.contains("placeholder"),
+            "Lesson 833: old text must be gone, got: {out}"
+        );
+    }
+
+    /// Lesson 833: empty or None user_input must be a no-op (don't
+    /// add a stray empty input declaration).
+    #[test]
+    fn lesson_833_inject_user_input_no_op_when_empty() {
+        let source = "agent foo:\n  model: sonnet\n";
+        let out_none = inject_user_input(source, None);
+        let out_empty = inject_user_input(source, Some(""));
+        let out_whitespace = inject_user_input(source, Some("   \n\t  "));
+        assert_eq!(out_none, source, "None must be identity");
+        assert_eq!(out_empty, source, "empty string must be identity");
+        assert_eq!(out_whitespace, source, "whitespace must be identity");
     }
 }

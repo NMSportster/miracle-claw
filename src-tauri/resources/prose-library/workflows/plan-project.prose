@@ -11,21 +11,22 @@
 #
 # Parallel count: 5 planners + 1 synthesizer = 6 specialists total.
 
+input goal: "What to focus on"
+
 agent planner:
   model: sonnet
   prompt: "You are a project planner. Produce one specific section of a structured plan. Never modify files. Only use read tools."
-
 parallel:
   features = session: planner
-    prompt: "Given these requirements: {{user_input}}. Produce ONLY the Features section: a bullet list of user-visible capabilities, grouped by milestone. Each bullet: 1 sentence, concrete, testable."
+    prompt: "Given these requirements: goal. Produce ONLY the Features section: a bullet list of user-visible capabilities, grouped by milestone. Each bullet: 1 sentence, concrete, testable."
   risks = session: planner
-    prompt: "Given these requirements: {{user_input}}. Produce ONLY the Risks section: a list of things that could go wrong, ranked by likelihood × impact. For each risk: name it, describe it, suggest a mitigation."
+    prompt: "Given these requirements: goal. Produce ONLY the Risks section: a list of things that could go wrong, ranked by likelihood × impact. For each risk: name it, describe it, suggest a mitigation."
   schedule = session: planner
-    prompt: "Given these requirements: {{user_input}}. Produce ONLY the Schedule section: rough milestones (week-level). For each milestone: title, deliverables, dependencies on earlier milestones."
+    prompt: "Given these requirements: goal. Produce ONLY the Schedule section: rough milestones (week-level). For each milestone: title, deliverables, dependencies on earlier milestones."
   dependencies = session: planner
-    prompt: "Given these requirements: {{user_input}}. Produce ONLY the Dependencies section: external services, libraries, third-party decisions, and internal blockers. Group by type: External / Library / Decision / Blocker."
+    prompt: "Given these requirements: goal. Produce ONLY the Dependencies section: external services, libraries, third-party decisions, and internal blockers. Group by type: External / Library / Decision / Blocker."
   questions = session: planner
-    prompt: "Given these requirements: {{user_input}}. Produce ONLY the Questions section: ambiguities that must be resolved before implementation starts. Each question: one sentence, phrased so the user can answer it directly."
+    prompt: "Given these requirements: goal. Produce ONLY the Questions section: ambiguities that must be resolved before implementation starts. Each question: one sentence, phrased so the user can answer it directly."
 
 # Synthesize into one consistent plan
 session "Combine the five plan sections into one document"

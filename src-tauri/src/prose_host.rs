@@ -150,14 +150,18 @@ pub struct ProseRunResult {
 ///   - relative path inside `src-tauri/resources/prose-library/`
 ///     (e.g. "workflows/explore.prose" or "specialists/explorer.prose")
 ///
-/// Returns session_id. The frontend then polls with `prose_poll`.
+/// `user_input` is the goal text from the Workflow Center modal. We
+/// inject it into the rewritten `.prose` file by adding `input goal: "<text>"`
+/// at the top of the rewritten copy. OpenProse then binds the variable
+/// `goal` and any reference to it (e.g. `prompt: "... goal..."`) sees
+/// the user's text. The original `.prose` file on disk is NEVER
+/// modified — only the temp file we pass to the VM (AP-833-B).
 ///
-/// Lesson 833: child sessions inherit `tool_execution: "client"` so
-/// the spawned `.prose` agent can call MC's paid-tier local tools
-/// (read_file, write_file, bash_run, etc.) via the sidecar.
+/// Returns session_id. The frontend then polls with `prose_poll`.
 #[tauri::command]
 pub fn prose_run(
     file_or_slug: String,
+    user_input: Option<String>,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<ProseRunResult, String> {
@@ -192,16 +196,19 @@ pub fn prose_run(
         ));
     }
 
-    // Lesson 833: pre-VM model alias rewrite. The `.prose` source uses
-    // Anthropic/OpenAI model names (sonnet, opus, gpt-4*, etc.); MAIC
-    // serves milagro-dev / milagro-coder / milagro-oc-* instead. We
-    // rewrite to a temp file before spawning the VM. The source file
-    // on disk is NEVER modified — AP-833-B keeps the mapping in Rust
-    // so `.prose` files stay portable (works on a real Claude install
-    // too).
+    // Lesson 833: pre-VM model alias rewrite + user_input injection.
+    // The `.prose` source uses Anthropic/OpenAI model names (sonnet,
+    // opus, gpt-4*, etc.); MAIC serves milagro-dev / milagro-coder /
+    // milagro-oc-* instead. We rewrite to a temp file before spawning
+    // the VM. The source file on disk is NEVER modified — AP-833-B
+    // keeps the mapping in Rust so `.prose` files stay portable.
     let resolved_path = std::path::Path::new(&resolved);
-    let vm_input = crate::prose_model_map::rewrite_to_temp_file(resolved_path, None)
-        .map_err(|e| plain_english_error(&e))?;
+    let vm_input = crate::prose_model_map::rewrite_to_temp_file_with_input(
+        resolved_path,
+        user_input.as_deref(),
+        None,
+    )
+    .map_err(|e| plain_english_error(&e))?;
 
     let mut cmd = Command::new(&node);
     cmd.arg(&mjs)

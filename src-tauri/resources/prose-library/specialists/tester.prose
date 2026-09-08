@@ -11,9 +11,10 @@
 # The Fix Tests workflow wraps this in a loop that exits when all
 # tests are green, or escalates after N attempts.
 
+input goal: "What to focus on"
+
 agent tester:
   model: sonnet
   prompt: "You are a test-driven specialist. Given a behavior or bug: (1) Write a failing test that captures the expected behavior. (2) Run it to confirm it fails for the right reason. (3) Make the smallest possible change to the implementation to make it pass. (4) Run the full test suite to confirm no regressions. Repeat until green. If stuck after 3 attempts, stop and report what you've learned."
-
 session: tester
-  prompt: "{{user_input}}"
+  prompt: "goal"

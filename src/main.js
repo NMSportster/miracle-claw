@@ -100,6 +100,10 @@ register("modules", modulesPage);
 // don't need an explicit `register("tasks", tasksPage)` line here —
 // the import side-effect is enough.
 import "./pages/tasks.js";
+// Lesson 833 (NEW 2026-09-08, David): MC Workflows Center — Phase 1
+// of subagents. Self-registers as "workflows" via register() at the
+// bottom of the file. Requires auth.
+import "./pages/workflows.js";
 // rc53 (feature/secrets-vault): debug page registration. Mounted
 // only via window.__mc_openSecretsDebug() (dev escape hatch).
 register("secrets-debug", secretsDebugPage);
@@ -154,6 +158,10 @@ installNavigation({
     [
       "tasks",
       () => tasksCtx(),
+    ],
+    [
+      "workflows",
+      () => workflowsCtx(),
     ],
     [
       "login",
@@ -299,6 +307,11 @@ function pageCtx() {
     // The page enforces the paid-tier gate; the route itself is
     // universal so free users can click through and see the upgrade CTA.
     onOpenTasks: () => navigate("tasks"),
+    // Lesson 833 (NEW 2026-09-08, David): dashboard's "Workflows"
+    // tile routes here so the Workflow Center page renders the 6
+    // built-in workflows + 6 named specialists with run modal +
+    // live output stream.
+    onOpenWorkflows: () => navigate("workflows"),
     // rc53.8 (feature/extras-hub): hand off to Terminal with a
     // pre-filled command + the right shell for the OS. cmd on
     // Windows, bash on Linux/macOS — both can resolve mc-* from
@@ -399,6 +412,16 @@ function modulesCtx() {
 // no navigation). Fix: add a "tasks" builder here with a minimal ctx
 // (back-to-dashboard + onNeedsLogin), same shape as pricingCtx.
 function tasksCtx() {
+  return {
+    onBackToDashboard: () => navigate("dashboard"),
+    onNeedsLogin: mountLogin,
+  };
+}
+
+// Lesson 833 (NEW 2026-09-08, David): Workflow Center context. The
+// page is self-contained (no extra callbacks needed beyond the
+// standard back-to-dashboard), so this is intentionally minimal.
+function workflowsCtx() {
   return {
     onBackToDashboard: () => navigate("dashboard"),
     onNeedsLogin: mountLogin,
