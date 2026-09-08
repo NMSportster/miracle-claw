@@ -94,6 +94,63 @@ function renderModulesButton() {
     </button>`;
 }
 
+// Lesson 833 Phase 5: workflow-run banner. When the user kicks off a
+// workflow and navigates back to the dashboard, we show a small
+// banner at the top of the tiles area that reads
+//   - "Workflow 'Code Review' is running" (status: running), or
+//   - "Workflow 'Code Review' finished" (status: complete / killed / error).
+// Clicking the banner navigates to the workflows page where the run
+// panel is already on screen.
+//
+// We read the same sessionStorage key the workflows page writes to
+// (mc.workflows.active_run.v1). sessionStorage is per-tab, so
+// closing the tab or finishing + clearing the run makes the banner
+// disappear without manual cleanup.
+function renderWorkflowRunBanner() {
+  let active = null;
+  try {
+    const raw = sessionStorage.getItem("mc.workflows.active_run.v1");
+    if (!raw) return "";
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed.sessionId !== "string") return "";
+    active = parsed;
+  } catch (e) { return ""; }
+  if (!active) return "";
+
+  const status = active.status || "running";
+  const name = active.workflowName || "Workflow";
+  const isFinished = status === "complete" || status === "killed" || status === "error";
+  const statusLabel = isFinished
+    ? status === "complete"
+      ? "finished"
+      : status === "killed"
+      ? "was stopped"
+      : "had a problem"
+    : "is running";
+  const icon = isFinished
+    ? status === "complete"
+      ? "✅"
+      : status === "killed"
+      ? "⏹"
+      : "⚠"
+    : "✨";
+  const cls = `workflow-banner workflow-banner-${isFinished ? "finished" : "running"} workflow-banner-status-${status}`;
+
+  return `
+    <button type="button"
+            class="${cls}"
+            id="workflow-run-banner"
+            title="Open the workflow run">
+      <span class="workflow-banner-icon">${icon}</span>
+      <span class="workflow-banner-text">
+        <strong>${escapeHtml(name)}</strong>
+        <span class="workflow-banner-status">${statusLabel}</span>
+      </span>
+      <span class="workflow-banner-cta">View run →</span>
+    </button>
+  `;
+}
+
 // =============================================================================
 // Voice transcription preview modal (rc53.29, David 2026-08-26 16:33 MDT)
 //
@@ -458,6 +515,8 @@ export const dashboardPage = {
 
           ${renderLinkButtons()}
 
+          ${renderWorkflowRunBanner()}
+
           <div class="tiles">
             <button class="tile tile-primary" id="openclaw-windows-tile" type="button">
               <div class="tile-icon">🦞</div>
@@ -681,11 +740,20 @@ export const dashboardPage = {
         }
       }
       // Lesson 833 (NEW 2026-09-08, David): Workflows tile handler.
-      // Same defensive pattern as Tasks above.
+// Same defensive pattern as Tasks above.
       if (onOpenWorkflows) {
         const workflowsTile = document.getElementById("workflows-tile");
         if (workflowsTile) {
           workflowsTile.addEventListener("click", () => onOpenWorkflows());
+        }
+        // Lesson 833 Phase 5: workflow-run banner (above the tiles)
+        // navigates to the workflows page so the user can rejoin the
+        // active run. The banner is rendered conditionally based on
+        // sessionStorage, so it may not exist on every dashboard
+        // mount — guard the lookup.
+        const banner = document.getElementById("workflow-run-banner");
+        if (banner) {
+          banner.addEventListener("click", () => onOpenWorkflows());
         }
       }
       document.getElementById("tier-badge").addEventListener("click", () => this.refreshTier(root, ctx));

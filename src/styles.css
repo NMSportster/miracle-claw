@@ -5336,3 +5336,102 @@ kbd {
   color: #f7768e;
   border-color: rgba(247, 118, 142, 0.4);
 }
+
+/* Lesson 833 Phase 5: workflow-run banner on the dashboard. Sits above
+   the tiles grid. Two visual states: running (subtle blue pulse) and
+   finished (steady, status-coloured). Same accent tokens as the
+   hero on the workflows page. */
+
+.workflow-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 12px 18px;
+  margin: 0 0 16px 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--fg);
+  text-align: left;
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+
+.workflow-banner:hover {
+  border-color: rgba(122, 162, 247, 0.45);
+  background: rgba(122, 162, 247, 0.05);
+}
+
+.workflow-banner-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.workflow-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.workflow-banner-text strong {
+  font-weight: 600;
+}
+
+.workflow-banner-status {
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.workflow-banner-cta {
+  color: var(--accent, #7aa2f7);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.workflow-banner-running {
+  border-color: rgba(122, 162, 247, 0.35);
+  background: linear-gradient(
+    135deg,
+    rgba(122, 162, 247, 0.06),
+    transparent 70%
+  );
+}
+
+.workflow-banner-running .workflow-banner-icon {
+  /* Calm pulse — Lesson 831: never aggressive. */
+  animation: workflow-banner-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes workflow-banner-pulse {
+  0%, 100% { opacity: 0.75; }
+  50%      { opacity: 1;    }
+}
+
+.workflow-banner-finished {
+  border-color: rgba(158, 206, 106, 0.3);
+}
+
+.workflow-banner-status-complete .workflow-banner-cta {
+  color: #9ece6a;
+}
+
+.workflow-banner-status-error {
+  border-color: rgba(247, 118, 142, 0.35);
+}
+.workflow-banner-status-error .workflow-banner-cta {
+  color: #f7768e;
+}
+
+.workflow-banner-status-killed {
+  border-color: rgba(110, 118, 129, 0.3);
+}
+.workflow-banner-status-killed .workflow-banner-cta {
+  color: var(--fg-muted);
+}

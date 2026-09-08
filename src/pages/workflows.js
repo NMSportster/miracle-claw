@@ -220,6 +220,62 @@ async function mount(root, ctx = {}) {
   _state.activePanel = el("div", { class: "workflows-active", style: "display: none;" });
   wrap.appendChild(_state.activePanel);
 
+  // Lesson 833 Phase 5: auto-rejoin. If sessionStorage has an active
+  // run id (left by a previous session of this page, or by the
+  // dashboard banner), attempt to rejoin the run:
+  //   - Call prose_poll to recover the current state.
+  //   - If finished, render the receipt card directly.
+  //   - If still running, show the active panel and resume polling.
+  // If the session is unknown to the Rust side (it died, or the
+  // server restarted), clearActivePanel() so the user starts clean.
+  // We do this AFTER the activePanel element exists so the panel
+  // has somewhere to render.
+  const persisted = readActiveRun();
+  if (persisted) {
+    try {
+      const pollResult = await invoke("prose_poll", {
+        sessionId: persisted.sessionId,
+        lastSeq: 0,
+      });
+      // The session is alive. Re-attach and either show the receipt
+      // (if finished) or resume polling (if still running).
+      _state.activeSessionId = persisted.sessionId;
+      _state.activeWorkflowName = persisted.workflowName || "Workflow";
+      _state.lastSeq = 0;
+      // Re-persist so the dashboard banner stays in sync (in case the
+      // user navigated away and back — the banner reads the same key).
+      persistActiveRun(persisted.sessionId, persisted.workflowName, {
+        startedAt: persisted.startedAt || Date.now(),
+        status: pollResult.status,
+        finishedAt: pollResult.finished ? Date.now() : null,
+      });
+      if (pollResult.finished) {
+        showActivePanelComplete(pollResult.status, pollResult.chunks || []);
+      } else {
+        // Re-render a minimal workflow object so showActivePanelRunning
+        // can build the header. We don't have the description here, so
+        // we synthesize one from the workflowName.
+        const stubWorkflow = {
+          name: persisted.workflowName || "Workflow",
+          file: null,
+          description: "",
+        };
+        showActivePanelRunning(stubWorkflow);
+        // Render any chunks we just polled so the user sees progress.
+        for (const c of pollResult.chunks || []) {
+          appendActivePanelChunk(c);
+          _state.lastSeq = Math.max(_state.lastSeq, c.seq);
+        }
+        startPolling();
+      }
+    } catch (e) {
+      // Session is dead. Clear the dangling reference and let the user
+      // start fresh. We don't surface the error — the panel is empty
+      // and there's no need to alarm them.
+      persistActiveRun(null);
+    }
+  }
+
   // Lesson 833 Phase 4: if Cmd-K sent us a workflowHint, scroll the
   // matching tile into view and open its run modal. We don't open the
   // modal automatically on *every* mount (would surprise users who
@@ -611,6 +667,11 @@ async function submitRun(workflow) {
   _state.activeSessionId = result.session_id;
   _state.activeWorkflowName = workflow.name;
   _state.lastSeq = 0;
+  // Lesson 833 Phase 5: persist the session id so the dashboard can
+  // show a "Workflow running" banner and the page can auto-rejoin
+  // on remount. sessionStorage is scoped to this tab — close the tab
+  // and the dangling reference goes away.
+  persistActiveRun(result.session_id, workflow.name);
   // Lesson 833 Phase 4: save the goal as a recipe so the user can
   // re-run with one click from the Recipes panel. We persist the
   // trimmed goal text + a timestamp keyed on the workflow file.
@@ -830,6 +891,46 @@ function buildReceiptCard(status, stats) {
   );
 }
 
+// Lesson 833 Phase 5: when a run is in flight, persist the session
+// id + workflow name to sessionStorage so a navigation away from the
+// page doesn't lose the active run. The dashboard reads this key to
+// show a "Workflow running" banner, and the workflows page reads it
+// on remount to auto-rejoin (call prose_poll + re-render).
+//
+// We use sessionStorage (not localStorage) so closing the tab clears
+// the dangling reference — stale session IDs from yesterday are
+// useless. Errors are silently swallowed (Lesson 831).
+const ACTIVE_RUN_KEY = "mc.workflows.active_run.v1";
+
+function persistActiveRun(sessionId, workflowName, extras = {}) {
+  try {
+    if (sessionId) {
+      sessionStorage.setItem(
+        ACTIVE_RUN_KEY,
+        JSON.stringify({
+          sessionId,
+          workflowName,
+          startedAt: extras.startedAt || Date.now(),
+          status: extras.status || "running",
+          finishedAt: extras.finishedAt || null,
+        }),
+      );
+    } else {
+      sessionStorage.removeItem(ACTIVE_RUN_KEY);
+    }
+  } catch (e) { /* non-fatal */ }
+}
+
+function readActiveRun() {
+  try {
+    const raw = sessionStorage.getItem(ACTIVE_RUN_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed.sessionId !== "string") return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+
 function clearActivePanel() {
   if (!_state.activePanel) return;
   _state.activePanel.style.display = "none";
@@ -840,6 +941,9 @@ function clearActivePanel() {
   _state.activeSessionId = null;
   _state.activeWorkflowName = null;
   _state.lastSeq = 0;
+  // Lesson 833 Phase 5: clear the sessionStorage marker so the
+  // dashboard's "Workflow running" banner goes away.
+  persistActiveRun(null);
 }
 
 async function killActive() {
@@ -857,15 +961,11 @@ async function killActive() {
 // arrives as soon as the Rust reader thread writes it to the buffer —
 // no 1s poll lag. The poll loop stays as a safety net (see startPolling)
 // but the user-visible updates come through these handlers first.
-function onProseChunk(chunk) {
-  if (!chunk) return;
+function appendActivePanelChunk(chunk) {
   const out = _state.activePanel?.querySelector("#workflows-active-output");
-  if (!out) return; // panel not visible yet — pollOnce will pick it up
+  if (!out) return false;
   // Skip system lines in the live view; we show them in the receipt.
-  if (chunk.stream === "system") {
-    _state.lastSeq = chunk.seq;
-    return;
-  }
+  if (chunk.stream === "system") return false;
   const placeholder = out.querySelector(".workflows-active-placeholder");
   if (placeholder) placeholder.remove();
   out.appendChild(
@@ -885,6 +985,12 @@ function onProseChunk(chunk) {
   if (nearBottom) {
     out.scrollTop = out.scrollHeight;
   }
+  return true;
+}
+
+function onProseChunk(chunk) {
+  if (!chunk) return;
+  if (!appendActivePanelChunk(chunk)) return;
   _state.lastSeq = chunk.seq;
 }
 
@@ -986,6 +1092,14 @@ async function pollOnce() {
     }
     const allChunks = (result.chunks || []).concat(finalResult.chunks || []);
     showActivePanelComplete(result.status, allChunks);
+    // Lesson 833 Phase 5: update the persisted marker so the
+    // dashboard banner reads "Workflow finished" instead of
+    // "Workflow running". The sessionId stays so the page can
+    // rejoin on remount and re-render the receipt.
+    persistActiveRun(_state.activeSessionId, _state.activeWorkflowName, {
+      status: result.status,
+      finishedAt: Date.now(),
+    });
   }
 }
 

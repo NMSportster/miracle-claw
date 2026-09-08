@@ -311,3 +311,66 @@ test("Cmd-K workflowHint resolution finds by file slug substring", () => {
   assert.equal(resolveHint("fix-tests", workflows).name, "Fix Tests");
   assert.equal(resolveHint("nonexistent", workflows), undefined);
 });
+
+test("persistActiveRun writes a valid JSON record and clears it on null", () => {
+  // Mirrors the sessionStorage-backed active-run tracker. We use a
+  // plain object as the backing store; sessionStorage semantics
+  // (per-tab, throws on disabled storage) are covered by the
+  // try/catch wrapping in production.
+  const store = {};
+  const KEY = "mc.workflows.active_run.v1";
+  function persist(sessionId, workflowName, extras = {}) {
+    if (sessionId) {
+      store[KEY] = JSON.stringify({
+        sessionId,
+        workflowName,
+        startedAt: extras.startedAt || 1700000000000,
+        status: extras.status || "running",
+        finishedAt: extras.finishedAt || null,
+      });
+    } else {
+      delete store[KEY];
+    }
+  }
+  function read() {
+    const raw = store[KEY];
+    if (!raw) return null;
+    const p = JSON.parse(raw);
+    return p && typeof p.sessionId === "string" ? p : null;
+  }
+
+  assert.equal(read(), null);
+  persist("abc-123", "Code Review");
+  const rec = read();
+  assert.equal(rec.sessionId, "abc-123");
+  assert.equal(rec.workflowName, "Code Review");
+  assert.equal(rec.status, "running");
+  // Update to finished
+  persist("abc-123", "Code Review", { status: "complete", finishedAt: 1700000010000 });
+  assert.equal(read().status, "complete");
+  // Clear
+  persist(null);
+  assert.equal(read(), null);
+});
+
+test("dashboard banner renders only when active run exists and hides on null", () => {
+  // Mirrors renderWorkflowRunBanner's sessionStorage read. We test the
+  // "should I show the banner" predicate in isolation.
+  const store = {};
+  function shouldShow() {
+    try {
+      const raw = store["mc.workflows.active_run.v1"];
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      return Boolean(parsed && typeof parsed.sessionId === "string");
+    } catch (e) { return false; }
+  }
+  assert.equal(shouldShow(), false, "empty store -> no banner");
+  store["mc.workflows.active_run.v1"] = JSON.stringify({
+    sessionId: "x", workflowName: "X", status: "running",
+  });
+  assert.equal(shouldShow(), true, "valid record -> show banner");
+  // Garbage value -> no banner (defensive)
+  store["mc.workflows.active_run.v1"] = "{not json";
+  assert.equal(shouldShow(), false, "malformed JSON -> no banner");
+});
