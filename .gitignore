@@ -79,3 +79,12 @@ brand/lockup-horizontal.svg
 .build-linux.lock
 dist.OLD.root-owned/
 dist.root-owned-bak/
+
+# mclaw headless companion binary
+mclaw/target/
+mclaw/dist/
+
+# Old dist backups (Lesson: trash old build artifacts)
+dist.old.*/
+dist.root-owned-bak-*/
+dist.root-owned-bak-rc*/
