@@ -4516,10 +4516,25 @@ kbd {
   pointer-events: none;
 }
 
+/* Lesson 837 (2026-09-09, David): back-to-dashboard button anchored
+   to the top-left of the gradient hero. Absolute so it doesn't push
+   the title down — the gradient stays clean. Above the ::after
+   pseudo-element (which adds the bottom-center glow) so the button
+   stays clickable on every pixel of its 32x32 box. */
+.workflows-hero-back {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 2;
+}
+
 .workflows-hero-title {
   font-size: 28px;
   font-weight: 700;
   margin: 0 0 8px 0;
+  /* Leave room for the absolutely-positioned back button at the
+     top-left so the "Workflows" title doesn't slide under it. */
+  padding-left: 44px;
   letter-spacing: -0.01em;
   position: relative;
   z-index: 1;

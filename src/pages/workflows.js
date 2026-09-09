@@ -138,6 +138,15 @@ async function mount(root, ctx = {}) {
   _state.activeWorkflowName = null;
   _state.lastSeq = 0;
   _state.pendingWorkflowHint = typeof ctx.workflowHint === "string" ? ctx.workflowHint : null;
+  // Lesson 837 (2026-09-09, David): workflows page had no back button,
+  // so users had to close the app to get back to the Dashboard. The
+  // ctx already includes onBackToDashboard (wired in main.js workflowsCtx),
+  // but workflows.js never read it. Read it here and render a top-left
+  // back button. Fall back to a no-op so the page still works in tests
+  // or stripped-down embed contexts.
+  _state.onBackToDashboard = typeof ctx.onBackToDashboard === "function"
+    ? ctx.onBackToDashboard
+    : () => {};
   stopPolling();
 
   root.innerHTML = "";
@@ -180,7 +189,24 @@ async function mount(root, ctx = {}) {
   // load so the count pill ("6 workflows · 6 specialists") has the
   // real numbers. The Recipes button is inline so users can reach
   // saved workflows without scrolling past the grid.
+  //
+  // Lesson 837 (2026-09-09, David): back button rendered as the first
+  // child of the hero so the gradient + title are unchanged. We use
+  // the established `.icon-link` class (32x32 with a border + arrow)
+  // so it matches the back button on Provider Keys, Secrets, Pricing,
+  // and Modules — every other top-level page.
   const header = el("div", { class: "workflows-hero" }, [
+    el(
+      "button",
+      {
+        class: "icon-link workflows-hero-back",
+        id: "workflows-back-btn",
+        title: "Back to dashboard",
+        "aria-label": "Back to dashboard",
+        onclick: () => _state.onBackToDashboard(),
+      },
+      ["←"],
+    ),
     el("h1", { class: "workflows-hero-title" }, ["Workflows"]),
     el("p", { class: "workflows-hero-subtitle" }, [
       "Pick a workflow, give it a goal, and watch your team work. ",

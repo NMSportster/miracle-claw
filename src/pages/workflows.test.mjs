@@ -568,3 +568,114 @@ test("prose_examples catch block surfaces the underlying error", async () => {
     "like a server outage to the user."
   );
 });
+
+// -------------------------------------------------------------------------
+// Lesson 837 (NEW 2026-09-09, David): regression test for the missing
+// back-to-dashboard button.
+//
+// Symptom David reported after installing rc55.24: "Clicked Workflows,
+// it opens the page and works, but there's no back button anywhere. My
+// only option to get to the Dashboard is to close the program and log
+// back in."
+//
+// Root cause: `main.js:workflowsCtx` already returns
+// `onBackToDashboard: () => navigate("dashboard")` (line ~427), so the
+// contract is wired. But `src/pages/workflows.js` never read `ctx.onBackToDashboard`
+// and never rendered a back button. Same family of "contract wired on
+// one side, ignored on the other" bugs as Lesson 834 (dashboard callback
+// drift) and Lesson 836 (ACL drift). The fix reads the ctx and renders
+// a top-left back button inside the gradient hero.
+//
+// This test guards both halves:
+//   1. The mount() function destructures `ctx.onBackToDashboard`.
+//   2. The page DOM contains a button wired to call it.
+// If a future refactor drops the destructuring OR removes the button
+// (e.g. someone "tries a different layout"), the test fails before
+// users can ship a broken build again.
+// -------------------------------------------------------------------------
+
+test("workflows page reads ctx.onBackToDashboard (Lesson 837)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), "workflows.js"),
+    "utf8",
+  );
+  // The fix: mount(root, ctx) reads ctx.onBackToDashboard and stashes
+  // it on _state. The literal "ctx.onBackToDashboard" must appear in
+  // the mount() body — without it, the page has no way to navigate back.
+  // We look for the assignment pattern specifically (not just any
+  // reference) so a stray comment doesn't pass the test.
+  const wired = /onBackToDashboard\s*=\s*typeof\s+ctx\.onBackToDashboard\s*===\s*["']function["']/.test(src);
+  assert.ok(
+    wired,
+    "expected workflows.js mount() to read `ctx.onBackToDashboard` " +
+    "and stash it on a module-level state. Without this read, the " +
+    "back button has no callback to fire. (Lesson 837)"
+  );
+});
+
+test("workflows page renders a back button wired to onBackToDashboard (Lesson 837)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), "workflows.js"),
+    "utf8",
+  );
+  // Find the back-button render. We look for the canonical pattern:
+  //   el("button", { class: "...", id: "workflows-back-btn", ..., onclick: () => _state.onBackToDashboard() }, ["←"])
+  // The id is the stable test hook — the regression test for the
+  // dashboard Cancel button (Lesson 835) uses the same `id` pattern.
+  const backBtnRendered = /id:\s*["']workflows-back-btn["']/.test(src);
+  assert.ok(
+    backBtnRendered,
+    "expected a back button with id `workflows-back-btn` in workflows.js. " +
+    "Without it, users have no way to return to the Dashboard from the " +
+    "Workflows page. (Lesson 837)"
+  );
+  // And the onclick must call the stashed onBackToDashboard. We accept
+  // either `_state.onBackToDashboard()` (the fix pattern) or a direct
+  // `onBackToDashboard()` (in case a future refactor inlines it). The
+  // test stays correct either way; only the *absence* of any onBack
+  // call is a real regression.
+  const onclickCallsBack =
+    /workflows-back-btn[\s\S]{0,400}onclick:[\s\S]{0,200}_state\.onBackToDashboard\(\)/.test(src) ||
+    /workflows-back-btn[\s\S]{0,400}onclick:[\s\S]{0,200}onBackToDashboard\(\)/.test(src);
+  assert.ok(
+    onclickCallsBack,
+    "expected the back button's onclick handler to call onBackToDashboard. " +
+    "If the button is rendered but not wired, users will see a button " +
+    "that does nothing. (Lesson 837)"
+  );
+});
+
+test("workflows page styles position the back button at the top-left (Lesson 837)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), "..", "styles.css"),
+    "utf8",
+  );
+  // The back button is absolutely-positioned at the top-left of the
+  // hero so it doesn't push the title down. We assert:
+  //   1. There's a rule for `.workflows-hero-back`
+  //   2. It sets `position: absolute`
+  //   3. It positions to the top-left (top and left)
+  // The exact pixel values are not asserted — the contract is
+  // "top-left absolute positioning inside the hero", which is
+  // future-proof against minor tweaks.
+  const rule = /\.workflows-hero-back\s*\{[^}]*position:\s*absolute[^}]*(?:top:\s*\d|left:\s*\d)/.test(css);
+  assert.ok(
+    rule,
+    "expected .workflows-hero-back to be absolutely-positioned at the " +
+    "top-left of the hero. Without it, the back button would push the " +
+    "title down and the gradient hero would look broken. (Lesson 837)"
+  );
+  // The title needs to clear the back button. The fix adds
+  // `padding-left` to .workflows-hero-title; we assert the override
+  // exists so the title doesn't slide under the button.
+  const titleClears = /\.workflows-hero-title\s*\{[^}]*padding-left:\s*\d/.test(css);
+  assert.ok(
+    titleClears,
+    "expected .workflows-hero-title to have a padding-left so it " +
+    "doesn't slide under the absolutely-positioned back button. " +
+    "(Lesson 837)"
+  );
+});
