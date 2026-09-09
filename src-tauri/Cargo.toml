@@ -125,6 +125,14 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 anyhow = "1"
+# Lesson 867 (2026-09-09, David): the (rc_major, hotfix) tuple parser
+# in auth/tier.rs only handles 1.x.-rcN.M strings. When MC ships 2.0.0
+# (no -rc trailer), the parser returns None and the install fails open
+# — meaning a module that explicitly required MC >= 2.0.0 would still
+# install on MC 1.x.0, silently breaking the version contract. Switch
+# to the `semver` crate so 1.1.0-rc55.24, 1.0.0, and 2.0.0 all parse
+# and compare correctly across major-version boundaries.
+semver = "1"
 
 [dev-dependencies]
 regex = "1.13.1"

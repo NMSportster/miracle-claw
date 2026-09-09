@@ -392,32 +392,62 @@ pub fn tier_default_fallbacks(tier: Tier) -> &'static [&'static str] {
 /// Check whether the running MC base binary satisfies a module's
 /// `minMcVersion` constraint.
 ///
-/// MC versions look like `"1.1.0-rc53.15"`. For v1 we compare the
-/// `(rc_major, hotfix)` tuple — same scheme miracle-claw-tauri-rebuild
-/// uses. **Important**: the hotfix alone is NOT a total order. Once
-/// we cross an `rc<n+1>.0` boundary, the hotfix resets to 0 and any
-/// `rc<n>.x` becomes OLDER than any `rc<n+1>.y`. So `rc54.1` is
-/// newer than `rc53.28`, even though `1 < 28`.
+/// MC versions look like `"1.1.0-rc55.24"` (v1 cadence) or `"2.0.0"`
+/// (post-v1, real semver). We use the `semver` crate (Lesson 867) so
+/// both forms parse and compare correctly across major-version
+/// boundaries.
 ///
-/// If parsing fails on either side, we FAIL OPEN (return Ok) so a
-/// module built against a future version string doesn't block
-/// installs of old MC. We log a warning instead.
+/// **Semver ordering rules we rely on** (these are not inventions —
+/// they are how Cargo / npm / pip / spec-compliant semver work):
 ///
-/// Future: when MC goes 1.0.0 → 2.0.0, switch to semver crate.
+/// 1. `(major, minor, patch)` are compared in numeric order.
+///    `2.0.0 > 1.0.0` because `2 > 1` on the major axis.
+/// 2. A version with a pre-release tag is **less than** the same
+///    version without one. So `1.1.0-rc55.24 < 1.1.0`. This is
+///    semver-correct: a release candidate is "almost" the final but
+///    not yet.
+/// 3. Two pre-releases of the same `(major, minor, patch)` are
+///    compared lexically by dot-separated identifiers.
+///    `1.1.0-rc55.24 > 1.1.0-rc53.14` because `rc55.24 > rc53.14`
+///    (lexical on the leading `rc` integer — `55 > 53`).
+/// 4. The dash is part of the pre-release tag, NOT a separator from
+///    the main version. `1.1.0-rc55.24` is one version string,
+///    not "1.1.0" + "-rc55.24".
+///
+/// This is exactly what we want for MC's scheme:
+/// - v1 cadence `1.1.0-rcN.M` is a pre-release of `1.1.0`.
+/// - The rc-major is encoded as the pre-release's first identifier
+///   (`rc55`), so `1.1.0-rc55.x > 1.1.0-rc54.y` is correct.
+/// - `1.1.0-rc55.x` and `1.1.0-rc55.y` are both "between" `1.1.0-rc54.0`
+///   and `1.1.0` (the final), ordered lexically by `rc55.x`.
+///
+/// **What this fixes vs the old `(rc_major, hotfix)` scheme**:
+/// - `2.0.0` used to return `None` from `parse_rc_version` → fail open
+///   → modules with `minMcVersion: 2.0.0` would silently install on
+///   MC `1.x`. Now `2.0.0 > 1.1.0-rc55.24` is correctly evaluated.
+/// - Plain `1.0.0` (no rc trailer) used to fail open too. Now it
+///   parses as a real semver and a module saying
+///   `minMcVersion: 1.0.0` correctly installs on any `1.0.0+`.
+///
+/// **Fail-open policy** preserved from Lesson 705: if either side
+/// fails to parse (e.g. a manifest with `minMcVersion: "latest"` or
+/// some custom non-semver string), we log a warning and allow the
+/// install rather than block. The reasoning: a module built against
+/// a future MC shouldn't lock out users on today's MC.
 pub fn assert_version_compatible_with_module(
     manifest: &crate::modules::manifest::ModuleManifest,
 ) -> Result<(), String> {
     let current = env!("CARGO_PKG_VERSION");
     let required = &manifest.min_mc_version;
 
-    let current_v = parse_rc_version(current);
-    let required_v = parse_rc_version(required);
+    let current_v = semver::Version::parse(current).ok();
+    let required_v = semver::Version::parse(required).ok();
 
     match (current_v, required_v) {
         (Some(c), Some(r)) if c >= r => Ok(()),
         (Some(c), Some(r)) => Err(format!(
-            "MC base is {} (rc{}.{}), module requires rc{}.{} or higher",
-            current, c.0, c.1, r.0, r.1
+            "MC base is {}, module requires {} or higher",
+            current, required
         )),
         _ => {
             eprintln!(
@@ -429,55 +459,178 @@ pub fn assert_version_compatible_with_module(
     }
 }
 
-/// Extract `(rc_major, hotfix)` from a version like `"1.1.0-rc53.15"`.
-/// Returns `Some((53, 15))` for that string. `rc54.1` → `Some((54, 1))`.
-/// `rc1` (legacy, no hotfix) → `Some((1, 0))`. Returns None for any
-/// other shape.
-fn parse_rc_version(v: &str) -> Option<(u64, u64)> {
-    // Format: <major>.<minor>.<patch>-rc<rc_major>[.<hotfix>]
-    let after_rc = v.split("-rc").nth(1)?;
-    let mut parts = after_rc.split('.');
-    let rc_major: u64 = parts.next()?.parse().ok()?;
-    let hotfix: u64 = match parts.next() {
-        Some(h) => h.parse().ok()?,
-        // Legacy "rc<n>" without hotfix = treat as hotfix 0.
-        None => 0,
-    };
-    Some((rc_major, hotfix))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parse_rc_version_basic() {
-        // Lesson 705 (2026-08-27, David): voice module rc53.28 failed
-        // to install on MC rc54.1 because the old parser extracted
-        // only the hotfix integer, so rc54.1 parsed as 1 vs rc53.28
-        // parsed as 28. Bug: 1 < 28 → "version too old". Fix: compare
-        // (rc_major, hotfix) tuples instead.
-        assert_eq!(parse_rc_version("1.1.0-rc53.28"), Some((53, 28)));
-        assert_eq!(parse_rc_version("1.1.0-rc54.1"), Some((54, 1)));
-        assert_eq!(parse_rc_version("1.1.0-rc54.0"), Some((54, 0)));
-        assert_eq!(parse_rc_version("1.1.0-rc1"), Some((1, 0))); // legacy
-        assert_eq!(parse_rc_version("not-a-version"), None);
-        assert_eq!(parse_rc_version(""), None);
+    fn parse_version_basic() {
+        // Lesson 867 (2026-09-09, David): the old `parse_rc_version` only
+        // handled "1.1.0-rcN.M" strings. The new parser uses the `semver`
+        // crate so it handles that form AND plain semver (1.0.0, 2.0.0)
+        // AND pre-release ordering in one consistent way.
+        use semver::Version;
+        assert_eq!(Version::parse("1.1.0-rc53.28").unwrap().to_string(), "1.1.0-rc53.28");
+        assert_eq!(Version::parse("1.1.0-rc54.1").unwrap().to_string(), "1.1.0-rc54.1");
+        assert_eq!(Version::parse("1.1.0-rc54.0").unwrap().to_string(), "1.1.0-rc54.0");
+        assert_eq!(Version::parse("1.1.0-rc1").unwrap().to_string(), "1.1.0-rc1");
+        // Lesson 867's headline reason: 2.0.0 must parse.
+        assert_eq!(Version::parse("2.0.0").unwrap().to_string(), "2.0.0");
+        assert_eq!(Version::parse("1.0.0").unwrap().to_string(), "1.0.0");
+        // Pre-release ordering rules we rely on.
+        assert!(Version::parse("1.0.0-rc1").unwrap() < Version::parse("1.0.0").unwrap());
+        assert!(Version::parse("1.0.0-rc2").unwrap() > Version::parse("1.0.0-rc1").unwrap());
+        // Garbage still returns None (fail-open policy).
+        assert!(Version::parse("not-a-version").is_err());
+        assert!(Version::parse("").is_err());
+        // "latest" is not semver — must be rejected so the fail-open
+        // branch fires (warning + allow install).
+        assert!(Version::parse("latest").is_err());
     }
 
     #[test]
-    fn parse_rc_version_ordering_across_rc_boundary() {
-        // The bug case: rc54.x must ALWAYS be newer than rc53.x
-        // regardless of hotfix value, because rc-major takes priority.
-        let rc54_0 = parse_rc_version("1.1.0-rc54.0").unwrap();
-        let rc54_1 = parse_rc_version("1.1.0-rc54.1").unwrap();
-        let rc53_28 = parse_rc_version("1.1.0-rc53.28").unwrap();
-        let rc53_30 = parse_rc_version("1.1.0-rc53.30").unwrap();
+    fn parse_version_ordering_across_rc_boundary() {
+        // Lesson 705's bug case, re-verified on the new parser: rc54.x
+        // must ALWAYS be newer than rc53.x regardless of hotfix value,
+        // because the major axis of the pre-release identifier takes
+        // priority over its suffix.
+        use semver::Version;
+        let rc54_0 = Version::parse("1.1.0-rc54.0").unwrap();
+        let rc54_1 = Version::parse("1.1.0-rc54.1").unwrap();
+        let rc53_28 = Version::parse("1.1.0-rc53.28").unwrap();
+        let rc53_30 = Version::parse("1.1.0-rc53.30").unwrap();
 
         assert!(rc54_0 >= rc53_30, "rc54.0 must be >= rc53.30");
         assert!(rc54_1 >= rc53_28, "rc54.1 must be >= rc53.28");
         assert!(rc54_1 >= rc54_0, "rc54.1 must be >= rc54.0");
         assert!(rc53_30 >= rc53_28, "rc53.30 must be >= rc53.28");
+    }
+
+    #[test]
+    fn parse_version_ordering_across_major_boundary() {
+        // Lesson 867's headline case: 2.0.0 must be greater than ANY
+        // 1.1.0-rcN.M string. The old parser would return None for
+        // "2.0.0" → fail open → silent install. The new parser must
+        // return a real comparison so a module saying
+        // `minMcVersion: "2.0.0"` is correctly rejected on 1.1.0-rc55.x
+        // and accepted on 2.0.0+.
+        use semver::Version;
+        let v1_rc55_24 = Version::parse("1.1.0-rc55.24").unwrap();
+        let v1_rc1 = Version::parse("1.1.0-rc1").unwrap();
+        let v1_final = Version::parse("1.1.0").unwrap();
+        let v2_0 = Version::parse("2.0.0").unwrap();
+        let v2_1_0 = Version::parse("2.1.0").unwrap();
+
+        // 2.0.0 beats every 1.1.0-rcN.M (the actual upgrade scenario).
+        assert!(v2_0 > v1_rc55_24, "2.0.0 must be > 1.1.0-rc55.24");
+        assert!(v2_0 > v1_rc1, "2.0.0 must be > 1.1.0-rc1");
+        assert!(v2_0 > v1_final, "2.0.0 must be > 1.1.0 (final)");
+        // 1.1.0-rc55.24 < 1.1.0 (pre-release < final) — so a module
+        // declaring `minMcVersion: "1.1.0"` (the final) is correctly
+        // rejected on RC builds.
+        assert!(v1_rc55_24 < v1_final, "1.1.0-rc55.24 must be < 1.1.0");
+        // Minor bumps on 2.x are still ordered correctly.
+        assert!(v2_1_0 > v2_0, "2.1.0 must be > 2.0.0");
+    }
+
+    #[test]
+    fn assert_compatible_with_module_accepts_when_current_meets_min() {
+        // Module says minMcVersion: 1.1.0-rc53.14, current is
+        // 1.1.0-rc55.24 → must accept.
+        use crate::modules::manifest::ModuleManifest;
+        let manifest_json = r#"{
+            "id": "testmod",
+            "name": "Test Mod",
+            "version": "0.1.0",
+            "minMcVersion": "1.1.0-rc53.14",
+            "description": "Test",
+            "binary": { "name": "testmod.exe", "type": "sidecar" },
+            "commands": [],
+            "uiHooks": []
+        }"#;
+        let m: ModuleManifest = serde_json::from_str(manifest_json).unwrap();
+        assert!(assert_version_compatible_with_module(&m).is_ok());
+    }
+
+    #[test]
+    fn assert_compatible_with_module_rejects_when_current_too_old() {
+        // Module says minMcVersion: 2.0.0, current is 1.1.0-rc55.24
+        // → must REJECT (this is the bug the old parser would have
+        // silently let through).
+        use crate::modules::manifest::ModuleManifest;
+        let manifest_json = r#"{
+            "id": "testmod",
+            "name": "Test Mod",
+            "version": "0.1.0",
+            "minMcVersion": "2.0.0",
+            "description": "Test",
+            "binary": { "name": "testmod.exe", "type": "sidecar" },
+            "commands": [],
+            "uiHooks": []
+        }"#;
+        let m: ModuleManifest = serde_json::from_str(manifest_json).unwrap();
+        let result = assert_version_compatible_with_module(&m);
+        assert!(result.is_err(), "expected rejection but got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("2.0.0") && err.contains("1.1.0-rc55.24"),
+            "error message should mention both versions, got: {err}"
+        );
+    }
+
+    #[test]
+    fn assert_compatible_with_module_accepts_v1_module_on_v2_base() {
+        // The reverse direction: current is 2.0.0, module says
+        // minMcVersion: 1.0.0 (a real-semver legacy constraint from a
+        // module built during v1's stable run). Must accept.
+        // We test this by inlining a `current` override would require
+        // env! indirection — instead, assert the comparison logic
+        // directly so we don't have to spin a separate Cargo build.
+        use semver::Version;
+        let v2 = Version::parse("2.0.0").unwrap();
+        let v1_legacy = Version::parse("1.0.0").unwrap();
+        assert!(v2 >= v1_legacy, "2.0.0 must be >= 1.0.0 (v1 module on v2 base)");
+    }
+
+    #[test]
+    fn assert_compatible_with_module_fails_open_on_garbage_min_version() {
+        // Lesson 705 fail-open policy: a manifest with a non-semver
+        // minMcVersion ("latest", empty, typo) must not block the
+        // install. We log a warning and return Ok. The reasoning is
+        // that a module built against a future / experimental MC
+        // version string shouldn't lock out users on today's MC.
+        //
+        // We can't test the "current" env override (it's compile-time
+        // via env!("CARGO_PKG_VERSION")), so we test the fail-open
+        // by parsing both sides and confirming the parse error is
+        // surfaced as a fail-open (not a hard reject).
+        use semver::Version;
+        let garbage_values = ["latest", "", "v1.0", "1.x", "not-a-version"];
+        for g in garbage_values {
+            assert!(
+                Version::parse(g).is_err(),
+                "expected `{g}` to be rejected as non-semver, so the fail-open branch fires"
+            );
+        }
+        // And the happy path that the fail-open produces: if either
+        // side is an Err, we return Ok. We confirm this with the
+        // manifest API below.
+        use crate::modules::manifest::ModuleManifest;
+        let manifest_json = r#"{
+            "id": "testmod",
+            "name": "Test Mod",
+            "version": "0.1.0",
+            "minMcVersion": "latest",
+            "description": "Test",
+            "binary": { "name": "testmod.exe", "type": "sidecar" },
+            "commands": [],
+            "uiHooks": []
+        }"#;
+        let m: ModuleManifest = serde_json::from_str(manifest_json).unwrap();
+        assert!(
+            assert_version_compatible_with_module(&m).is_ok(),
+            "fail-open: non-semver minMcVersion must allow the install (with warning)"
+        );
     }
 
     #[test]
