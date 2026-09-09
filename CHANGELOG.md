@@ -74,6 +74,23 @@ Adds subagent-style parallel workflows to MC without bolting on a custom orchest
 - Multi-window integration (open run in a new Tauri window) was dropped from Phase 4 after Lesson 491 — `WebviewWindowBuilder.build()` deterministically hangs David's WebView2 init. The dashboard banner is the working alternative.
 - 7 unpushed commits ahead of origin/master as of build time.
 
+## [v1.1.0-rc55.25] — 2026-09-09 (Workflows back button + module version check upgrade to semver)
+
+Two small but durable fixes, both regression-tested.
+
+**Lesson 866 — Workflows page back-to-dashboard button (David)**. After installing rc55.24, opening the Workflows tile left users stuck — the only way back to the Dashboard was to close the app and re-login. `main.js:workflowsCtx` already returned `onBackToDashboard` in the ctx, but the page never read it. Fix: read `ctx.onBackToDashboard` in `mount()`, render a back button (`.icon-link` class, 32×32) at the top-left of the gradient hero, absolutely positioned so the gradient stays clean. Three regression tests pin the contract.
+
+**Lesson 867 — Module `minMcVersion` parser upgraded to `semver` crate**. The old hand-rolled `(rc_major, hotfix)` parser silently failed open on every non-`1.1.0-rcN.M` string. Worst case: when MC ships `2.0.0`, a module declaring `minMcVersion: "2.0.0"` would silently install on MC `1.x` and crash at runtime. Switched to the spec-compliant `semver` crate so all three forms parse and compare correctly: `1.1.0-rc55.24`, `1.0.0` (plain semver legacy), `2.0.0` (post-v1). Fail-open policy from Lesson 705 is preserved.
+
+**Files changed**:
+- `src/pages/workflows.js` (+26 lines) — `_state.onBackToDashboard` assignment + back-button render in hero
+- `src/pages/workflows.test.mjs` (+111 lines) — 3 new regression tests
+- `src/styles.css` (+15 lines) — `.workflows-hero-back` absolute positioning + `.workflows-hero-title` padding override
+- `src-tauri/src/auth/tier.rs` (rewrote `assert_version_compatible_with_module` + 6 new tests)
+- `src-tauri/Cargo.toml` (+1 dep) — `semver = "1"`
+
+**Test counts**: 246 Rust lib + 80 Rust integration + 29 JS = 355 passing, zero regressions. Two commits on the `release/rc55.23` branch: `de09880` (back button) and `5c19f1e` (semver parser), plus a `aaeff36` docstring renumber.
+
 ## [v1.1.0-rc55.24] — 2026-09-09 (Workflows ACL fix + error UX + dist/ build guard)
 
 rc55.23 shipped a broken Workflows page: clicking the Workflows tile on the Dashboard navigated to a page that just said "Could not load the workflow library. Try restarting MiracleClaw." The friendly message was hiding an ACL drift — Tauri 2 was silently rejecting `prose_examples` and the other prose Tauri commands because rc55.22 added the commands but never updated `permissions/default.toml` / `capabilities/main.json` to allow them. **Lesson 836** is the full root-cause story and the regression test that makes it the last manual occurrence.
