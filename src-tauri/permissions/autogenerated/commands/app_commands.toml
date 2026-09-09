@@ -688,3 +688,204 @@ commands.allow = ["mc_task_login"]
 identifier = "deny-mc-task-login"
 description = "Denies the mc_task_login command."
 commands.deny = ["mc_task_login"]
+
+[[permission]]
+identifier = "allow-prose-run"
+description = "Enables the prose_run command without any pre-configured scope."
+commands.allow = ["prose_run"]
+
+[[permission]]
+identifier = "deny-prose-run"
+description = "Denies the prose_run command."
+commands.deny = ["prose_run"]
+
+[[permission]]
+identifier = "allow-prose-compile"
+description = "Enables the prose_compile command without any pre-configured scope."
+commands.allow = ["prose_compile"]
+
+[[permission]]
+identifier = "deny-prose-compile"
+description = "Denies the prose_compile command."
+commands.deny = ["prose_compile"]
+
+[[permission]]
+identifier = "allow-prose-poll"
+description = "Enables the prose_poll command without any pre-configured scope."
+commands.allow = ["prose_poll"]
+
+[[permission]]
+identifier = "deny-prose-poll"
+description = "Denies the prose_poll command."
+commands.deny = ["prose_poll"]
+
+[[permission]]
+identifier = "allow-prose-kill"
+description = "Enables the prose_kill command without any pre-configured scope."
+commands.allow = ["prose_kill"]
+
+[[permission]]
+identifier = "deny-prose-kill"
+description = "Denies the prose_kill command."
+commands.deny = ["prose_kill"]
+
+[[permission]]
+identifier = "allow-prose-examples"
+description = "Enables the prose_examples command without any pre-configured scope."
+commands.allow = ["prose_examples"]
+
+[[permission]]
+identifier = "deny-prose-examples"
+description = "Denies the prose_examples command."
+commands.deny = ["prose_examples"]
+
+
+[[permission]]
+identifier = "allow-mc-set-provider-key"
+description = "Enables the mc_set_provider_key command without any pre-configured scope."
+commands.allow = ["mc_set_provider_key"]
+
+[[permission]]
+identifier = "deny-mc-set-provider-key"
+description = "Denies the mc_set_provider_key command."
+commands.deny = ["mc_set_provider_key"]
+
+[[permission]]
+identifier = "allow-mc-list-provider-keys"
+description = "Enables the mc_list_provider_keys command without any pre-configured scope."
+commands.allow = ["mc_list_provider_keys"]
+
+[[permission]]
+identifier = "deny-mc-list-provider-keys"
+description = "Denies the mc_list_provider_keys command."
+commands.deny = ["mc_list_provider_keys"]
+
+[[permission]]
+identifier = "allow-mc-clear-provider-key"
+description = "Enables the mc_clear_provider_key command without any pre-configured scope."
+commands.allow = ["mc_clear_provider_key"]
+
+[[permission]]
+identifier = "deny-mc-clear-provider-key"
+description = "Denies the mc_clear_provider_key command."
+commands.deny = ["mc_clear_provider_key"]
+
+[[permission]]
+identifier = "allow-mc-get-pairing-status"
+description = "Enables the mc_get_pairing_status command without any pre-configured scope."
+commands.allow = ["mc_get_pairing_status"]
+
+[[permission]]
+identifier = "deny-mc-get-pairing-status"
+description = "Denies the mc_get_pairing_status command."
+commands.deny = ["mc_get_pairing_status"]
+
+[[permission]]
+identifier = "allow-mc-initiate-pair"
+description = "Enables the mc_initiate_pair command without any pre-configured scope."
+commands.allow = ["mc_initiate_pair"]
+
+[[permission]]
+identifier = "deny-mc-initiate-pair"
+description = "Denies the mc_initiate_pair command."
+commands.deny = ["mc_initiate_pair"]
+
+[[permission]]
+identifier = "allow-mc-paired-devices"
+description = "Enables the mc_paired_devices command without any pre-configured scope."
+commands.allow = ["mc_paired_devices"]
+
+[[permission]]
+identifier = "deny-mc-paired-devices"
+description = "Denies the mc_paired_devices command."
+commands.deny = ["mc_paired_devices"]
+
+[[permission]]
+identifier = "allow-mc-register-desktop"
+description = "Enables the mc_register_desktop command without any pre-configured scope."
+commands.allow = ["mc_register_desktop"]
+
+[[permission]]
+identifier = "deny-mc-register-desktop"
+description = "Denies the mc_register_desktop command."
+commands.deny = ["mc_register_desktop"]
+
+[[permission]]
+identifier = "allow-mc-register-desktop-self"
+description = "Enables the mc_register_desktop_self command without any pre-configured scope."
+commands.allow = ["mc_register_desktop_self"]
+
+[[permission]]
+identifier = "deny-mc-register-desktop-self"
+description = "Denies the mc_register_desktop_self command."
+commands.deny = ["mc_register_desktop_self"]
+
+[[permission]]
+identifier = "allow-mc-restore-pairing-identity"
+description = "Enables the mc_restore_pairing_identity command without any pre-configured scope."
+commands.allow = ["mc_restore_pairing_identity"]
+
+[[permission]]
+identifier = "deny-mc-restore-pairing-identity"
+description = "Denies the mc_restore_pairing_identity command."
+commands.deny = ["mc_restore_pairing_identity"]
+
+[[permission]]
+identifier = "allow-mc-revoke-device"
+description = "Enables the mc_revoke_device command without any pre-configured scope."
+commands.allow = ["mc_revoke_device"]
+
+[[permission]]
+identifier = "deny-mc-revoke-device"
+description = "Denies the mc_revoke_device command."
+commands.deny = ["mc_revoke_device"]
+
+[[permission]]
+identifier = "allow-mc-set-drop-folder"
+description = "Enables the mc_set_drop_folder command without any pre-configured scope."
+commands.allow = ["mc_set_drop_folder"]
+
+[[permission]]
+identifier = "deny-mc-set-drop-folder"
+description = "Denies the mc_set_drop_folder command."
+commands.deny = ["mc_set_drop_folder"]
+
+[[permission]]
+identifier = "allow-mc-unregister-desktop"
+description = "Enables the mc_unregister_desktop command without any pre-configured scope."
+commands.allow = ["mc_unregister_desktop"]
+
+[[permission]]
+identifier = "deny-mc-unregister-desktop"
+description = "Denies the mc_unregister_desktop command."
+commands.deny = ["mc_unregister_desktop"]
+
+[[permission]]
+identifier = "allow-mc-set-tier-defaults"
+description = "Enables the mc_set_tier_defaults command without any pre-configured scope."
+commands.allow = ["mc_set_tier_defaults"]
+
+[[permission]]
+identifier = "deny-mc-set-tier-defaults"
+description = "Denies the mc_set_tier_defaults command."
+commands.deny = ["mc_set_tier_defaults"]
+
+[[permission]]
+identifier = "allow-mc-module-install-url"
+description = "Enables the mc_module_install_url command without any pre-configured scope."
+commands.allow = ["mc_module_install_url"]
+
+[[permission]]
+identifier = "deny-mc-module-install-url"
+description = "Denies the mc_module_install_url command."
+commands.deny = ["mc_module_install_url"]
+
+[[permission]]
+identifier = "allow-openclaw-back-to-dashboard"
+description = "Enables the openclaw_back_to_dashboard command without any pre-configured scope."
+commands.allow = ["openclaw_back_to_dashboard"]
+
+[[permission]]
+identifier = "deny-openclaw-back-to-dashboard"
+description = "Denies the openclaw_back_to_dashboard command."
+commands.deny = ["openclaw_back_to_dashboard"]

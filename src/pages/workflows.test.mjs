@@ -518,3 +518,53 @@ test("running-workflow panel still wires Cancel button to killActive", async () 
     "If the button is wired to a different handler, Cancel will be a no-op.",
   );
 });
+
+
+// Lesson 836 (2026-09-09): surface the underlying error when
+// prose_examples invoke fails — the friendly "Try restarting MiracleClaw"
+// message silently swallowed the real cause (a Tauri 2 ACL rejection:
+// "Command prose_examples not allowed by ACL"). Users with a backed-up
+// dashboard couldn't tell whether their install was broken, the server
+// was down, or if it was an ACL drift. The fix keeps the friendly
+// message but adds a `<details>` block with the real error AND a
+// console.error.
+test("prose_examples catch block surfaces the underlying error", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), "workflows.js"),
+    "utf8",
+  );
+
+  // Find the catch block around `await invoke("prose_examples", {})`
+  // and assert the catch block does NOT swallow the error silently.
+  const catchBlock = /catch\s*\([^)]*\)\s*\{[\s\S]*?prose_examples[\s\S]*?\}/;
+  // Easier approach: extract the catch-handler body to its end (next two closes)
+  // and check the substantive string-literal references.
+  const userSurface =
+    /<details>[\s\S]{0,200}Technical details/.test(src) ||
+    /details[\s\S]{0,200}pre[\s\S]{0,80}errText/.test(src);
+  assert.ok(
+    userSurface,
+    "expected workflows.js to surface underlying error in a <details> block. " +
+    "Lesson 836 anti-regression: catch blocks that swallow the real cause " +
+    "leave users stuck on 'Try restarting' even when the real fix is a " +
+    "permission drift, a network outage, or a JSON parse error."
+  );
+
+  // Also assert console.error logs the error for dev tooling.
+  assert.ok(
+    /console\.error\([^)]*prose_examples[^)]*\)/.test(src),
+    "expected console.error to log the prose_examples failure so dev tools " +
+    "capture the underlying error for triage."
+  );
+
+  // And assert the special-case ACL message exists so 'not allowed by ACL'
+  // gets a contextual explainer instead of a generic restart hint.
+  assert.ok(
+    /not allowed by ACL/i.test(src) &&
+      /reinstall|permission|support|diagnos/i.test(src),
+    "expected the catch block to detect 'not allowed by ACL' and show " +
+    "a permission-specific message. Without this, every ACL drift looks " +
+    "like a server outage to the user."
+  );
+});

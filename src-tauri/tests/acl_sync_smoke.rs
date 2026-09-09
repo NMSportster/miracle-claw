@@ -66,6 +66,22 @@ fn project_root() -> PathBuf {
     manifest_dir.parent().unwrap().to_path_buf()
 }
 
+/// Permissions in default.toml that are intentionally NOT in main.json
+/// because they are scoped to capabilities/bridge.json (the chat bridge
+/// at http://127.0.0.1:28789). These commands are only ever invoked
+/// from the chat UI at that origin, so they only need to be in
+/// bridge.json's permissions array.
+///
+/// Companion list: see tests/acl_command_coverage.rs
+/// `COMMANDS_OUTSIDE_MAIN`. Keep these two lists in sync.
+fn permissions_outside_main_json(root: &PathBuf) -> HashSet<String> {
+    let mut s = HashSet::new();
+    // bridge.json-only (chat bridge origin at http://127.0.0.1:28789)
+    s.insert("allow-openclaw-back-to-dashboard".to_string());
+    s.insert("allow-mc-module-install-url".to_string());
+    s
+}
+
 #[test]
 fn test_main_json_includes_every_default_toml_allow() {
     let root = project_root();
@@ -73,12 +89,21 @@ fn test_main_json_includes_every_default_toml_allow() {
     let in_json = permissions_in_main_json(&root);
 
     let json_set: HashSet<&String> = in_json.iter().collect();
+    let outside_main = permissions_outside_main_json(&root);
 
     let mut missing = Vec::new();
     for p in &in_toml {
-        if !json_set.contains(p) {
-            missing.push(p.clone());
+        if json_set.contains(p) {
+            continue;
         }
+        // Lesson 836 (2026-09-09): bridge-only commands live in
+        // default.toml but ONLY get their runtime ACL from
+        // bridge.json. Allow them to be missing here as long as
+        // they're on the bridge-only allowlist.
+        if outside_main.contains(p) {
+            continue;
+        }
+        missing.push(p.clone());
     }
 
     assert!(

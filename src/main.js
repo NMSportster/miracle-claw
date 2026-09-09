@@ -444,6 +444,66 @@ function showFatal(msg) {
   `;
 }
 
+// Lesson 836 (2026-09-09): shared error helper for catch blocks.
+//
+// Why this exists: every page used to do its own try/catch around
+// `await invoke(...)` and most swallowed the underlying error with a
+// generic "Try restarting MiracleClaw" message. That hid ACL drift
+// (Lesson 755, 836), network outages, JSON parse errors, and
+// permission rejections behind identical-looking text. The user
+// couldn't tell whether to restart, reinstall, or report a bug.
+//
+// logError(e, ctx) centralizes the "log to console + return a
+// user-friendly string" pattern. Pages should call:
+//
+//   try { ... } catch (e) { logError(e, { page: "workflows", op: "prose_examples" }); }
+//
+// to get:
+//   - console.error with structured context (page, op, plus anything
+//     in ctx.extra)
+//   - a normalized error string (handles e.message, e, or string inputs)
+//   - no swallowed failures
+//
+// For user-facing render (with a <details> block for triage), use
+// `formatErrorForUser(e, ctx)` which returns { userMsg, technicalMsg }.
+function logError(e, ctx = {}) {
+  const errText = String(e?.message ?? e);
+  const tag = `[${ctx.page ?? "?"}.${ctx.op ?? "?"}]`;
+  if (e?.stack) {
+    console.error(tag, errText, "\n", e.stack, ctx.extra ? { extra: ctx.extra } : "");
+  } else {
+    console.error(tag, errText, ctx.extra ? { extra: ctx.extra } : "");
+  }
+  return errText;
+}
+
+function formatErrorForUser(e, ctx = {}) {
+  const technical = logError(e, ctx);
+  const isAclError = /not allowed by ACL/i.test(technical);
+  let userMsg;
+  if (isAclError) {
+    userMsg =
+      "MiracleClaw can't run this action yet — this build is missing the required permissions. " +
+      "Try reinstalling from your dashboard, or contact support with the error below.";
+  } else if (/network|fetch|timeout/i.test(technical)) {
+    userMsg =
+      "Network error. Check your connection and try again. " +
+      "If the problem persists, see the technical details below.";
+  } else {
+    userMsg =
+      "Something went wrong. Try the action again, or restart MiracleClaw if it keeps happening.";
+  }
+  return { userMsg, technical };
+}
+
+// Expose error helpers globally. Pages import via `window.MC.logError`
+// (window.MC is set up in main.js's top-level init; it's also where
+// any other page-shared utility belongs). Lesson 836.
+window.MC = Object.assign(window.MC ?? {}, {
+  logError,
+  formatErrorForUser,
+});
+
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;",
