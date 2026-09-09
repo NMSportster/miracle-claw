@@ -445,7 +445,7 @@ pub fn assert_version_compatible_with_module(
 
     match (current_v, required_v) {
         (Some(c), Some(r)) if c >= r => Ok(()),
-        (Some(c), Some(r)) => Err(format!(
+        (Some(_), Some(_)) => Err(format!(
             "MC base is {}, module requires {} or higher",
             current, required
         )),
@@ -572,9 +572,16 @@ mod tests {
         let result = assert_version_compatible_with_module(&m);
         assert!(result.is_err(), "expected rejection but got Ok");
         let err = result.unwrap_err();
+        // The error should mention 2.0.0 (the required version) and the
+        // current MC base version (whatever it is — we don't hardcode it
+        // here so this test doesn't break every time we bump the package
+        // version). We just check that the base version is *something* with
+        // a 1.1.0-rc prefix to confirm both versions made it into the
+        // message.
+        assert!(err.contains("2.0.0"), "error message should mention required version 2.0.0, got: {err}");
         assert!(
-            err.contains("2.0.0") && err.contains("1.1.0-rc55.24"),
-            "error message should mention both versions, got: {err}"
+            err.contains("1.1.0-rc"),
+            "error message should mention the current base version (1.1.0-rcX.Y), got: {err}"
         );
     }
 
