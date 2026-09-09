@@ -1,6 +1,6 @@
 [package]
 name = "miracle-claw"
-version = "1.1.0-rc55.22"
+version = "1.1.0-rc55.23"
 description = "Miracle Claw — Milagro Distribution Corp's desktop chat client for MAIC models"
 authors = ["Milagro Distribution Corp"]
 edition = "2021"
@@ -48,7 +48,7 @@ tauri-build = { version = "=2.6.3", features = [] }
 # Pinned to exact versions to keep Tauri runtime + plugin in lockstep between
 # dev builds and Windows MSVC cross-compile builds. Float = "2.0" was the
 # original scaffold; we tighten here.
-tauri = { version = "=2.11.5", features = [] }
+tauri = { version = "=2.11.5", features = ["image-png", "image-ico"] }
 tauri-plugin-shell = "=2.3.5"
 # rc49 (feature/drag-drop): reliable OS clipboard for the "Send to chat"
 # handoff. navigator.clipboard.writeText() in JS depends on the webview

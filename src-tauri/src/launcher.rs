@@ -282,6 +282,19 @@ fn build_node_command(args: &Args, node_bin: &Path, resources: &Path) -> Command
         .arg("--allow-unconfigured")
         .env("OPENCLAW_STATE_DIR", default_openclaw_state_dir())
         .env("NODE_PATH", &node_path)
+        // AP-833-U (2026-09-08, David): bundled openclaw (v2026.7.1-2)
+        // has a startup update check that hits registry.npmjs.org/openclaw
+        // on every gateway boot and surfaces an "Update available: vX.Y.Z
+        // (running v2026.7.1-2)" notification in the embedded UI. MC owns
+        // its own release cadence via the installer; an out-of-band openclaw
+        // upgrade would replace node_modules/ with a set we haven't tested
+        // against and could break the MAIC plugin handshake / chat history
+        // format. This env var disables openclaw's auto-install path. The
+        // REAL fix is `update.checkOnStart: false` in openclaw.json (see
+        // `disable_update_check_for_existing_installs` in lib.rs) — this
+        // is belt to that suspenders in case the user later resets their
+        // config or the openclaw.json is missing the block for some reason.
+        .env("OPENCLAW_NO_AUTO_UPDATE", "1")
         // Run from resources dir so the bundled `node` symlink (Linux dev)
         // resolves and openclaw's relative imports (skills/, dist/) find their
         // siblings. Absolute paths we pass (openclaw.mjs) would still work

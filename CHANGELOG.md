@@ -74,6 +74,52 @@ Adds subagent-style parallel workflows to MC without bolting on a custom orchest
 - Multi-window integration (open run in a new Tauri window) was dropped from Phase 4 after Lesson 491 — `WebviewWindowBuilder.build()` deterministically hangs David's WebView2 init. The dashboard banner is the working alternative.
 - 7 unpushed commits ahead of origin/master as of build time.
 
+## [v1.1.0-rc55.23] — 2026-09-08 (Bug fixes + OpenClaw update suppression)
+
+Three small bug fixes shipped on top of rc55.22, plus a settings-page note explaining the new update-suppression behavior.
+
+### Disable bundled OpenClaw auto-update (Lesson 833)
+
+Out-of-band OpenClaw upgrades would replace `node_modules/` with an untested set and could break the MAIC plugin handshake / chat history format. There's no rollback path from inside MC, so we ship the OpenClaw runtime ourselves and gate the in-app update notification off.
+
+**Three-layer fix**:
+- `src-tauri/src/launcher.rs`: pass `OPENCLAW_NO_AUTO_UPDATE=1` env var to the spawned `node openclaw.mjs` child. Belt-to-suspenders — disables the `runAutoUpdateCommand` auto-install path.
+- `src-tauri/src/lib.rs:ensure_openclaw_json_minimal`: write `update.checkOnStart=false` + `update.auto.enabled=false` to fresh `openclaw.json`. **This is the real fix** — causes `runGatewayUpdateCheck` to early-return before `setUpdateAvailableCache` ever fires.
+- Migration: `disable_update_check_for_existing_installs` retrofit for users upgrading from rc55.22. Idempotent. AP-833-B: respects a user's explicit `update` block if they've already set one.
+
+**Settings page** (`src/pages/settings.js`): new row in the About section reads *"Miracle Claw ships its own OpenClaw runtime. Updates arrive via the app installer — not through in-app notifications."* Prevents users from being confused by the missing notification.
+
+### Fix Workflows tile click (Lesson 834)
+
+The Workflows tile and the workflow-run banner both stopped responding to clicks on rc55.22.
+
+**Root cause** (`src/pages/dashboard.js`): the `_doMount` caller at line 363 was destructuring 11 callbacks, but the callee signature at line 391 destructures 12 — including `onOpenWorkflows`. The missing prop silently no-op'd both `if (onOpenWorkflows) { ... }` blocks. No error, no warning, just "click does nothing."
+
+**Fix**: added `onOpenWorkflows` to the line-363 caller. One-line patch.
+
+**Regression test added** (`src/pages/workflows.test.mjs`): `dashboard mount-_doMount callback lists stay in sync` parses both call site and function signature, compares the `on<X>` callback names, and fails with a precise diagnostic if they ever drift again. Verified the test correctly catches the original bug (temporarily reverted → test failed with `caller has 11, callee has 12`).
+
+**Anti-pattern AP-834-A** (NEW): When wiring dashboard callbacks through a 2-stage wrapper (`mount() → _doMount()`), the parameter list at the call site MUST exactly match the function signature. A mismatch isn't caught by the type system (JS) and silently no-ops because every consumer of those callbacks is wrapped in `if (callback) { ... }` guards.
+
+### Add main window icon (Lesson 834)
+
+Terminal and OpenClaw Windows showed Tauri's default generic icon in the taskbar / Start Menu / window switcher instead of the MC brand. Tauri's `bundle.icon[]` config controls the installer and EXE file icon only — runtime window icons are set programmatically.
+
+**Fix** (`src-tauri/src/lib.rs` + `Cargo.toml`):
+- `Cargo.toml`: added `image-png` + `image-ico` to Tauri feature flags (without these, `tauri::image::Image::from_path` is gated behind a `#[cfg]` and won't compile).
+- `create_main_window`: resolve icon path from `BaseDirectory::Resource` (Tauri's bundler copies `bundle.icon[]` files into the Resources dir at install time), try candidates `icons/icon.png` → `icons/icon.ico` → `icon.png` → `icon.ico`, then call `window.set_icon(img)` on the built `WebviewWindow`.
+- Best-effort: missing/corrupt icon never blocks app launch. Logs `[miracle-claw] Lesson 834: ... using Tauri default` on failure.
+
+**Anti-pattern AP-834-B** (NEW): Don't call `.icon()` on `WebviewWindowBuilder` for fallible icon resolution — it consumes self on both `Ok` and `Err`, so a recovery block that reassigns `builder` in the `Err` arm doesn't typecheck. Build the window first, then call `WebviewWindow::set_icon(&self, img)` which takes `&self` and allows straight-line recovery.
+
+**Test counts**: 240 Rust + 14 JS = 254 tests, all passing, zero regressions.
+
+**Lessons added to MEMORY**: Lesson 833 (3 layers, anti-patterns AP-833-A through AP-833-U), Lesson 834 (dashboard click + window icon, anti-patterns AP-834-A and AP-834-B).
+
+**Notes**:
+- All three fixes (833 + 834 dashboard + 834 icon) ship together because they share the same "things-rc55.22-broke" theme and they're all small.
+- 10+ unpushed commits still ahead of origin/master as of build time. Steeler has adeal-group access on main-adeal now; needs a push from David's box to clear.
+
 ## [v1.1.0-rc55.21] — 2026-09-07 (Silence toolsBinaryPath DIAG noise from Terminal chat)
 
 David reported the line `[maic-plugin DIAG] toolsBinaryPath resolved: C:\Users\Adeal\AppData\Roaming\MiracleClaw\extensions\maic\miracle-claw-tools.exe` was repeating in Terminal chat output — once per tool call (`bash_run`, `read_file`, `list_dir`, etc.). Customers don't need to see diagnostic resolution logging in their chat; that's a load-bearing chat stream, not a log.

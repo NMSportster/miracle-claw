@@ -360,7 +360,7 @@ export const dashboardPage = {
     // fixing the voiceStatus variable-name typo.
     (async () => {
       try {
-        await this._doMount(root, ctx, { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules, onOpenProviderKeys, onOpenTasks });
+        await this._doMount(root, ctx, { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules, onOpenProviderKeys, onOpenTasks, onOpenWorkflows });
       } catch (err) {
         console.error("[dashboard.mount] failed:", err);
         try {

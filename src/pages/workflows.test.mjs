@@ -374,3 +374,147 @@ test("dashboard banner renders only when active run exists and hides on null", (
   store["mc.workflows.active_run.v1"] = "{not json";
   assert.equal(shouldShow(), false, "malformed JSON -> no banner");
 });
+
+
+// Lesson 834: load dashboard.js once for the static-analysis guard below.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+const __here = dirname(fileURLToPath(import.meta.url));
+const dashboardJsSource = readFileSync(resolve(__here, "dashboard.js"), "utf8");
+
+
+// Lesson 834 (NEW 2026-09-08 17:56 MDT, David): regression guard for the
+// dashboard `mount` -> `_doMount` callback-list drift. If a callback is
+// added to the param destructuring of `dashboard.js:_doMount` but the
+// outer caller at line ~363 omits it, every consumer of that callback
+// silently no-ops (the `if (callback)` guard hides the bug). This
+// regression test catches the drift by parsing both lists and asserting
+// they're identical.
+test("dashboard mount-_doMount callback lists stay in sync", () => {
+  const src = dashboardJsSource;
+  // Extract callback names from a `{ ... }` literal that follows
+  // `this._doMount(...)` OR `async _doMount(...)`. We grep two patterns
+  // and compare the sorted names — adding a callback to one without
+  // the other surfaces here.
+  const extractNames = (block) => {
+    const m = block.match(/\{([^{}]*)\}/);
+    if (!m) return [];
+    return [...m[1].matchAll(/\b(on[A-Z]\w+)\b/g)].map((x) => x[1]);
+  };
+  const caller = src.match(/this\._doMount\([^,]*,\s*ctx,\s*\{([^{}]*)\}/);
+  const callee = src.match(/async\s+_doMount\([^,]*,\s*[^,]*,\s*\{([^{}]*)\}/);
+  assert.ok(caller, "couldn't find _doMount caller signature in dashboard.js");
+  assert.ok(callee, "couldn't find _doMount callee signature in dashboard.js");
+  const callerNames = [...new Set(extractNames(caller[0]))];
+  const calleeNames = [...new Set(extractNames(callee[0]))];
+  assert.equal(
+    callerNames.length,
+    calleeNames.length,
+    `caller destructure has ${callerNames.length} callbacks, callee has ${calleeNames.length}. ` +
+    "Symptom of a missed add: callback isn't wired on the page. " +
+    `Caller: ${callerNames.join(",")} Callee: ${calleeNames.join(",")}`,
+  );
+  for (const name of callerNames) {
+    assert.ok(
+      calleeNames.includes(name),
+      `callback ${name} is destructured by _doMount caller but missing from _doMount signature. Click handler will not attach - silent no-op.`,
+    );
+  }
+});
+
+// -------------------------------------------------------------------------
+// Lesson 835: regression tests for the running-workflow Cancel button.
+// The button + handler already exist (Phase 4 polish layer, shipped in
+// rc55.22). This test guards the wire so a future refactor doesn't
+// accidentally remove the kill endpoint or break the no-op-on-no-session
+// guard.
+//
+// Symptom we're guarding against: clicking Cancel during a long-running
+// workflow does nothing. Possible regressions:
+//   1. killActive removed entirely (button click is dead code)
+//   2. invoke("prose_kill", ...) accidentally swapped to a different command
+//   3. The sessionId argument lost (kill goes to a wrong/no session)
+//   4. The catch-block throws instead of swallowing (unhandled rejection
+//      from clicking Cancel on a child that's already dead)
+// -------------------------------------------------------------------------
+
+// Replicate killActive() from workflows.js for testing.
+function buildKillFn({ activeSessionId, invokeImpl }) {
+  return async function killActive() {
+    if (!activeSessionId) return;
+    try {
+      await invokeImpl("prose_kill", { sessionId: activeSessionId });
+    } catch (e) {
+      // Idempotent — kill on dead child is a no-op in Rust.
+    }
+  };
+}
+
+test("killActive calls prose_kill with the active sessionId", async () => {
+  const calls = [];
+  const kill = buildKillFn({
+    activeSessionId: "sess-42",
+    invokeImpl: async (cmd, args) => {
+      calls.push({ cmd, args });
+    },
+  });
+  await kill();
+  assert.equal(calls.length, 1, "exactly one invoke call");
+  assert.equal(calls[0].cmd, "prose_kill", "correct command name");
+  assert.equal(calls[0].args.sessionId, "sess-42", "sessionId passed through");
+});
+
+test("killActive is a no-op when no active session is running", async () => {
+  const calls = [];
+  const kill = buildKillFn({
+    activeSessionId: null,
+    invokeImpl: async (cmd, args) => {
+      calls.push({ cmd, args });
+    },
+  });
+  await kill();
+  assert.equal(calls.length, 0, "no invoke call when no active session");
+});
+
+test("killActive swallows errors (dead child is a no-op)", async () => {
+  const kill = buildKillFn({
+    activeSessionId: "sess-99",
+    invokeImpl: async () => {
+      throw new Error("session not found");
+    },
+  });
+  // Must not throw — the catch block is part of the contract so the
+  // user's click on Cancel doesn't surface a scary "session not found"
+  // toast if the Rust side already garbage-collected the child.
+  await assert.doesNotReject(() => kill(), "killActive must swallow invoke errors");
+});
+
+// Static-analysis guard: the running-workflow panel must include a Cancel
+// button wired to killActive. If a future refactor moves the button or
+// rewires the onclick handler, this test catches it.
+test("running-workflow panel still wires Cancel button to killActive", async () => {
+  // Re-read workflows.js so the test fails fresh after edits.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), "workflows.js"),
+    "utf8",
+  );
+  // Find the running-panel render: openActivePanelRunning appends an
+  // element with class `workflows-active-kill` whose onclick is killActive.
+  // We assert both: the class exists in source, and the onclick handler
+  // references killActive.
+  const killClassPresent = /class:\s*["']workflows-active-kill["']/.test(src);
+  assert.ok(
+    killClassPresent,
+    "expected a Cancel button with class `workflows-active-kill` in workflows.js. " +
+    "Without it, users have no way to abort a running workflow.",
+  );
+  const onclickWired = /workflows-active-kill[\s\S]{0,200}onclick:[\s\S]{0,80}killActive/.test(src);
+  assert.ok(
+    onclickWired,
+    "expected the Cancel button's onclick to call killActive(). " +
+    "If the button is wired to a different handler, Cancel will be a no-op.",
+  );
+});

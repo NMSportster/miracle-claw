@@ -618,6 +618,12 @@ function renderAbout() {
         <div class="account-label">MAIC provider</div>
         <div class="account-value mono">${escapeHtml(window.location.origin === "null" ? "—" : "https://maicserver.com")}</div>
       </div>
+      <div class="account-row">
+        <div class="account-label">Updates</div>
+        <div class="account-value">
+          Miracle Claw ships its own OpenClaw runtime. Updates arrive via the app installer &mdash; not through in-app notifications.
+        </div>
+      </div>
       <div class="account-actions">
         <button type="button" id="open-folder-btn" class="link-button">
           📁 Open data folder
