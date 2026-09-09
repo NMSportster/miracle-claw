@@ -473,7 +473,7 @@ pub fn register_desktop_self(
 
     Ok(DesktopRegistration {
         instance_id,
-        desktop_pubkey_b64: identity.desktop_pubkey_b64,
+        desktop_pubkey_b64: identity.desktop_pubkey_b64.clone(),
         fingerprint,
         capabilities: Capability::locked_v1_scope()
             .iter()
@@ -493,7 +493,7 @@ pub fn restore_identity(
     match crate::pairing_identity::load(app_data_dir) {
         Ok(Some(id)) => {
             *cmds.instance_id.lock().unwrap() = Some(id.instance_id.clone());
-            Ok(Some(id.instance_id))
+            Ok(Some(id.instance_id.clone()))
         }
         Ok(None) => Ok(None),
         Err(e) => Err(PairingError::State(format!(

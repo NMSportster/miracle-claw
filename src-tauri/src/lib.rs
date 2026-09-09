@@ -3945,6 +3945,9 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         // Pull the Arc out (cloned) to share with the HTTP server thread
         // and the heartbeat thread.
         let cmds: Arc<PairingCommands> = app_handle
+            .state::<Arc<PairingCommands>>()
+            .inner()
+            .clone();
         // Phase 2.4 (NEW 2026-09-08, Home Claw): if this desktop has been
         // registered before, rehydrate the saved identity (instance_id +
         // X25519 keypair) so the next heartbeat advertises the same
@@ -3959,9 +3962,7 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-            .state::<Arc<PairingCommands>>()
-            .inner()
-            .clone();
+
         let bind_addr: std::net::SocketAddr =
             std::env::var("MC_PAIRING_BIND")
                 .ok()
@@ -7712,7 +7713,6 @@ fn mc_register_desktop(
 }
 
 #[tauri::command]
-#[tauri::command]
 fn mc_register_desktop_self(
     app: tauri::AppHandle,
     cmds: tauri::State<'_, pairing_commands::PairingCommands>,
@@ -7738,6 +7738,7 @@ fn mc_restore_pairing_identity(
     pairing_commands::restore_identity(&cmds, &app_data_dir).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
 fn mc_unregister_desktop(
     cmds: tauri::State<'_, pairing_commands::PairingCommands>,
 ) -> Result<(), String> {

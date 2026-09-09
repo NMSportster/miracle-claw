@@ -2,7 +2,7 @@
 //
 // Run from main-adeal: cargo test --test pairing_identity_test --manifest-path src-tauri/Cargo.toml
 
-use miracle_claw::pairing_identity::{
+use miracle_claw_lib::pairing_identity::{
     fingerprint_from_pubkey, generate, generate_instance_id, generate_keypair, load,
 };
 use std::path::PathBuf;
