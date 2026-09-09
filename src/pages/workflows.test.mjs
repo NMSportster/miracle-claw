@@ -570,7 +570,7 @@ test("prose_examples catch block surfaces the underlying error", async () => {
 });
 
 // -------------------------------------------------------------------------
-// Lesson 837 (NEW 2026-09-09, David): regression test for the missing
+// Lesson 866 (NEW 2026-09-09, David): regression test for the missing
 // back-to-dashboard button.
 //
 // Symptom David reported after installing rc55.24: "Clicked Workflows,
@@ -594,7 +594,7 @@ test("prose_examples catch block surfaces the underlying error", async () => {
 // users can ship a broken build again.
 // -------------------------------------------------------------------------
 
-test("workflows page reads ctx.onBackToDashboard (Lesson 837)", async () => {
+test("workflows page reads ctx.onBackToDashboard (Lesson 866)", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(
     resolve(dirname(fileURLToPath(import.meta.url)), "workflows.js"),
@@ -610,11 +610,11 @@ test("workflows page reads ctx.onBackToDashboard (Lesson 837)", async () => {
     wired,
     "expected workflows.js mount() to read `ctx.onBackToDashboard` " +
     "and stash it on a module-level state. Without this read, the " +
-    "back button has no callback to fire. (Lesson 837)"
+    "back button has no callback to fire. (Lesson 866)"
   );
 });
 
-test("workflows page renders a back button wired to onBackToDashboard (Lesson 837)", async () => {
+test("workflows page renders a back button wired to onBackToDashboard (Lesson 866)", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(
     resolve(dirname(fileURLToPath(import.meta.url)), "workflows.js"),
@@ -629,7 +629,7 @@ test("workflows page renders a back button wired to onBackToDashboard (Lesson 83
     backBtnRendered,
     "expected a back button with id `workflows-back-btn` in workflows.js. " +
     "Without it, users have no way to return to the Dashboard from the " +
-    "Workflows page. (Lesson 837)"
+    "Workflows page. (Lesson 866)"
   );
   // And the onclick must call the stashed onBackToDashboard. We accept
   // either `_state.onBackToDashboard()` (the fix pattern) or a direct
@@ -643,11 +643,11 @@ test("workflows page renders a back button wired to onBackToDashboard (Lesson 83
     onclickCallsBack,
     "expected the back button's onclick handler to call onBackToDashboard. " +
     "If the button is rendered but not wired, users will see a button " +
-    "that does nothing. (Lesson 837)"
+    "that does nothing. (Lesson 866)"
   );
 });
 
-test("workflows page styles position the back button at the top-left (Lesson 837)", async () => {
+test("workflows page styles position the back button at the top-left (Lesson 866)", async () => {
   const { readFileSync } = await import("node:fs");
   const css = readFileSync(
     resolve(dirname(fileURLToPath(import.meta.url)), "..", "styles.css"),
@@ -666,7 +666,7 @@ test("workflows page styles position the back button at the top-left (Lesson 837
     rule,
     "expected .workflows-hero-back to be absolutely-positioned at the " +
     "top-left of the hero. Without it, the back button would push the " +
-    "title down and the gradient hero would look broken. (Lesson 837)"
+    "title down and the gradient hero would look broken. (Lesson 866)"
   );
   // The title needs to clear the back button. The fix adds
   // `padding-left` to .workflows-hero-title; we assert the override
@@ -676,6 +676,6 @@ test("workflows page styles position the back button at the top-left (Lesson 837
     titleClears,
     "expected .workflows-hero-title to have a padding-left so it " +
     "doesn't slide under the absolutely-positioned back button. " +
-    "(Lesson 837)"
+    "(Lesson 866)"
   );
 });

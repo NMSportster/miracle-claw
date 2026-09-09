@@ -138,7 +138,7 @@ async function mount(root, ctx = {}) {
   _state.activeWorkflowName = null;
   _state.lastSeq = 0;
   _state.pendingWorkflowHint = typeof ctx.workflowHint === "string" ? ctx.workflowHint : null;
-  // Lesson 837 (2026-09-09, David): workflows page had no back button,
+  // Lesson 866 (2026-09-09, David): workflows page had no back button,
   // so users had to close the app to get back to the Dashboard. The
   // ctx already includes onBackToDashboard (wired in main.js workflowsCtx),
   // but workflows.js never read it. Read it here and render a top-left
@@ -190,7 +190,7 @@ async function mount(root, ctx = {}) {
   // real numbers. The Recipes button is inline so users can reach
   // saved workflows without scrolling past the grid.
   //
-  // Lesson 837 (2026-09-09, David): back button rendered as the first
+  // Lesson 866 (2026-09-09, David): back button rendered as the first
   // child of the hero so the gradient + title are unchanged. We use
   // the established `.icon-link` class (32x32 with a border + arrow)
   // so it matches the back button on Provider Keys, Secrets, Pricing,
