@@ -5435,3 +5435,220 @@ kbd {
 .workflow-banner-status-killed .workflow-banner-cta {
   color: var(--fg-muted);
 }
+
+/* --- Phase 2.4 (Mobile pairing section) --------------------- */
+
+.pairing-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pairing-card-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pairing-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.pairing-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.pairing-meta-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pairing-meta-row code {
+  font-size: 12px;
+  word-break: break-all;
+  text-align: right;
+}
+
+.pairing-card-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.pairing-section-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.pairing-folder-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.pairing-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pairing-device-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.pairing-device-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.pairing-device-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.pairing-device-actions {
+  flex-shrink: 0;
+}
+
+.pairing-advanced {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.pairing-advanced > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  user-select: none;
+}
+
+.pairing-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 12px;
+}
+
+.pairing-advanced-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.pairing-advanced-note {
+  line-height: 1.5;
+}
+
+.pairing-qr-host {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+}
+
+.pairing-qr-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg);
+  border-radius: 6px;
+}
+
+.settings-error {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--error-bg);
+  border-radius: 6px;
+  background: rgba(220, 38, 38, 0.05);
+}
+
+.settings-button {
+  padding: 6px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.settings-button:hover:not(:disabled) {
+  background: var(--bg-card);
+  border-color: var(--fg-muted);
+}
+
+.settings-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings-button.primary {
+  background: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+  color: white;
+}
+
+.settings-button.primary:hover:not(:disabled) {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+.settings-button.danger {
+  background: transparent;
+  color: var(--error-fg);
+  border-color: var(--error-bg);
+}
+
+.settings-button.danger:hover:not(:disabled) {
+  background: var(--error-bg);
+  color: white;
+}
+
+.settings-button.small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+

@@ -22,6 +22,7 @@
 //! See tests/pairing_commands_test.rs.
 
 use std::sync::{Arc, Mutex};
+use std::path::Path;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -414,6 +415,91 @@ pub fn register_desktop(
             .collect(),
         drop_folder,
     })
+}
+
+/// `mc_register_desktop_self` — server-side keypair generation.
+///
+/// Phase 2.4 (NEW 2026-09-08): the frontend calls this without passing
+/// a pubkey. The X25519 keypair is generated (and persisted) entirely
+/// inside Rust so the secret never crosses the JS-Rust boundary.
+/// See `pairing_identity.rs` for the on-disk format.
+///
+/// `frontend_fingerprint` is optional — if empty, falls back to the
+/// fingerprint derived from the generated pubkey. (The frontend typically
+/// has nothing useful to put here since it doesn't see the keypair.)
+pub fn register_desktop_self(
+    cmds: &PairingCommands,
+    app_data_dir: &Path,
+    frontend_fingerprint: String,
+) -> PairingResult<DesktopRegistration> {
+    let identity = match crate::pairing_identity::load(app_data_dir) {
+        Ok(Some(id)) => id,
+        Ok(None) => crate::pairing_identity::generate(app_data_dir).map_err(|e| {
+            PairingError::State(format!("could not create pairing identity: {e}"))
+        })?,
+        Err(e) => {
+            return Err(PairingError::State(format!(
+                "pairing identity file is corrupt: {e}"
+            )));
+        }
+    };
+
+    let fingerprint = if frontend_fingerprint.trim().is_empty() {
+        identity.fingerprint.clone()
+    } else {
+        frontend_fingerprint
+    };
+
+    let instance_id = {
+        let guard = cmds.instance_id.lock().unwrap();
+        guard.clone().unwrap_or_else(|| identity.instance_id.clone())
+    };
+
+    let body = json!({
+        "instance_name": hostname_or_default(),
+        "public_key": identity.desktop_pubkey_b64,
+        "fingerprint": fingerprint,
+        "endpoint_kind": "lan_or_relay",
+    });
+
+    let response = cmds.maic.put_desktop(&instance_id, &body)?;
+    let drop_folder = response
+        .get("mobile_drop_folder")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    *cmds.instance_id.lock().unwrap() = Some(instance_id.clone());
+
+    Ok(DesktopRegistration {
+        instance_id,
+        desktop_pubkey_b64: identity.desktop_pubkey_b64,
+        fingerprint,
+        capabilities: Capability::locked_v1_scope()
+            .iter()
+            .map(|c| c.as_str().to_string())
+            .collect(),
+        drop_folder,
+    })
+}
+
+/// Restore a saved identity at app startup. Idempotent — if no identity
+/// file exists yet, returns Ok(None) and the user can call
+/// `register_desktop_self` later to generate one.
+pub fn restore_identity(
+    cmds: &PairingCommands,
+    app_data_dir: &Path,
+) -> PairingResult<Option<String>> {
+    match crate::pairing_identity::load(app_data_dir) {
+        Ok(Some(id)) => {
+            *cmds.instance_id.lock().unwrap() = Some(id.instance_id.clone());
+            Ok(Some(id.instance_id))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(PairingError::State(format!(
+            "pairing identity file is corrupt: {e}"
+        ))),
+    }
 }
 
 /// `mc_unregister_desktop` — DELETE on MAIC, revoke all sessions.

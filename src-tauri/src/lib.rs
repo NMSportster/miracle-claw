@@ -96,6 +96,11 @@ pub mod pairing_server;
 // Phase 2.3: 60s heartbeat ticker + cleanup task. Reads PairingServerState.bound_port()
 // to advertise endpoint; spawns from setup(). Spec: docs/specs/mobile-desktop-pairing.md.
 pub mod pairing_heartbeat;
+// Phase 2.4: persistent desktop identity (instance_id + X25519 keypair + fingerprint).
+// On-disk at app_data_dir/pairing/identity.json. Loaded on app startup;
+// `mc_register_desktop_self(fingerprint)` generates a fresh identity if none exists.
+// Spec: docs/specs/mobile-desktop-pairing.md.
+pub mod pairing_identity;
 // v1.0.7: 7 local tool schemas (paid tier only). Marked `pub` so the
 // `miracle-claw-tools` binary can `use` them via `crate::tools::...`.
 pub mod tools;
@@ -3940,6 +3945,20 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         // Pull the Arc out (cloned) to share with the HTTP server thread
         // and the heartbeat thread.
         let cmds: Arc<PairingCommands> = app_handle
+        // Phase 2.4 (NEW 2026-09-08, Home Claw): if this desktop has been
+        // registered before, rehydrate the saved identity (instance_id +
+        // X25519 keypair) so the next heartbeat advertises the same
+        // identity to MAIC. If no saved identity exists (fresh install),
+        // this is a no-op — the user gets one when they click "Register
+        // this desktop" in Settings.
+        if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
+            if let Err(e) = pairing_commands::restore_identity(&cmds, &app_data_dir) {
+                eprintln!(
+                    "[miracle-claw] could not restore pairing identity: {e} — pairing will require re-register"
+                );
+            }
+        }
+
             .state::<Arc<PairingCommands>>()
             .inner()
             .clone();
@@ -7615,6 +7634,8 @@ pub fn run() {
             mc_paired_devices,
             mc_revoke_device,
             mc_set_drop_folder,
+            mc_register_desktop_self,
+            mc_restore_pairing_identity,
             mc_get_pairing_status,
             // Lesson 833 (NEW 2026-09-08, David): MC subagents /
             // workflows. Five Tauri commands surface the bundled
@@ -7691,6 +7712,32 @@ fn mc_register_desktop(
 }
 
 #[tauri::command]
+#[tauri::command]
+fn mc_register_desktop_self(
+    app: tauri::AppHandle,
+    cmds: tauri::State<'_, pairing_commands::PairingCommands>,
+    frontend_fingerprint: String,
+) -> Result<pairing_commands::DesktopRegistration, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app_data_dir: {e}"))?;
+    pairing_commands::register_desktop_self(&cmds, &app_data_dir, frontend_fingerprint)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn mc_restore_pairing_identity(
+    app: tauri::AppHandle,
+    cmds: tauri::State<'_, pairing_commands::PairingCommands>,
+) -> Result<Option<String>, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app_data_dir: {e}"))?;
+    pairing_commands::restore_identity(&cmds, &app_data_dir).map_err(|e| e.to_string())
+}
+
 fn mc_unregister_desktop(
     cmds: tauri::State<'_, pairing_commands::PairingCommands>,
 ) -> Result<(), String> {
