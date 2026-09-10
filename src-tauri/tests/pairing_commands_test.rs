@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use miracle_claw_lib::pairing_commands::{
     initiate_pair, paired_devices, register_desktop, revoke_device, set_drop_folder,
-    unregister_desktop, PairingCommands, PairingError,
+    unregister_desktop, LiveMaicHttp, PairingCommands, PairingError,
 };
 use miracle_claw_lib::pairing_crypto::{
     desktop_issue_handshake, new_session_id, new_session_secret, phone_decrypt_handshake,
@@ -807,4 +807,76 @@ fn server_full_handshake_decrypts_to_recoverable_session_secret() {
     assert_eq!(paired_post.body["device_name"], "Test Phone");
 
     pairing_server::stop(&srv);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Lesson 892: wire-level method check for LiveMaicHttp::post_paired_device.
+//
+// Homebot caught a 1-method-name drift: the trait method is named
+// `post_paired_device` but the Live impl called `put_json`, so MAIC saw
+// a PUT instead of a POST and 404'd (well, would have if MAIC had a POST
+// route — turns out the POST route is also missing, see mcmobile.txt).
+// The FakeMaic test fixture *also* records "POST" so existing tests
+// passed; only a wire-level test against a real HTTP server catches
+// the drift. This is that test.
+// ─────────────────────────────────────────────────────────────────────
+
+use std::io::Read as _;
+use std::net::TcpListener;
+use std::sync::mpsc;
+
+#[test]
+fn live_post_paired_device_sends_post_not_put_on_the_wire() {
+    // Bind a 1-shot HTTP server on an ephemeral port. It accepts one
+    // request, captures the request line, responds 200 with a tiny
+    // body, and exits.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel::<String>();
+
+    let _server = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            // Read enough to capture the request line + headers.
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let captured = String::from_utf8_lossy(&buf[..n]).to_string();
+            tx.send(captured).unwrap();
+            // Respond 200 with a minimal JSON body so ureq can decode it.
+            use std::io::Write as _;
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 18\r\n\r\n{\"device_id\":42}",
+            );
+            let _ = stream.flush();
+        }
+    });
+
+    let live = LiveMaicHttp::new(
+        format!("http://127.0.0.1:{}", port),
+        "test-jwt".to_string(),
+    );
+
+    let body = json!({
+        "device_name": "wire-level-test-phone",
+        "phone_pubkey_fp": "abcd1234abcd1234",
+    });
+
+    // The call should not error. We only care about the wire method.
+    let _ = live.post_paired_device("inst_test", &body);
+
+    let raw_request = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("server should have received the request");
+
+    // Request line is e.g. "POST /v1/users/me/desktops/inst_test/paired-devices HTTP/1.1"
+    let first_line = raw_request.lines().next().expect("non-empty request");
+    assert!(
+        first_line.starts_with("POST "),
+        "expected POST request, got: {}",
+        first_line
+    );
+    assert!(
+        first_line.contains("/v1/users/me/desktops/inst_test/paired-devices"),
+        "expected paired-devices path, got: {}",
+        first_line
+    );
 }

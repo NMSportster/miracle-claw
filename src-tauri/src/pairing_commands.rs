@@ -205,6 +205,29 @@ impl LiveMaicHttp {
         }
     }
 
+    fn post_json(&self, path: &str, body: &str) -> PairingResult<String> {
+        use std::time::Duration;
+        let url = self.url(path);
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(10))
+            .build();
+        match agent
+            .post(&url)
+            .set("Authorization", &format!("Bearer {}", self.jwt))
+            .set("Content-Type", "application/json")
+            .send_string(body)
+        {
+            Ok(resp) => resp.into_string().map_err(|e| PairingError::MaicRequest(format!("read body: {}", e))),
+            Err(ureq::Error::Status(code, response)) => Err(PairingError::MaicRequest(format!(
+                "POST {} -> HTTP {}: {}",
+                url,
+                code,
+                response.into_string().unwrap_or_default()
+            ))),
+            Err(e) => Err(PairingError::MaicRequest(format!("POST {} -> {}", url, e))),
+        }
+    }
+
     fn get_json(&self, path: &str) -> PairingResult<String> {
         use std::time::Duration;
         let url = self.url(path);
@@ -271,7 +294,11 @@ impl MaicHttp for LiveMaicHttp {
         body: &serde_json::Value,
     ) -> PairingResult<serde_json::Value> {
         let path = format!("/v1/users/me/desktops/{}/paired-devices", instance_id);
-        let resp = self.put_json(&path, &body.to_string())?;
+        // Lesson 892: function name vs impl-method must match. MAIC's
+        // POST endpoint expects POST (not PUT); the previous put_json
+        // here was a 1-method-name drift that the type system can't
+        // catch. Wire-level test enforced at routes layer.
+        let resp = self.post_json(&path, &body.to_string())?;
         serde_json::from_str(&resp).map_err(|e| PairingError::MaicJson(e.to_string()))
     }
     fn get_paired_devices(&self, instance_id: &str) -> PairingResult<Vec<serde_json::Value>> {
