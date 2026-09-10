@@ -186,6 +186,21 @@ tar -xzf "$OPENCLAW_TARBALL" -C "$TMP_OC"
 mv "$TMP_OC"/package/* "$RESOURCES_DIR"/
 rmdir "$TMP_OC/package"
 rmdir "$TMP_OC"
+# Bucket 2 (rc56.0): rename openclaw.mjs → miracle-claw-gateway.mjs so the
+# bundled runtime file matches the tauri.conf.json resource path.
+if [[ -f "$RESOURCES_DIR/openclaw.mjs" ]]; then
+    mv "$RESOURCES_DIR/openclaw.mjs" "$RESOURCES_DIR/miracle-claw-gateway.mjs"
+fi
+# Patch the wrapper script's "openclaw" wrapperBasename (Lesson 952 follow-on:
+# openclaw 2026.7.1-2 hardcodes "openclaw" / "openclaw.mjs" in its bundled
+# dist/*.js; rename so the runtime can locate itself).
+find "$RESOURCES_DIR/dist" -name "*.js" -exec sed -i \
+    -e 's/wrapperBasename: "openclaw.mjs"/wrapperBasename: "miracle-claw-gateway.mjs"/g' \
+    -e 's/"\.\/openclaw\.mjs"/".\/miracle-claw-gateway.mjs"/g' \
+    -e 's|\.\/openclaw\.mjs|./miracle-claw-gateway.mjs|g' \
+    -e 's|"openclaw\.mjs"|"miracle-claw-gateway.mjs"|g' \
+    -e "s|'openclaw\.mjs'|'miracle-claw-gateway.mjs'|g" \
+    {} + 2>/dev/null || true
 # Trim noise the launcher doesn't need (build stamps, lockfiles, etc.).
 # pnpm-workspace.yaml is REQUIRED to be kept (Lesson 952: pnpm 11 walks up the
 # tree to find a workspace; if we delete it, pnpm finds the Tauri app's
