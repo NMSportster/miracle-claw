@@ -93,7 +93,7 @@ function shellOptionsForOS(os) {
       { value: "mc-terminal", label: "Miracle Claw · TUI" },
       { value: "prose", label: "Workflow REPL (prose)" },
       { value: "cmd", label: "Command Prompt (cmd.exe)" },
-      { value: "pwsh", label: "PowerShell 7 (pwsh.exe)" },
+      { value: "pwsh", label: "PowerShell (powershell.exe)" },
       { value: "wsl", label: "WSL bash" },
     ];
   }

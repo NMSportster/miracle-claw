@@ -427,6 +427,60 @@ fn openclaw_json_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("./chat.json"))
 }
 
+/// Resolve the current MAIC API key from any of these sources in
+/// priority order:
+///
+///   1. `MAIC_API_KEY` env var (set by `maic_login` / `silent_relogin`
+///      during the same process lifetime).
+///   2. The literal `apiKey` string in the user's chat config (rc55.x
+///      wrote this on every successful login, so it survives process
+///      restarts even before the launcher spawns).
+///
+/// Lesson 964 (2026-09-10, David): the five module endpoints
+/// (`mc_list_marketplace_modules`, `mc_list_installed_modules`,
+/// `mc_install_module`, `mc_uninstall_module`, `mc_run_module`) and
+/// `mc_get_tier` / `mc_get_nudge` all read the JWT directly from
+/// `std::env::var(MAIC_API_KEY)`. On a returning-user launch, the env
+/// var is empty until `silent_relogin` runs, but the user is already
+/// past the login form because `first_run_report` reads the literal
+/// from chat.json. Result: marketplace load fails with "not logged in"
+/// even though the user is authenticated. The fix is to call this
+/// helper instead of reading the env var directly.
+///
+/// We do NOT fall back to the keychain (cached creds) here: those
+/// are *credentials* (email + password), not a JWT, and minting a JWT
+/// from them requires a network call to MAIC. If both the env var and
+/// the chat.json literal are missing, the user genuinely needs to
+/// log in again — the frontend will redirect to the login form.
+fn current_maic_jwt() -> Result<String, String> {
+    // 1. Env var (same-process state set by maic_login / silent_relogin).
+    if let Ok(k) = std::env::var(ENV_VAR_NAME) {
+        let trimmed = k.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    // 2. Literal apiKey in chat.json (persisted by maic_login on every
+    //    successful login, survives process restarts).
+    if let Ok(raw) = std::fs::read_to_string(openclaw_json_path()) {
+        if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(key) = cfg
+                .get("models")
+                .and_then(|m| m.get("providers"))
+                .and_then(|p| p.get("maic"))
+                .and_then(|e| e.get("apiKey"))
+                .and_then(|k| k.as_str())
+            {
+                let trimmed = key.trim();
+                if !trimmed.is_empty() {
+                    return Ok(trimmed.to_string());
+                }
+            }
+        }
+    }
+    Err("not logged in".to_string())
+}
+
 /// Returns the path to the bundled MAIC plugin source (a directory containing
 /// `openclaw.plugin.json`, `index.js`, `package.json`).
 fn bundled_maic_plugin_dir(resources: &Path) -> PathBuf {
@@ -5677,7 +5731,7 @@ pub(crate) fn maic_base_url() -> String {
 // to render the tier badge.
 #[tauri::command]
 fn mc_get_tier() -> Result<crate::auth::tier::TierInfo, String> {
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     crate::auth::tier::fetch_tier_cached(&jwt, &maic_base)
 }
@@ -5686,7 +5740,7 @@ fn mc_get_tier() -> Result<crate::auth::tier::TierInfo, String> {
 // render the token usage indicator and the nudge modal.
 #[tauri::command]
 fn mc_get_nudge() -> Result<crate::auth::nudge::NudgeDecision, String> {
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     let tier = crate::auth::tier::current_tier();
     let quota = crate::auth::nudge::fetch_quota_cached(&jwt, &maic_base)?;
@@ -5706,7 +5760,7 @@ fn mc_get_nudge() -> Result<crate::auth::nudge::NudgeDecision, String> {
 // can never disagree about the current token count.
 #[tauri::command]
 fn mc_get_quota() -> Result<crate::auth::nudge::QuotaResponse, String> {
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     crate::auth::nudge::fetch_quota_cached(&jwt, &maic_base)
 }
@@ -5758,7 +5812,7 @@ fn mc_list_plans() -> Result<Vec<serde_json::Value>, String> {
 //      macOS/Linux).
 #[tauri::command]
 fn mc_open_checkout_url(plan_code: String) -> Result<(), String> {
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     let base = crate::auth::tier::normalize_api_base(&maic_base);
     let url = format!("{}/v1/billing/checkout", base);
@@ -5870,7 +5924,7 @@ fn mc_list_marketplace_modules(
     category: Option<String>,
     sort: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     let base = crate::auth::tier::normalize_api_base(&maic_base);
 
@@ -5905,7 +5959,7 @@ fn mc_list_marketplace_modules(
 // GET /v1/modules/installed — authed.
 #[tauri::command]
 fn mc_list_installed_modules() -> Result<serde_json::Value, String> {
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     let url = format!(
         "{}/v1/modules/installed",
@@ -5929,7 +5983,7 @@ fn mc_install_module(module_id: String) -> Result<serde_json::Value, String> {
     if module_id.is_empty() {
         return Err("module_id is required".to_string());
     }
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     let url = format!(
         "{}/v1/modules/install",
@@ -5955,7 +6009,7 @@ fn mc_uninstall_module(module_id: String) -> Result<serde_json::Value, String> {
     if module_id.is_empty() {
         return Err("module_id is required".to_string());
     }
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     let url = format!(
         "{}/v1/modules/uninstall",
@@ -5995,7 +6049,7 @@ fn mc_run_module(
     if tool.is_empty() {
         return Err("tool is required".to_string());
     }
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     let url = format!(
         "{}/v1/modules/{}/run",
@@ -6152,7 +6206,7 @@ fn tools_for_tier(_tier: crate::auth::tier::Tier) -> Vec<crate::tools::LocalTool
 // when the user clicks the tier badge.
 #[tauri::command]
 fn mc_refresh_tier() -> Result<crate::auth::tier::TierInfo, String> {
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     crate::auth::tier::invalidate_tier_cache();
     let info = crate::auth::tier::fetch_tier_fresh(&jwt, &maic_base)?;
@@ -6397,7 +6451,7 @@ fn validate_workspace_md(path: &Path) -> Result<PathBuf, String> {
 /// sees the SAME tier the dashboard just rendered.
 #[tauri::command]
 fn mc_get_user_info() -> Result<UserInfo, String> {
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     let info = crate::auth::tier::fetch_tier_cached(&jwt, &maic_base)?;
     Ok(UserInfo {
@@ -6685,7 +6739,14 @@ fn resolve_shell_cmd(shell: &str) -> Result<(&'static str, Vec<&'static str>), S
     if cfg!(windows) {
         match shell {
             "cmd" => Ok(("cmd.exe", vec![])),
-            "pwsh" => Ok(("pwsh.exe", vec!["-NoLogo"])),
+            // Lesson 965 (2026-09-10, David): use `powershell.exe` (the
+            // built-in Windows PowerShell 5.1) instead of `pwsh.exe` (the
+            // optional PowerShell 7 Core). Most Windows installs only
+            // have 5.1, and the installer doesn't add pwsh to PATH. If
+            // the user later installs PowerShell 7 they'll get a fresh
+            // `pwsh.exe` in System32; they can update the picker to
+            // point at it then.
+            "pwsh" => Ok(("powershell.exe", vec!["-NoLogo"])),
             "wsl" => Ok(("wsl.exe", vec!["--distribution", "Ubuntu", "bash"])),
             // Lesson 220 + 223: spawn the OpenClaw TUI. The bundled
             // resources invoke `node <resources>/miracle-claw-gateway.mjs tui --local`
@@ -11282,5 +11343,83 @@ mod tests {
             Some(false),
             "update migration must run alongside legacy auth migration (AP-833-U)"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Lesson 964 (2026-09-10, David): current_maic_jwt() must read the
+    // JWT from BOTH the env var AND the literal apiKey in chat.json.
+    //
+    // The five module endpoints (mc_list_marketplace_modules,
+    // mc_list_installed_modules, mc_install_module, mc_uninstall_module,
+    // mc_run_module) and the auth/tier/nudge endpoints used to call
+    // `std::env::var(MAIC_API_KEY)` directly. On a returning-user
+    // launch, the env var is empty until silent_relogin runs, but the
+    // user is already past the login form because first_run_report
+    // reads the literal from chat.json. Result: marketplace load fails
+    // with "not logged in" even though the user is authenticated.
+    //
+    // The fix is `current_maic_jwt()` which checks env var first, then
+    // the chat.json literal. These tests pin the priority order.
+    // ─────────────────────────────────────────────────────────────────
+    /// Write a chat.json with a literal apiKey, assuming the caller
+    /// has already called `fresh_env()` (and therefore holds an
+    /// EnvGuard with a fresh HOME). Caller is responsible for the
+    /// env lock and the EnvGuard.
+    fn write_chat_json_with_literal(literal: &str) {
+        let path = openclaw_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let cfg = serde_json::json!({
+            "models": {
+                "providers": {
+                    "maic": {
+                        "apiKey": literal,
+                        "baseUrl": "https://maicserver.com/v1"
+                    }
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn current_maic_jwt_prefers_env_var_over_chat_json() {
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var(ENV_VAR_NAME, "from-env-abc");
+        write_chat_json_with_literal("from-chat-json-xyz");
+        // Env var wins when both are set.
+        let jwt = current_maic_jwt().expect("env var should win");
+        assert_eq!(jwt, "from-env-abc");
+    }
+
+    #[test]
+    fn current_maic_jwt_falls_back_to_chat_json_literal() {
+        let _lock = lock_env();
+        let _g = fresh_env();
+        // env::remove_var already done by fresh_env().
+        write_chat_json_with_literal("persisted-jwt-789");
+        // No env var, but chat.json has a literal — should return it.
+        let jwt = current_maic_jwt().expect("chat.json literal should win");
+        assert_eq!(jwt, "persisted-jwt-789");
+    }
+
+    #[test]
+    fn current_maic_jwt_errors_when_neither_source_has_a_key() {
+        let _lock = lock_env();
+        let _g = fresh_env();
+        // No env var, no chat.json. The user is genuinely not logged in.
+        // The frontend uses this error to redirect to the login form.
+        let err = current_maic_jwt().expect_err("should error when nothing is set");
+        assert_eq!(err, "not logged in");
+    }
+
+    #[test]
+    fn current_maic_jwt_skips_empty_env_var_and_reads_chat_json() {
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var(ENV_VAR_NAME, "   "); // whitespace-only, must be skipped
+        write_chat_json_with_literal("persisted-jwt-after-empty-env");
+        let jwt = current_maic_jwt().expect("chat.json should win over empty env");
+        assert_eq!(jwt, "persisted-jwt-after-empty-env");
     }
 }
