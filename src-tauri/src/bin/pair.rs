@@ -548,6 +548,38 @@ pub fn run(config: Config) -> Result<(), i32> {
                 eprintln!("[miracle-claw-pair] restore_identity failed: {e}");
                 return Err(3);
             }
+
+            // Step 3.6: register this desktop with MAIC so the
+            // phone-side handshake has a desktop to attach to. The
+            // GUI does this when the user clicks "Pair this device"
+            // (calls `mc_register_desktop_self` in lib.rs:8061). The
+            // CLI doesn't have a frontend, so it does it on startup
+            // (only in persistent mode — ephemeral has no on-disk
+            // identity to register, and `seed_instance_id` for that
+            // path is the Week 4 follow-up).
+            //
+            // Requires MAIC_API_KEY in env (set by the GUI's
+            // `silent_relogin` after login). If the user hasn't
+            // logged in, this 401s — we log a friendly hint and
+            // continue; the CLI still serves /pair/health (so a
+            // phone-sim can debug "is the desktop running?") but
+            // /pair/initiate will 503 with `not_initialized` until
+            // they log in via the GUI first.
+            //
+            // Homebot caught this gap (mcmobile.txt 2026-09-10
+            // 00:35 MDT): without this, MAIC returned 404
+            // `desktop_not_found` on every phone handshake.
+            if let Err(e) = miracle_claw_lib::pairing_commands::register_desktop_self(
+                &cmds,
+                app_data_dir,
+                String::new(),
+            ) {
+                eprintln!(
+                    "[miracle-claw-pair] register_desktop_self failed: {e} (is MAIC_API_KEY set? did you log in via the GUI?)"
+                );
+                // Continue — the server still starts. /pair/health
+                // works, but /pair/initiate needs this to succeed.
+            }
         }
     }
 

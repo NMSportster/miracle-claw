@@ -95,8 +95,14 @@ pub fn fingerprint_from_pubkey(pubkey: &[u8; 32]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(pubkey);
     let digest = hasher.finalize();
-    let hex: String = digest[..6].iter().map(|b| format!("{:02x}", b)).collect();
-    format!("{}-{}-{}", &hex[0..4], &hex[4..8], &hex[8..12])
+    // MAIC's `DesktopRegisterIn.fingerprint` requires minLength: 16
+    // (Phase 2.4 schema constraint, was 12+2 dashes = 14 chars, hit
+    // 422 `string_too_short`). Use 9 bytes (18 hex chars, 23 with
+    // dashes) — comfortably above the 16-char minimum, well under
+    // the 128-char max, and short enough to log/print without
+    // wrapping. Format: "xxxxxxxx-xxxxxxxx-xxxxxxxx" (3×6 hex).
+    let hex: String = digest[..9].iter().map(|b| format!("{:02x}", b)).collect();
+    format!("{}-{}-{}", &hex[0..6], &hex[6..12], &hex[12..18])
 }
 
 /// Generate a fresh UUID v4 instance id using OS rng.
@@ -173,14 +179,37 @@ pub fn identity_path(app_data_dir: &Path) -> PathBuf {
 /// future version with an unknown format), we return the original error.
 pub fn load(app_data_dir: &Path) -> std::io::Result<Option<Identity>> {
     let path = identity_path(app_data_dir);
+    load_and_migrate(&path)
+}
+
+/// Persist an identity to disk with 0600 perms (best-effort on Windows).
+pub fn save(app_data_dir: &Path, identity: &Identity) -> std::io::Result<()> {
+    let dir = app_data_dir.join("pairing");
+    fs::create_dir_all(&dir)?;
+    let path = identity_path(app_data_dir);
+    write_identity_to(&path, identity)
+}
+
+/// Shared migration-aware loader. Used by both `load` (XDG default) and
+/// `load_from` (CLI `--identity-file`) so neither path can silently miss
+/// the v0.0.3 → Phase 2.4.1 migration. (Homebot mcmobile.txt 2026-09-10
+/// 00:35 caught this: CLI was failing with "UUID parsing failed" on
+/// legacy v0.0.3 identity files because `load_from` didn't migrate.)
+fn load_and_migrate(path: &Path) -> std::io::Result<Option<Identity>> {
     if !path.exists() {
         return Ok(None);
     }
-    let raw = fs::read_to_string(&path)?;
-    match serde_json::from_str::<Identity>(&raw) {
-        Ok(id) => Ok(Some(id)),
+    let raw = fs::read_to_string(path)?;
+    let mut needs_rewrite = false;
+    let mut id = match serde_json::from_str::<Identity>(&raw) {
+        Ok(id) => id,
         Err(parse_err) => {
             // Try the v0.0.3 shape: { "instance_id": "inst_<16 hex>", ... }
+            // The v0.0.3 era stored `desktop_secret_key` as a JSON
+            // array of bytes; the Phase 2.4.1 shape uses base64
+            // string (via the `base64_secret` mod). We accept the
+            // legacy array form here and convert to the new shape
+            // after successful deserialization.
             #[derive(Deserialize)]
             struct LegacyIdentity {
                 instance_id: String,
@@ -201,30 +230,73 @@ pub fn load(app_data_dir: &Path) -> std::io::Result<Option<Identity>> {
                             ),
                         ))?;
                     // Re-serialize in the new shape and rewrite the file.
-                    let migrated = Identity {
+                    let pubkey_bytes_vec = base64::engine::general_purpose::STANDARD
+                        .decode(&legacy.desktop_pubkey_b64)
+                        .map_err(|e| std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("legacy desktop_pubkey_b64 not base64: {e}"),
+                        ))?;
+                    let mut pubkey_bytes = [0u8; 32];
+                    if pubkey_bytes_vec.len() != 32 {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "legacy desktop_pubkey must be 32 bytes, got {}",
+                                pubkey_bytes_vec.len()
+                            ),
+                        ));
+                    }
+                    pubkey_bytes.copy_from_slice(&pubkey_bytes_vec);
+                    let fp = if legacy.fingerprint.len() >= 16 {
+                        legacy.fingerprint
+                    } else {
+                        fingerprint_from_pubkey(&pubkey_bytes)
+                    };
+                    // Mark for on-disk rewrite below (in the new shape).
+                    needs_rewrite = true;
+                    Identity {
                         instance_id: uuid,
                         desktop_pubkey_b64: legacy.desktop_pubkey_b64,
                         desktop_secret_key: legacy.desktop_secret_key,
-                        fingerprint: legacy.fingerprint,
+                        fingerprint: fp,
                         created_at_unix: legacy.created_at_unix,
-                    };
-                    write_identity_to(&path, &migrated)?;
-                    Ok(Some(migrated))
+                    }
                 }
-                Err(_) => Err(std::io::Error::new(
+                Err(_) => return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData, parse_err,
                 )),
             }
         }
-    }
-}
+    };
 
-/// Persist an identity to disk with 0600 perms (best-effort on Windows).
-pub fn save(app_data_dir: &Path, identity: &Identity) -> std::io::Result<()> {
-    let dir = app_data_dir.join("pairing");
-    fs::create_dir_all(&dir)?;
-    let path = identity_path(app_data_dir);
-    write_identity_to(&path, identity)
+    // Phase 2.4.1: MAIC's DesktopRegisterIn.fingerprint requires
+    // minLength 16. v0.0.4-era identities had 14-char fingerprints
+    // (12 hex + 2 dashes), which MAIC 422s. Fingerprint is a pure
+    // function of the pubkey, so re-derive it on load if too short.
+    if id.fingerprint.len() < 16 {
+        let pubkey_bytes_vec = base64::engine::general_purpose::STANDARD
+            .decode(&id.desktop_pubkey_b64)
+            .map_err(|e| std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("desktop_pubkey_b64 not base64: {e}"),
+            ))?;
+        if pubkey_bytes_vec.len() != 32 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("desktop_pubkey must be 32 bytes, got {}", pubkey_bytes_vec.len()),
+            ));
+        }
+        let mut pubkey_bytes = [0u8; 32];
+        pubkey_bytes.copy_from_slice(&pubkey_bytes_vec);
+        id.fingerprint = fingerprint_from_pubkey(&pubkey_bytes);
+        needs_rewrite = true;
+    }
+
+    if needs_rewrite {
+        write_identity_to(path, &id)?;
+    }
+
+    Ok(Some(id))
 }
 
 /// Load an identity from a caller-specified path. Returns `Ok(None)` if
@@ -234,15 +306,14 @@ pub fn save(app_data_dir: &Path, identity: &Identity) -> std::io::Result<()> {
 /// Added for `miracle-claw-pair --identity-file <path>` (Week 2.5).
 /// The XDG-default `load()` / `save()` above still handle the GUI
 /// path; this is the custom-path variant for the headless CLI.
+///
+/// Phase 2.4.1: shares `load_and_migrate` with `load()` so v0.0.3
+/// identity files on disk (with `instance_id: "inst_<16 hex>"`) get
+/// migrated to UUID v4 transparently, regardless of which loader
+/// reads them. Without this, the CLI failed with "UUID parsing
+/// failed" on legacy v0.0.3 files (Homebot 2026-09-10 mcmobile.txt).
 pub fn load_from(path: &Path) -> std::io::Result<Option<Identity>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(path)?;
-    match serde_json::from_str::<Identity>(&raw) {
-        Ok(id) => Ok(Some(id)),
-        Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-    }
+    load_and_migrate(path)
 }
 
 /// Persist an identity to a caller-specified path. Creates parent
@@ -305,7 +376,9 @@ mod tests {
         let fp2 = fingerprint_from_pubkey(&key);
         assert_eq!(fp1, fp2);
         assert!(fp1.contains('-'));
-        assert_eq!(fp1.len(), 14); // 12 hex + 2 dashes
+        // Phase 2.4.1: 18 hex + 2 dashes = 20 chars (was 14).
+        // MAIC's DesktopRegisterIn requires minLength 16.
+        assert_eq!(fp1.len(), 20);
     }
 
     #[test]
@@ -353,9 +426,15 @@ mod tests {
     fn load_migrates_v0_0_3_legacy_identity() {
         let tmp = tempdir_in_tests();
         // Write a v0.0.3-format identity.json to disk by hand.
+        // v0.0.3 used a JSON array of bytes for `desktop_secret_key`
+        // (no `base64_secret` mod yet). The migration must accept
+        // that shape and convert to the new base64-string form on
+        // disk after migration.
+        // desktop_pubkey_b64 must be a valid 32-byte X25519 pubkey
+        // (Phase 2.4.1 fingerprint regeneration decodes it).
         let legacy = serde_json::json!({
             "instance_id": "inst_a1b2c3d4e5f60718",
-            "desktop_pubkey_b64": "MCowBQYDK2VwAyEARXhhcm0hZWZmamtsbW5vcDpzdHV2d3h5eno7",
+            "desktop_pubkey_b64": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqo=",
             "desktop_secret_key": [1u8, 2, 3, 4, 5, 6, 7, 8],
             "fingerprint": "abcd-1234-ef56",
             "created_at_unix": 1700000000u64,
@@ -371,15 +450,20 @@ mod tests {
         let expected = migrate_inst_hex_to_uuid("inst_a1b2c3d4e5f60718").unwrap();
         assert_eq!(loaded.instance_id, expected);
         // The other fields are preserved unchanged.
-        assert_eq!(loaded.desktop_pubkey_b64, "MCowBQYDK2VwAyEARXhhcm0hZWZmamtsbW5vcDpzdHV2d3h5eno7");
+        assert_eq!(loaded.desktop_pubkey_b64, "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqo=");
         assert_eq!(loaded.desktop_secret_key, vec![1u8, 2, 3, 4, 5, 6, 7, 8]);
-        assert_eq!(loaded.fingerprint, "abcd-1234-ef56");
+        // Phase 2.4.1: short fingerprint gets regenerated from the
+        // pubkey during migration (MAIC's DesktopRegisterIn requires
+        // minLength 16, was 14 chars).
+        assert_ne!(loaded.fingerprint, "abcd-1234-ef56");
+        assert_eq!(loaded.fingerprint.len(), 20, "regenerated fingerprint should be 20 chars");
         assert_eq!(loaded.created_at_unix, 1700000000u64);
 
         // After migration, the file on disk should be in the new shape.
         let raw = fs::read_to_string(&path).unwrap();
         let again: Identity = serde_json::from_str(&raw).expect("post-migration should parse as new shape");
         assert_eq!(again.instance_id, expected);
+        assert_eq!(again.fingerprint, loaded.fingerprint, "on-disk fp should match in-memory fp");
     }
 
     #[test]
