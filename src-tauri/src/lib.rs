@@ -6562,9 +6562,9 @@ fn resolve_shell_cmd(shell: &str) -> Result<(&'static str, Vec<&'static str>), S
             // causes the TUI to exit immediately with code 0. The shell
             // label here is just a key — `resolve_shell_cmd` returns a
             // marker we re-interpret in mc_terminal_start.
-            "mc-openclaw" => Ok(("__MC_OPENCLAW__", vec!["tui", "--local"])),
+            "mc-terminal" => Ok(("__MC_TERMINAL__", vec!["tui", "--local"])),
             _ => Err(format!(
-                "unknown shell on Windows: '{}' (supported: cmd, pwsh, wsl, mc-openclaw)",
+                "unknown shell on Windows: '{}' (supported: cmd, pwsh, wsl, mc-terminal)",
                 shell
             )),
         }
@@ -6575,9 +6575,9 @@ fn resolve_shell_cmd(shell: &str) -> Result<(&'static str, Vec<&'static str>), S
             "zsh" => Ok(("zsh", vec!["-i"])),
             // Lesson 220 + 223: --local avoids the TUI exiting at
             // startup because there's no remote Gateway listening.
-            "mc-openclaw" => Ok(("__MC_OPENCLAW__", vec!["tui", "--local"])),
+            "mc-terminal" => Ok(("__MC_TERMINAL__", vec!["tui", "--local"])),
             _ => Err(format!(
-                "unknown shell on *nix: '{}' (supported: bash, sh, zsh, mc-openclaw)",
+                "unknown shell on *nix: '{}' (supported: bash, sh, zsh, mc-terminal)",
                 shell
             )),
         }
@@ -6607,7 +6607,7 @@ fn which_first(cmd: &str) -> String {
                     return with_exe.to_string_lossy().into_owned();
                 }
                 // Then try .cmd (npm bin shims like openclaw.cmd).
-                // Needed for `mc-openclaw` which resolves to npm's
+                // Needed for `mc-terminal` which resolves to npm's
                 // openclaw.cmd on Windows. Lesson 220.
                 let with_cmd = candidate.with_extension("cmd");
                 if with_cmd.exists() {
@@ -6683,7 +6683,7 @@ fn spawn_shell(
     // std::process::Command is additive — it does NOT clear, it adds or
     // overrides named keys. So MAIC_API_KEY (which maic_login sets on the
     // parent process as the user's JWT) is still inherited; we only
-    // override the two OPENCLAW_ keys specifically for mc-openclaw.
+    // override the two OPENCLAW_ keys specifically for mc-terminal.
     if let Some(env) = extra_env {
         for (k, v) in env {
             command.env(k, v);
@@ -6756,14 +6756,14 @@ fn mc_terminal_start(
 ) -> Result<String, String> {
     let (cmd, args) = resolve_shell_cmd(&shell)?;
 
-    // Lesson 221: for `mc-openclaw`, use the BUNDLED node.exe +
+    // Lesson 221: for `mc-terminal`, use the BUNDLED node.exe +
     // openclaw.mjs shipped in the installer resources, not the
     // user's system PATH. Most end users don't have `openclaw`
     // installed globally, and we ship a self-contained CLI here
     // so the Terminal tile Just Works. resolve_shell_cmd returns
-    // a `__MC_OPENCLAW__` marker for this shell so we can detect
+    // a `__MC_TERMINAL__` marker for this shell so we can detect
     // it without an additional string compare.
-    let (cmd_path, real_args): (String, Vec<String>) = if cmd == "__MC_OPENCLAW__" {
+    let (cmd_path, real_args): (String, Vec<String>) = if cmd == "__MC_TERMINAL__" {
         let resources = resources_dir(&app_handle);
         #[cfg(windows)]
         let node = resources.join("node.exe");
@@ -6794,7 +6794,7 @@ fn mc_terminal_start(
 
     let mut extra_env: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    if shell == "mc-openclaw" {
+    if shell == "mc-terminal" {
         let cfg_path = openclaw_json_path();
         // The state dir is the parent of the extensions dir, so the TUI
         // also finds the bundled MAIC plugin automatically (instead of
@@ -6922,7 +6922,7 @@ fn mc_terminal_poll(
 /// enter. For interactive shells we append `\r\n` so the shell sees a
 /// complete line; the frontend doesn't have to know about line endings.
 ///
-/// Lesson 223: `mc-openclaw` uses Ink (terminal UI) which expects `\r`
+/// Lesson 223: `mc-terminal` uses Ink (terminal UI) which expects `\r`
 /// as the Enter key (PTY-style), not just `\n`. So for that shell kind
 /// we emit `\r` rather than `\n`. For real shells (cmd, pwsh, bash) we
 /// keep `\r\n` which works universally on Windows + *nix.
@@ -6941,7 +6941,7 @@ fn mc_terminal_write(
     // right line terminator (\r for Ink TUI vs \r\n for real shells)
     // without needing to introspect again. The handle here is an
     // Arc<TerminalHandle> so we can hold the &Arc across .child.lock().
-    let is_tui = handle.shell == "mc-openclaw";
+    let is_tui = handle.shell == "mc-terminal";
 
     let mut child_lock = handle.child.lock().unwrap();
     let child = child_lock
@@ -6956,7 +6956,7 @@ fn mc_terminal_write(
 
     let mut to_send = input;
     if !to_send.ends_with('\n') && !to_send.ends_with('\r') {
-        // Use \r for Ink TUI (mc-openclaw), \r\n for everything else.
+        // Use \r for Ink TUI (mc-terminal), \r\n for everything else.
         // \r\n works for both cmd and bash; \r alone is the canonical
         // Enter key Ink / readline uses in a PTY context.
         if is_tui {
@@ -10665,10 +10665,10 @@ mod tests {
             assert!(resolve_shell_cmd("cmd").is_ok());
             assert!(resolve_shell_cmd("pwsh").is_ok());
             assert!(resolve_shell_cmd("wsl").is_ok());
-            // Lesson 220: mc-openclaw is the new default. It maps to
+            // Lesson 220: mc-terminal is the new default. It maps to
             // `openclaw tui` and resolves to npm's openclaw.cmd on
             // Windows via the .cmd extension in which_first.
-            let mc = resolve_shell_cmd("mc-openclaw").expect("mc-openclaw must resolve");
+            let mc = resolve_shell_cmd("mc-terminal").expect("mc-terminal must resolve");
             assert_eq!(mc.0, "openclaw");
             assert_eq!(mc.1, vec!["tui"]);
             assert!(resolve_shell_cmd("bash").is_err());
@@ -10676,11 +10676,11 @@ mod tests {
             assert!(resolve_shell_cmd("bash").is_ok());
             assert!(resolve_shell_cmd("sh").is_ok());
             assert!(resolve_shell_cmd("zsh").is_ok());
-            let mc = resolve_shell_cmd("mc-openclaw").expect("mc-openclaw must resolve on *nix too");
+            let mc = resolve_shell_cmd("mc-terminal").expect("mc-terminal must resolve on *nix too");
             // Lesson 221 + 223: sentinel marker; mc_terminal_start
             // expands it to bundled openclaw.mjs. The full tuple is
-            // validated by `mc_openclaw_maps_to_openclaw_tui_local`.
-            assert_eq!(mc.0, "__MC_OPENCLAW__");
+            // validated by `mc_terminal_maps_to_openclaw_tui_local`.
+            assert_eq!(mc.0, "__MC_TERMINAL__");
             assert_eq!(mc.1, vec!["tui", "--local"]);
             assert!(resolve_shell_cmd("pwsh").is_err());
         }
@@ -10693,17 +10693,17 @@ mod tests {
         assert!(res.unwrap_err().contains("unknown shell"));
     }
 
-    /// Lesson 221: mc-openclaw maps to `openclaw tui --local`. The bundled
+    /// Lesson 221: mc-terminal maps to `openclaw tui --local`. The bundled
     /// resources dir swap happens in mc_terminal_start (this just
     /// verifies the (cmd, args) tuple is what we expect so a future
     /// refactor doesn't silently break the spawn contract).
     #[test]
-    fn mc_openclaw_maps_to_openclaw_tui_local() {
-        let res = resolve_shell_cmd("mc-openclaw")
-            .expect("mc-openclaw must resolve on both Windows and *nix");
+    fn mc_terminal_maps_to_openclaw_tui_local() {
+        let res = resolve_shell_cmd("mc-terminal")
+            .expect("mc-terminal must resolve on both Windows and *nix");
         // We use a sentinel so mc_terminal_start can detect the bundled
         // openclaw path without string-comparing the shell name twice.
-        assert_eq!(res.0, "__MC_OPENCLAW__");
+        assert_eq!(res.0, "__MC_TERMINAL__");
         // Lesson 223: --local avoids the TUI exiting at startup because
         // there's no remote Gateway listening on ws://127.0.0.1:18789
         // (we use the in-process embedded agent instead).
@@ -10727,7 +10727,7 @@ mod tests {
     fn which_first_resolves_cmd_shims() {
         // Lesson 220: npm installs `openclaw` as `openclaw.cmd` on
         // Windows. which_first must resolve the .cmd shim so that
-        // spawning `openclaw` (via the mc-openclaw shell kind)
+        // spawning `openclaw` (via the mc-terminal shell kind)
         // actually finds the CLI. We synthesize a temp dir with a
         // fake.cmd to test the lookup logic in isolation from PATH.
         use std::env;

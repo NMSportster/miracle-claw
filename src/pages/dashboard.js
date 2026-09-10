@@ -858,7 +858,7 @@ export const dashboardPage = {
       // Chat" pushes the file path into the dashboard chat input.
       // Same lookup chain as voice — #dashboard-chat-input first,
       // textarea[name='message'] as the generic fallback. If neither
-      // exists (Terminal page drives mc-openclaw via clipboard), stage
+      // exists (Terminal page drives mc-terminal via clipboard), stage
       // the path to the clipboard instead — same bridge the existing
       // attach-zone uses for files dropped into the chat-input-less
       // OpenClaw window.

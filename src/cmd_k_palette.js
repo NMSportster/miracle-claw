@@ -401,7 +401,7 @@ function buildCommands() {
       category: "Page",
       icon: "⌨️",
       keywords: ["terminal", "tui", "openclaw"],
-      run: () => _deps.navigate("terminal", { defaultShell: "mc-openclaw" }),
+      run: () => _deps.navigate("terminal", { defaultShell: "mc-terminal" }),
     },
     {
       id: "page.openclaw.windows",

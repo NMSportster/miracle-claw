@@ -338,10 +338,10 @@ function pageCtx() {
     // PATH.
     onOpenTerminalWithCommand: (command, shell) =>
       navigate("terminal", { defaultShell: shell, initialCommand: command }),
-    // Open the Terminal page with the OpenClaw TUI (mc-openclaw) pre-selected.
+    // Open the Terminal page with the Miracle Claw TUI (mc-terminal) pre-selected.
     // Used by the "OpenClaw · Terminal" tile on the dashboard.
     onOpenOpenClawTerminal: () =>
-      navigate("terminal", { defaultShell: "mc-openclaw" }),
+      navigate("terminal", { defaultShell: "mc-terminal" }),
   };
 }
 

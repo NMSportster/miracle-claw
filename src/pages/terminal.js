@@ -36,9 +36,9 @@
 //     innerHTML is set + on next animation frame.
 //   - FitAddon.fit() must be called after mount AND after every resize
 //     AND after fullscreen toggle. We use a ResizeObserver for that.
-//   - For mc-openclaw (TUI), the backend sends \r as Enter (rc40); we
+//   - For mc-terminal (TUI), the backend sends \r as Enter (rc40); we
 //     preserve that. xterm's onData could feed input too, but for the
-//     mc-openclaw shell we drive input through the backend so the
+//     mc-terminal shell we drive input through the backend so the
 //     backend sees \r instead of \r\n.
 
 import { invoke } from "@tauri-apps/api/core";
@@ -90,7 +90,7 @@ function detectOS() {
 function shellOptionsForOS(os) {
   if (os === "windows") {
     return [
-      { value: "mc-openclaw", label: "Miracle Claw · TUI" },
+      { value: "mc-terminal", label: "Miracle Claw · TUI" },
       { value: "prose", label: "Workflow REPL (prose)" },
       { value: "cmd", label: "Command Prompt (cmd.exe)" },
       { value: "pwsh", label: "PowerShell 7 (pwsh.exe)" },
@@ -98,7 +98,7 @@ function shellOptionsForOS(os) {
     ];
   }
   return [
-    { value: "mc-openclaw", label: "Miracle Claw · TUI" },
+    { value: "mc-terminal", label: "Miracle Claw · TUI" },
     { value: "prose", label: "Workflow REPL (prose)" },
     { value: "bash", label: "bash" },
     { value: "sh", label: "sh" },
@@ -145,10 +145,10 @@ export const terminalPage = {
     // Migration (v1.0.9-rc45): pre-rc45 the Terminal tile defaulted to
     // mc-openclaw, so installs that have used the app have it saved in
     // localStorage. After the split, "Terminal" is the local shell tile
-    // and mc-openclaw lives on its own dashboard button. If we see the
-    // old saved value here, fall back to the OS default so the user
-    // lands in cmd/bash — the AI shell is one click away on the
-    // dashboard.
+    // and mc-terminal (renamed from mc-openclaw in Week 4) lives on its
+    // own dashboard button. If we see the old saved value here, fall
+    // back to the OS default so the user lands in cmd/bash — the AI
+    // shell is one click away on the dashboard.
     const lastShell = safeLocalGet("mc.terminal.shell");
     let initialShell;
     if (ctxDefaultShell && allowedShells.has(ctxDefaultShell)) {
@@ -156,7 +156,7 @@ export const terminalPage = {
     } else if (
       lastShell &&
       allowedShells.has(lastShell) &&
-      lastShell !== "mc-openclaw"
+      lastShell !== "mc-terminal"
     ) {
       initialShell = lastShell;
     } else {
