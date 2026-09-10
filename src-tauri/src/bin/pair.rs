@@ -55,8 +55,6 @@ use std::process;
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::Engine;
-
 // ────────────────────────────────────────────────────────────────────
 // Constants — port range, env-var fallback, PID file path
 // ────────────────────────────────────────────────────────────────────
@@ -534,6 +532,24 @@ pub fn run(config: Config) -> Result<(), i32> {
     // pairing_init helper (no new function — see mcmobile.txt
     // 2026-09-09 21:19 MDT "Office Bot" reply for the rationale).
     let cmds = miracle_claw_lib::pairing_init::build_pairing_state();
+
+    // Step 3.5: if we have a persistent identity on disk, restore it
+    // into the in-memory cmds so /pair/initiate can find the instance_id.
+    // The GUI does this in lib.rs::setup() (line 3962); the CLI is
+    // just as responsible. Without this, /pair/initiate returns
+    // `not_initialized` even with a valid phone pubkey (smoke test
+    // finding, 2026-09-09 22:39 MDT). Ephemeral mode is deliberately
+    // skipped — there's no on-disk file, and the random keypair
+    // isn't registered with MAIC, so /pair/initiate will still 503
+    // there until `seed_instance_id` lands (Week 4 follow-up).
+    if let IdentityTarget::Path(p) = &identity_target {
+        if let Some(app_data_dir) = p.parent().and_then(|pp| pp.parent()) {
+            if let Err(e) = miracle_claw_lib::pairing_commands::restore_identity(&cmds, app_data_dir) {
+                eprintln!("[miracle-claw-pair] restore_identity failed: {e}");
+                return Err(3);
+            }
+        }
+    }
 
     // Step 4: resolve the bind address. Loopback is fully
     // supported; Lan / Tailnet return a runtime error (the local_ip

@@ -798,4 +798,43 @@ mod tests {
         let b = compute_fingerprint(&[0xBB; 32]);
         assert_ne!(a, b);
     }
+
+    // v0.0.2: homebot's smoke test (2026-09-09 22:39 MDT) caught
+    // pair.rs forgetting to call restore_identity() after loading
+    // the on-disk identity, so /pair/initiate 503'd with
+    // not_initialized. This test runs the full pipeline
+    // (generate identity on disk → build_pairing_state →
+    // restore_identity) without binding a port and asserts that
+    // cmds.instance_id becomes Some(...) — exactly the chain the
+    // CLI needs to pass through.
+    #[test]
+    fn restore_identity_after_generation_seeds_instance_id() {
+        // Use a unique temp dir so we don't clobber any real
+        // ~/.local/share/com.milagrocloud.miracle-claw/pairing/identity.json.
+        let tmp = std::env::temp_dir().join(format!(
+            "mc-pair-restore-test-{}-{}",
+            std::process::id(),
+            new_session_id_string()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // Step 1: generate identity on disk.
+        let id = crate::pairing_identity::generate(&tmp).unwrap();
+        assert!(crate::pairing_identity::load(&tmp).unwrap().is_some());
+
+        // Step 2: build empty PairingCommands (instance_id is None).
+        let cmds = crate::pairing_init::build_pairing_state();
+        assert!(cmds.instance_id.lock().unwrap().is_none());
+
+        // Step 3: restore — this is what pair.rs forgot to call.
+        let restored = restore_identity(&cmds, &tmp).unwrap();
+        assert_eq!(restored, Some(id.instance_id.clone()));
+        assert_eq!(
+            cmds.instance_id.lock().unwrap().clone(),
+            Some(id.instance_id.clone())
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
