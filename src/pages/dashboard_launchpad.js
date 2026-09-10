@@ -235,21 +235,13 @@ function openModuleModal(module) {
     return;
   }
   const firstTool = tools[0];
-  const fields = (firstTool.form_schema?.fields || []).map((f) => {
-    const id = `f-${f.name}`;
-    const label = `<label for="${id}">${escapeHtml(f.label || f.name)}${f.required ? " *" : ""}</label>`;
-    let input;
-    if (f.type === "textarea") {
-      input = `<textarea id="${id}" name="${escapeHtml(f.name)}"${f.required ? " required" : ""}></textarea>`;
-    } else if (f.type === "select") {
-      const opts = (f.options || []).map((o) =>
-        `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</option>`).join("");
-      input = `<select id="${id}" name="${escapeHtml(f.name)}"${f.required ? " required" : ""}>${opts}</select>`;
-    } else {
-      input = `<input id="${id}" name="${escapeHtml(f.name)}" type="${escapeHtml(f.type || "text")}"${f.required ? " required" : ""} />`;
-    }
-    return `<div class="mc-field">${label}${input}</div>`;
-  }).join("");
+  // Week 3 (2026-09-09): MAIC's form_schema is the JSON Schema subset
+  // (type/required/properties), NOT the simpler {fields:[{name,label,type}]}
+  // shape the old code expected. We use the same parsing rules as the
+  // shared Rust `form_schema` module (see src-tauri/src/form_schema.rs)
+  // so TUI + launchpad + mclaw CLI render the SAME fields.
+  const fields = formFieldsFromSchema(firstTool.form_schema);
+  const fieldsHtml = fields.map(renderField).join("");
 
   const modal = document.createElement("div");
   modal.className = "mc-modal";
@@ -261,7 +253,7 @@ function openModuleModal(module) {
         <button class="mc-iconbtn" data-action="modal-close" title="Close">×</button>
       </header>
       <form class="mc-modal-form" data-module="${escapeHtml(module.module_id)}" data-tool="${escapeHtml(firstTool.name)}">
-        ${fields || `<p class="mc-modal-empty">${escapeHtml(firstTool.description || "No inputs needed.")}</p>`}
+        ${fieldsHtml || `<p class="mc-modal-empty">${escapeHtml(firstTool.description || "No inputs needed.")}</p>`}
         <footer class="mc-modal-footer">
           <button type="button" data-action="modal-close">Cancel</button>
           <button type="submit" class="mc-primary">Run</button>
@@ -286,19 +278,162 @@ function openModuleModal(module) {
     ev.preventDefault();
     const fd = new FormData(form);
     const inputs = {};
-    for (const [k, v] of fd.entries()) inputs[k] = v;
+    for (const [k, v] of fd.entries()) {
+      // For checkboxes (Boolean) the absence means false; the form
+      // includes a hidden "" value first so we skip those empty
+      // entries. For number inputs the string is parsed below.
+      if (typeof v === "string" && v === "" && isCheckboxField(form, k)) continue;
+      inputs[k] = v;
+    }
+    // Coerce number fields from string → number so MAIC gets the
+    // typed value (the Rust side validates `integer`/`number` strictly).
+    for (const f of fields) {
+      if ((f.type === "number" || f.type === "integer") && k in inputs) {
+        const n = Number(inputs[k]);
+        if (!Number.isNaN(n)) inputs[k] = n;
+      }
+    }
+    // Apply defaults for fields the user left blank.
+    for (const f of fields) {
+      if (!(f.name in inputs) && f.default !== undefined) inputs[f.name] = f.default;
+    }
+    // Coerce booleans from checkbox presence.
+    for (const f of fields) {
+      if (f.type === "boolean") {
+        inputs[f.name] = !!form.querySelector(`input[name="${cssEscape(f.name)}"]:checked`);
+      }
+    }
     const result = modal.querySelector(".mc-modal-result");
     result.hidden = false;
     result.textContent = "Running…";
     try {
-      // Module invocation goes through MAIC; result is the rendered output.
-      // We don't have a dedicated Rust command yet for this — wire it when
-      // Week 5 lands the mclaw CLI integration. For now, just acknowledge.
-      result.textContent = `Submitted ${module.module_id}.${firstTool.name} with ${Object.keys(inputs).length} field(s).`;
+      // Week 3 (2026-09-09): wire to the new Rust command. The Rust
+      // side does the auth, MAIC POST, and error mapping. Returns
+      // { outputs, duration_ms, run_id }.
+      const run = await invoke("mc_run_module", {
+        moduleId: module.module_id,
+        tool: firstTool.name,
+        inputs,
+        surface: "tauri",
+      });
+      // `outputs` is a model-generated string; the model may have
+      // wrapped it in markdown ```json fences. Strip those for the
+      // preview, but keep the original as a copy-to-clipboard action.
+      const out = String(run.outputs ?? "");
+      const stripped = out.replace(/^```(?:json)?\n/, "").replace(/\n```$/, "").trim();
+      result.textContent = stripped || out || "(no output)";
+      result.dataset.rawOutput = out;
     } catch (err) {
       result.textContent = `Error: ${err?.message || err}`;
     }
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Week 3 (2026-09-09): form_schema → UI fields.
+// Mirrors src-tauri/src/form_schema.rs::parse_form_schema. Each surface
+// (launchpad, TUI, mclaw) calls its own renderer against the same
+// parsed structure. If you change this, change the Rust parser too.
+
+// Parse a MAIC form_schema (JSON Schema subset) into a list of fields
+// the launchpad's HTML renderer knows how to draw.
+function formFieldsFromSchema(schema) {
+  if (!schema || typeof schema !== "object") return [];
+  if (schema.type !== "object") return [];
+  const properties = schema.properties || {};
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  const out = [];
+  let order = 0;
+  for (const [name, prop] of Object.entries(properties)) {
+    if (!prop || typeof prop !== "object") continue;
+    const label = prop.title || name;
+    const isRequired = required.includes(name);
+    const type = propJsonSchemaTypeToUiType(prop);
+    const field = {
+      name,
+      label,
+      type,
+      required: isRequired,
+      default: prop.default,
+      displayOrder: order++,
+    };
+    if (type === "select" && Array.isArray(prop.enum)) field.options = prop.enum;
+    if (type === "number" || type === "integer") {
+      if (prop.minimum !== undefined) field.min = prop.minimum;
+      if (prop.maximum !== undefined) field.max = prop.maximum;
+      if (prop.minLength !== undefined) field.minLength = prop.minLength;
+      if (prop.maxLength !== undefined) field.maxLength = prop.maxLength;
+    }
+    if (type === "text" || type === "textarea") {
+      if (prop.minLength !== undefined) field.minLength = prop.minLength;
+      if (prop.maxLength !== undefined) field.maxLength = prop.maxLength;
+    }
+    out.push(field);
+  }
+  return out;
+}
+
+// Map a JSON Schema property type → launchpad UI type tag. The Rust
+// `FieldKind::type_tag` uses the same strings so JS and Rust agree.
+function propJsonSchemaTypeToUiType(prop) {
+  if (prop.type === "boolean") return "boolean";
+  if (prop.type === "integer" || prop.type === "number") return prop.type;
+  if (prop.type === "string") {
+    if (Array.isArray(prop.enum) && prop.enum.length > 0) return "select";
+    if (prop.format === "long-text" || prop.format === "textarea") return "textarea";
+    return "text";
+  }
+  return "text"; // fallback: treat unknown as plain text
+}
+
+// Render one parsed field as an HTML label + input pair. Mirrors the
+// snippet in openModuleModal but extracted for testability.
+function renderField(f) {
+  const id = `f-${f.name}`;
+  const requiredMark = f.required ? " *" : "";
+  const label = `<label for="${id}">${escapeHtml(f.label)}${requiredMark}</label>`;
+  let input;
+  if (f.type === "textarea") {
+    input = `<textarea id="${id}" name="${cssEscape(f.name)}"${f.required ? " required" : ""}${f.minLength !== undefined ? ` minlength="${f.minLength}"` : ""}${f.maxLength !== undefined ? ` maxlength="${f.maxLength}"` : ""}>${escapeHtml(f.default ?? "")}</textarea>`;
+  } else if (f.type === "select") {
+    const opts = (f.options || []).map((o) =>
+      `<option value="${escapeHtml(String(o))}"${o === f.default ? " selected" : ""}>${escapeHtml(String(o))}</option>`).join("");
+    input = `<select id="${id}" name="${cssEscape(f.name)}"${f.required ? " required" : ""}>${opts}</select>`;
+  } else if (f.type === "number" || f.type === "integer") {
+    const step = f.type === "integer" ? "1" : "any";
+    const minAttr = f.min !== undefined ? ` min="${f.min}"` : "";
+    const maxAttr = f.max !== undefined ? ` max="${f.max}"` : "";
+    const def = f.default !== undefined ? ` value="${escapeHtml(String(f.default))}"` : "";
+    input = `<input id="${id}" name="${cssEscape(f.name)}" type="number" step="${step}"${minAttr}${maxAttr}${f.required ? " required" : ""}${def} />`;
+  } else if (f.type === "boolean") {
+    const checked = f.default === true ? " checked" : "";
+    // Checkbox: the browser only submits when checked, so we also
+    // include a hidden "" before it so the FormData always has the
+    // key (the submit handler detects "blank = unchecked").
+    input = `<input type="hidden" name="${cssEscape(f.name)}" value="" /><label class="mc-checkbox-row"><input id="${id}" name="${cssEscape(f.name)}" type="checkbox" value="true"${checked} /> ${escapeHtml(f.label)}</label>`;
+    return `<div class="mc-field mc-field-bool">${input}</div>`;
+  } else {
+    // text (default)
+    const def = f.default !== undefined ? ` value="${escapeHtml(String(f.default))}"` : "";
+    const minAttr = f.minLength !== undefined ? ` minlength="${f.minLength}"` : "";
+    const maxAttr = f.maxLength !== undefined ? ` maxlength="${f.maxLength}"` : "";
+    input = `<input id="${id}" name="${cssEscape(f.name)}" type="text"${minAttr}${maxAttr}${f.required ? " required" : ""}${def} />`;
+  }
+  return `<div class="mc-field">${label}${input}</div>`;
+}
+
+// Detect whether a field is a checkbox (the form has a hidden "" before
+// the real checkbox; if we see two inputs with the same name, the
+// second is the checkbox and absence means unchecked).
+function isCheckboxField(form, name) {
+  const els = form.querySelectorAll(`input[name="${cssEscape(name)}"]`);
+  return els.length >= 2 && els[1].type === "checkbox";
+}
+
+// Minimal CSS.escape polyfill for older Tauri webviews.
+function cssEscape(s) {
+  if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(s);
+  return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => `\\${c}`);
 }
 
 // --- mount ---------------------------------------------------------------
@@ -408,3 +543,8 @@ function _onClick(ev) {
 }
 
 export const dashboardLaunchpadPage = { mount, unmount, requiresAuth: true };
+
+// Test-only namespace. Mirrors the workflow page pattern (Lesson 833):
+// expose pure helpers so node:test can drive them without needing a
+// DOM. Not part of the public page surface.
+export const _formSchemaInternals = { formFieldsFromSchema, propJsonSchemaTypeToUiType, renderField };

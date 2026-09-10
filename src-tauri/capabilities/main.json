@@ -41,6 +41,7 @@
     "allow-mc-list-installed-modules",
     "allow-mc-install-module",
     "allow-mc-uninstall-module",
+    "allow-mc-run-module",
     "allow-mc-get-user-info",
     "allow-mc-list-memory-files",
     "allow-mc-read-memory-file",

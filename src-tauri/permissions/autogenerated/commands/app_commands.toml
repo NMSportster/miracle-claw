@@ -193,6 +193,16 @@ description = "Denies the mc_uninstall_module command."
 commands.deny = ["mc_uninstall_module"]
 
 [[permission]]
+identifier = "allow-mc-run-module"
+description = "Enables the mc_run_module command without any pre-configured scope."
+commands.allow = ["mc_run_module"]
+
+[[permission]]
+identifier = "deny-mc-run-module"
+description = "Denies the mc_run_module command."
+commands.deny = ["mc_run_module"]
+
+[[permission]]
 identifier = "allow-mc-refresh-tier"
 description = "Enables the mc_refresh_tier command."
 commands.allow = ["mc_refresh_tier"]

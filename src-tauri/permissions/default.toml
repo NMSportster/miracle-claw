@@ -28,6 +28,7 @@ permissions = [
   "allow-mc-list-installed-modules",
   "allow-mc-install-module",
   "allow-mc-uninstall-module",
+  "allow-mc-run-module",
   # v1.0.9-rc35: Settings page commands
   "allow-mc-get-user-info",
   "allow-mc-list-memory-files",

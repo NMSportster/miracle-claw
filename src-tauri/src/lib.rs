@@ -108,6 +108,12 @@ pub mod pairing_identity;
 // v1.0.7: 7 local tool schemas (paid tier only). Marked `pub` so the
 // `miracle-claw-tools` binary can `use` them via `crate::tools::...`.
 pub mod tools;
+// Week 3 (2026-09-09): shared form_schema parser. Used by the
+// launchpad (JS renders), the mc-terminal TUI (Rust renders), and
+// the mclaw CLI (Rust validates). See form_schema.rs for the full
+// schema docs. `pub` so the `miracle-claw-terminal` and `mclaw`
+// `[[bin]]`s can `use miracle_claw_lib::form_schema`.
+pub mod form_schema;
 
 // v1.1.0-rc53.15: Optional, downloadable module framework (Lesson 570).
 // Voice is the first module — future modules (OCR, TTS, local search)
@@ -5797,6 +5803,57 @@ fn mc_uninstall_module(module_id: String) -> Result<serde_json::Value, String> {
     Ok(parsed)
 }
 
+// Week 3 (2026-09-09 21:50): POST /v1/modules/{id}/run — authed.
+// Dispatches a tool invocation on a first-party module. Used by:
+//   - the Tauri launchpad's "Run" button (replaces the TODO
+//     placeholder in src/pages/dashboard_launchpad.js)
+//   - the mc-terminal TUI (Weeks 3-4)
+//   - the mclaw CLI (Week 5)
+// Returns the full RunResponse: { outputs, duration_ms, run_id }.
+#[tauri::command]
+fn mc_run_module(
+    module_id: String,
+    tool: String,
+    inputs: serde_json::Value,
+    surface: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if module_id.is_empty() {
+        return Err("module_id is required".to_string());
+    }
+    if tool.is_empty() {
+        return Err("tool is required".to_string());
+    }
+    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let maic_base = resolve_maic_base_url();
+    let url = format!(
+        "{}/v1/modules/{}/run",
+        crate::auth::tier::normalize_api_base(&maic_base),
+        // module_id is from the trusted caller (Rust side), but the
+        // MAIC route validates it as a Path param so we don't need
+        // extra escaping here. Still, percent-encode any path-illegal
+        // chars just in case.
+        urlencode(&module_id),
+    );
+    let body = serde_json::json!({
+        "tool": tool,
+        "inputs": inputs,
+        "surface": surface.unwrap_or_else(|| "tauri".to_string()),
+    });
+    let resp = ureq::post(&url)
+        .set("Authorization", &format!("Bearer {jwt}"))
+        .set("Content-Type", "application/json")
+        .set("Accept", "application/json")
+        // 60s: matches MAIC's internal httpx timeout. Module tools
+        // can take 10-30s for LLM dispatch; 60s gives headroom.
+        .timeout(std::time::Duration::from_secs(60))
+        .send_json(&body)
+        .map_err(|e| format!("/v1/modules/{}/run POST: {e}", module_id))?;
+    let parsed: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse /v1/modules/{}/run: {e}", module_id))?;
+    Ok(parsed)
+}
+
 // Small URL-encode helper for the category query param.
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -7719,6 +7776,7 @@ pub fn run() {
             mc_list_installed_modules,
             mc_install_module,
             mc_uninstall_module,
+            mc_run_module,
             // v1.0.9-rc35: Settings page
             mc_get_user_info,
             mc_list_memory_files,

@@ -49,6 +49,16 @@ path = "src/bin/pair.rs"
 # modules (no duplicate logic). See src/bin/pair.rs module docs
 # and docs/mc-pairing-cli-2026-09.md for the spec.
 
+# Week 3 (2026-09-09): the `mc-terminal` TUI. Re-uses the form_schema
+# parser + the lib's MAIC client (mc_run_module wrapper) + the
+# pairing identity for node auth. Lives in a separate bin so the
+# Tauri's main webview binary stays free of TUI deps (ratatui is
+# 200KB+ of code we don't want to ship inside the desktop app).
+# `required-features` on the deps above keeps the link selective.
+[[bin]]
+name = "miracle-claw-terminal"
+path = "src/bin/mc_terminal.rs"
+
 [build-dependencies]
 tauri-build = { version = "=2.6.3", features = [] }
 
@@ -141,6 +151,23 @@ anyhow = "1"
 # to the `semver` crate so 1.1.0-rc55.24, 1.0.0, and 2.0.0 all parse
 # and compare correctly across major-version boundaries.
 semver = "1"
+
+# Week 3 (2026-09-09): mc-terminal TUI dependencies. Used ONLY by the
+# `miracle-claw-terminal` `[[bin]]` (src/bin/mc_terminal.rs); the
+# Tauri webview binary does not link them. `ratatui` for the layout
+# (toolbar/list/detail widgets) and `crossterm` for the cross-platform
+# terminal backend (Linux + Windows MSVC). Pinning to a single major
+# version to match the crossterm feature flag (`event-stream` is
+# required for non-blocking keyboard input — we don't want to block
+# the UI on stdin).
+#
+# `unicode-width` is needed so ratatui can correctly compute the
+# display width of multi-byte chars (emoji like the lobster 🦞, the
+# cargo crates like 🔧). ratatui re-exports it but only under
+# `palette`/etc features; we depend explicitly to avoid surprises.
+ratatui = "0.29"
+crossterm = "0.28"
+unicode-width = "0.2"
 
 [dev-dependencies]
 regex = "1.13.1"
