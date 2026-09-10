@@ -386,9 +386,9 @@ function _onClick(ev) {
       navigate("extras");
       break;
     case "add-tool":
-      // Marketplace page is Week 2 follow-up. Until it lands, surface a
-      // toast so the user knows the path is real but not yet built.
-      toast("Marketplace coming in this build — Week 2 follow-up.");
+      // Marketplace is the live MAIC catalog (rc56.x). Backed by 5 mc_*
+      // commands in src-tauri/src/lib.rs; UI lives at src/pages/marketplace.js.
+      navigate("marketplace");
       break;
     case "run-tool": {
       const installedCard = target.closest("[data-module-id]");

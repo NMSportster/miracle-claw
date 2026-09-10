@@ -54,6 +54,11 @@ import { pricingPage } from "./pages/pricing.js";
 // every MC module with status pills (Available / Installed / Coming
 // Soon) and routes users to install/hook flows.
 import { modulesPage } from "./pages/modules.js";
+// rc56.x (feature/marketplace): live MAIC-driven catalog wired to the
+// launchpad's "Add a tool" tile. Distinct from `modules.js` (which is
+// the static discovery hub). Backend: 5 mc_* commands in
+// src-tauri/src/lib.rs around line 5660.
+import { marketplacePage } from "./pages/marketplace.js";
 // Lesson 725 (2026-08-28 21:30 MDT, David): MC Tasks feature (Miracle
 // Bot persistent memory). Paid-tier-gated; free users see an upgrade
 // CTA in place of the editor. Self-registers on import (matches the
@@ -99,6 +104,7 @@ register("pricing", pricingPage);
 // src/pages/modules.js — Settings → Modules (Lesson 572) is the
 // install manager; this is the discovery surface.
 register("modules", modulesPage);
+register("marketplace", marketplacePage);
 // Lesson 725 (2026-08-28 21:30 MDT, David): MC Tasks (Miracle Bot
 // persistent memory). Paid-tier-gated. Self-registers on import via
 // `register("tasks", ...)` at the bottom of pages/tasks.js, so we
@@ -152,6 +158,13 @@ installNavigation({
     [
       "modules",
       () => modulesCtx(),
+    ],
+    [
+      "marketplace",
+      () => ({
+        onBackToDashboard: () => navigate("dashboard"),
+        onNeedsLogin: mountLogin,
+      }),
     ],
     [
       "provider-keys",
@@ -303,6 +316,8 @@ function pageCtx() {
     // so the in-app catalog hub renders the 15 modules with status
     // pills + install/open CTAs.
     onOpenModules: () => navigate("modules"),
+    // rc56.x: launchpad "Add a tool" tile routes here (live catalog).
+    onOpenMarketplace: () => navigate("marketplace"),
     // Lesson 713 (2026-08-28, David): dashboard's "Provider Keys"
     // tile routes here so the BYO provider keys page renders the
     // 13 supported providers with vault-encrypted storage.

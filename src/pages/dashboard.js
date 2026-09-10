@@ -521,7 +521,7 @@ export const dashboardPage = {
             <button class="tile tile-primary" id="openclaw-windows-tile" type="button">
               <div class="tile-icon">🦞</div>
               <div class="tile-body">
-                <div class="tile-title">OpenClaw · Windows</div>
+                <div class="tile-title">Miracle Claw · Windows</div>
                 <div class="tile-description">
                   Your MAIC chat workspace in a desktop window. Talk to any
                   MAIC model, run code, search the web, work with files.
@@ -534,7 +534,7 @@ export const dashboardPage = {
             <button class="tile tile-primary" id="openclaw-terminal-tile" type="button">
               <div class="tile-icon">⌨️</div>
               <div class="tile-body">
-                <div class="tile-title">OpenClaw · Terminal</div>
+                <div class="tile-title">Miracle Claw · Terminal</div>
                 <div class="tile-description">
                   The same MAIC workspace, but in your terminal. Great for
                   SSH sessions, remote boxes, and keyboard-first workflows.

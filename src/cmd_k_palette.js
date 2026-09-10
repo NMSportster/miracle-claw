@@ -397,7 +397,7 @@ function buildCommands() {
     },
     {
       id: "page.terminal.openclaw",
-      label: "OpenClaw · TUI",
+      label: "Miracle Claw · TUI",
       category: "Page",
       icon: "⌨️",
       keywords: ["terminal", "tui", "openclaw"],
@@ -405,7 +405,7 @@ function buildCommands() {
     },
     {
       id: "page.openclaw.windows",
-      label: "OpenClaw · Chat",
+      label: "Miracle Claw · Chat",
       category: "Page",
       icon: "🦞",
       keywords: ["chat", "window", "openclaw", "main"],
@@ -415,7 +415,7 @@ function buildCommands() {
           await invoke("openclaw_open_window");
         } catch (err) {
           console.error("[palette] openclaw failed:", err);
-          alert(`Could not open OpenClaw chat: ${err}`);
+          alert(`Could not open Miracle Claw chat: ${err}`);
         }
       },
     },

@@ -90,7 +90,7 @@ function detectOS() {
 function shellOptionsForOS(os) {
   if (os === "windows") {
     return [
-      { value: "mc-openclaw", label: "OpenClaw TUI (mc-openclaw)" },
+      { value: "mc-openclaw", label: "Miracle Claw · TUI" },
       { value: "prose", label: "Workflow REPL (prose)" },
       { value: "cmd", label: "Command Prompt (cmd.exe)" },
       { value: "pwsh", label: "PowerShell 7 (pwsh.exe)" },
@@ -98,7 +98,7 @@ function shellOptionsForOS(os) {
     ];
   }
   return [
-    { value: "mc-openclaw", label: "OpenClaw TUI (mc-openclaw)" },
+    { value: "mc-openclaw", label: "Miracle Claw · TUI" },
     { value: "prose", label: "Workflow REPL (prose)" },
     { value: "bash", label: "bash" },
     { value: "sh", label: "sh" },
