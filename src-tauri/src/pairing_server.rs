@@ -54,6 +54,8 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 use tiny_http::{Header, ListenAddr, Response, Server, StatusCode};
+#[allow(unused_imports)] // Used in the trait stub's `_device_id: Uuid` arg.
+use uuid::Uuid;
 
 use crate::pairing_commands::{PairingCommands, PairingError, PairingResult};
 
@@ -461,7 +463,7 @@ mod tests {
         fn delete_paired_device(
             &self,
             _instance_id: &str,
-            _device_id: i64,
+            _device_id: Uuid,
         ) -> PairingResult<()> {
             unimplemented!()
         }

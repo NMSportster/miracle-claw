@@ -87,7 +87,9 @@ pub struct PairingStatus {
 /// Returned by `mc_paired_devices` for the Settings UI.
 #[derive(Debug, Clone, Serialize)]
 pub struct PairedDeviceInfo {
-    pub device_id: i64,
+    /// Phase 2.4.1: device_id is a client-generated UUID v4
+    /// (was `i64` bigserial in v0.0.3). MAIC stores it as `UUID`.
+    pub device_id: Uuid,
     pub device_name: String,
     pub phone_pubkey_b64: String,
     pub paired_at_unix: u64,
@@ -145,7 +147,7 @@ pub trait MaicHttp: Send + Sync {
     fn delete_paired_device(
         &self,
         instance_id: &str,
-        device_id: i64,
+        device_id: Uuid,
     ) -> PairingResult<()>;
 
     /// Phase 2.3: PUT /v1/users/me/desktops/{id}/heartbeat (60s ticker).
@@ -316,7 +318,7 @@ impl MaicHttp for LiveMaicHttp {
     fn delete_paired_device(
         &self,
         instance_id: &str,
-        device_id: i64,
+        device_id: Uuid,
     ) -> PairingResult<()> {
         let path = format!(
             "/v1/users/me/desktops/{}/paired-devices/{}",
@@ -479,7 +481,7 @@ pub fn register_desktop_self(
 
     let instance_id = {
         let guard = cmds.instance_id.lock().unwrap();
-        guard.clone().unwrap_or_else(|| identity.instance_id.clone())
+        guard.clone().unwrap_or_else(|| identity.instance_id.to_string())
     };
 
     let body = json!({
@@ -519,8 +521,8 @@ pub fn restore_identity(
 ) -> PairingResult<Option<String>> {
     match crate::pairing_identity::load(app_data_dir) {
         Ok(Some(id)) => {
-            *cmds.instance_id.lock().unwrap() = Some(id.instance_id.clone());
-            Ok(Some(id.instance_id.clone()))
+            *cmds.instance_id.lock().unwrap() = Some(id.instance_id.to_string());
+            Ok(Some(id.instance_id.to_string()))
         }
         Ok(None) => Ok(None),
         Err(e) => Err(PairingError::State(format!(
@@ -566,19 +568,37 @@ pub fn initiate_pair(
         return Err(PairingError::InvalidInput("device_name is empty".into()));
     }
 
-    // Tell MAIC we have a new paired device. MAIC returns the device_id.
-    let phone_pubkey_fp = compute_fingerprint(&phone_pubkey_bytes);
+    // Tell MAIC we have a new paired device. The new spec (Phase 2.4.1)
+    // requires `device_id` to be CLIENT-generated (UUID v4) and the field
+    // name is `device_pubkey_fp` (was `phone_pubkey_fp` in v0.0.3).
+    let device_id = Uuid::new_v4();
+    let device_pubkey_fp = compute_fingerprint(&phone_pubkey_bytes);
     let body = json!({
+        "device_id": device_id,
         "device_name": device_name,
-        "phone_pubkey_fp": phone_pubkey_fp,
+        "device_pubkey_fp": device_pubkey_fp,
     });
     let response = cmds.maic.post_paired_device(&instance_id, &body)?;
-    let device_id = response
+    // Validate MAIC echoed the same device_id back (defense against
+    // server-side identity drift; in practice the route's
+    // PairedDeviceCreateIn.device_id is what we sent, so this is a
+    // belt-and-suspenders check).
+    let returned_device_id = response
         .get("device_id")
-        .and_then(|v| v.as_i64())
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
         .ok_or_else(|| {
-            PairingError::MaicJson("MAIC did not return a device_id".into())
+            PairingError::MaicJson(format!(
+                "MAIC did not return a device_id UUID, got: {:?}",
+                response.get("device_id")
+            ))
         })?;
+    if returned_device_id != device_id {
+        return Err(PairingError::MaicJson(format!(
+            "MAIC echoed device_id {} but we sent {}",
+            returned_device_id, device_id
+        )));
+    }
 
     // Mint session + handshake response.
     let now = now_unix();
@@ -632,8 +652,9 @@ pub fn paired_devices(
     for entry in raw {
         let device_id = entry
             .get("device_id")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .unwrap_or_else(Uuid::nil);
         let device_name = entry
             .get("device_name")
             .and_then(|v| v.as_str())
@@ -664,7 +685,7 @@ pub fn paired_devices(
 }
 
 /// `mc_revoke_device` — DELETE on MAIC + revoke local sessions.
-pub fn revoke_device(cmds: &PairingCommands, device_id: i64) -> PairingResult<()> {
+pub fn revoke_device(cmds: &PairingCommands, device_id: Uuid) -> PairingResult<()> {
     let instance_id = cmds.require_instance_id()?;
     cmds.maic.delete_paired_device(&instance_id, device_id)?;
     let _ = cmds.state.revoke_device(device_id);
@@ -855,10 +876,10 @@ mod tests {
 
         // Step 3: restore — this is what pair.rs forgot to call.
         let restored = restore_identity(&cmds, &tmp).unwrap();
-        assert_eq!(restored, Some(id.instance_id.clone()));
+        assert_eq!(restored, Some(id.instance_id.to_string()));
         assert_eq!(
             cmds.instance_id.lock().unwrap().clone(),
-            Some(id.instance_id.clone())
+            Some(id.instance_id.to_string())
         );
 
         // Cleanup

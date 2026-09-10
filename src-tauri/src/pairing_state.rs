@@ -23,6 +23,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use zeroize::Zeroize;
 
 /// Default TTL for a pairing session. 30 days matches typical "remember me"
@@ -103,7 +104,11 @@ pub struct SessionEntry {
     pub session_id: String,
     pub session_secret: [u8; 32],
     pub instance_id: String,
-    pub device_id: Option<i64>,
+    /// Phase 2.4.1: device_id is a client-generated UUID v4
+    /// (was `Option<i64>` bigserial in v0.0.3). MAIC stores it
+    /// as `UUID` and our spec says the desktop hands MAIC a
+    /// freshly-generated UUID at handshake time.
+    pub device_id: Option<Uuid>,
     pub device_name: String,
     pub capabilities: Vec<Capability>,
     pub created_at_unix: u64,
@@ -151,7 +156,7 @@ impl PairingState {
         session_id: String,
         session_secret: [u8; 32],
         instance_id: String,
-        device_id: Option<i64>,
+        device_id: Option<Uuid>,
         device_name: String,
         capabilities: Vec<Capability>,
         ttl_seconds: u64,
@@ -236,7 +241,7 @@ impl PairingState {
     /// the desktop owner clicks "revoke phone" — we revoke both the MAIC-side
     /// record AND all in-memory sessions for that device, so the phone can't
     /// keep sending HMACs.
-    pub fn revoke_device(&self, device_id: i64) -> usize {
+    pub fn revoke_device(&self, device_id: Uuid) -> usize {
         let Ok(mut guard) = self.sessions.lock() else {
             return 0;
         };
@@ -309,7 +314,7 @@ pub struct MintResult {
 pub struct SessionSnapshot {
     pub session_id: String,
     pub instance_id: String,
-    pub device_id: Option<i64>,
+    pub device_id: Option<Uuid>,
     pub device_name: String,
     pub capabilities: Vec<Capability>,
     pub expires_at_unix: u64,
@@ -345,6 +350,19 @@ mod tests {
         [seed; 32]
     }
 
+    /// Build a deterministic UUID from a small integer so test fixtures
+    /// stay readable. Each integer maps to a unique v4 UUID, no
+    /// collisions across the test suite.
+    fn test_uuid(n: u8) -> Uuid {
+        // Uuid bytes 6/8 have version+variant bits; setting `n` as the
+        // high byte keeps each fixture distinct.
+        let mut bytes = [0u8; 16];
+        bytes[0] = n;
+        bytes[6] = 0x40 | (n >> 4); // version 4 marker
+        bytes[8] = 0x80 | (n & 0x3F); // variant 10xx
+        Uuid::from_bytes(bytes)
+    }
+
     #[test]
     fn mint_then_lookup_roundtrip() {
         let s = PairingState::new();
@@ -352,7 +370,7 @@ mod tests {
             "sess-1".into(),
             fake_secret(0xAB),
             "inst-1".into(),
-            Some(42),
+            Some(test_uuid(42)),
             "Pixel 8".into(),
             Capability::locked_v1_scope(),
             3600,
@@ -363,7 +381,7 @@ mod tests {
         let snap = s.lookup("sess-1", 1_700_000_000 + 10).unwrap();
         assert_eq!(snap.session_id, "sess-1");
         assert_eq!(snap.instance_id, "inst-1");
-        assert_eq!(snap.device_id, Some(42));
+        assert_eq!(snap.device_id, Some(test_uuid(42)));
         assert_eq!(snap.device_name, "Pixel 8");
         assert_eq!(snap.capabilities.len(), 7); // v1 scope
         assert_eq!(snap.expires_at_unix, 1_700_003_600);
@@ -413,7 +431,7 @@ mod tests {
             "s1".into(),
             fake_secret(0),
             "inst-1".into(),
-            Some(42),
+            Some(test_uuid(42)),
             "d".into(),
             Capability::locked_v1_scope(),
             3600,
@@ -424,7 +442,7 @@ mod tests {
             "s2".into(),
             fake_secret(0),
             "inst-1".into(),
-            Some(42),
+            Some(test_uuid(42)),
             "d".into(),
             Capability::locked_v1_scope(),
             3600,
@@ -435,7 +453,7 @@ mod tests {
             "s3".into(),
             fake_secret(0),
             "inst-1".into(),
-            Some(99),
+            Some(test_uuid(99)),
             "d".into(),
             Capability::locked_v1_scope(),
             3600,
@@ -443,7 +461,7 @@ mod tests {
         )
         .unwrap();
 
-        let removed = s.revoke_device(42);
+        let removed = s.revoke_device(test_uuid(42));
         assert_eq!(removed, 2);
         assert!(s.lookup("s1", 1_700_000_001).is_none());
         assert!(s.lookup("s2", 1_700_000_001).is_none());
@@ -453,12 +471,12 @@ mod tests {
     #[test]
     fn revoke_instance_removes_all_sessions_for_desktop() {
         let s = PairingState::new();
-        for i in 0..3 {
+        for i in 0..3u8 {
             s.mint(
                 format!("s{}", i),
                 fake_secret(0),
                 "inst-A".into(),
-                Some(i as i64),
+                Some(test_uuid(i)),
                 "d".into(),
                 Capability::locked_v1_scope(),
                 3600,
@@ -470,7 +488,7 @@ mod tests {
             "sB".into(),
             fake_secret(0),
             "inst-B".into(),
-            Some(99),
+            Some(test_uuid(99)),
             "d".into(),
             Capability::locked_v1_scope(),
             3600,

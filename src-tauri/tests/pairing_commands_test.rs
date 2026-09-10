@@ -27,6 +27,7 @@ use miracle_claw_lib::pairing_crypto::{
     SESSION_ID_LEN, SESSION_SECRET_LEN,
 };
 use miracle_claw_lib::pairing_state::{now_unix, PairingState, DEFAULT_SESSION_TTL_SECONDS};
+use uuid::Uuid;
 
 use serde_json::{json, Value};
 
@@ -46,16 +47,28 @@ struct FakeMaic {
     requests: Mutex<Vec<RecordedRequest>>,
     desktops: Mutex<std::collections::HashMap<String, Value>>,
     paired_devices: Mutex<std::collections::HashMap<String, Vec<Value>>>,
-    next_device_id: Mutex<i64>,
+    /// Phase 2.4.1: device_id is a client-generated UUID v4
+    /// (was `Mutex<i64>` bigserial in v0.0.3). MAIC stores it
+    /// as `UUID`. The fake allocates a fresh Uuid per request.
+    next_device_id: Mutex<()>, // placeholder, see allocate_device_id()
     fail_put_desktop_once: Mutex<bool>,
 }
 
 impl FakeMaic {
     fn new() -> Self {
         Self {
-            next_device_id: Mutex::new(1000),
+            next_device_id: Mutex::new(()),
             ..Default::default()
         }
+    }
+
+    /// Phase 2.4.1: MAIC stores device_id as a client-generated UUID v4.
+    /// The fake mirrors that: each POST returns a fresh Uuid (or echoes
+    /// the client-provided one, whichever the test prefers). We use
+    /// a fresh Uuid per request to match MAIC's behavior when the
+    /// client doesn't pre-allocate.
+    fn allocate_device_id(&self, _client_provided: Option<Uuid>) -> Uuid {
+        Uuid::new_v4()
     }
 
     fn record(&self, method: &str, path: &str, body: Value) {
@@ -133,13 +146,18 @@ impl MaicHttp for FakeMaic {
     ) -> Result<Value, PairingError> {
         let path = format!("/v1/users/me/desktops/{}/paired-devices", instance_id);
         self.record("POST", &path, body.clone());
-        let mut next_id = self.next_device_id.lock().unwrap();
-        *next_id += 1;
-        let device_id = *next_id;
+        // Phase 2.4.1: device_id is client-generated. MAIC echoes what
+        // the client sent. We parse it from the body and use the same
+        // value in the response so the desktop can verify round-trip.
+        let client_device_id = body
+            .get("device_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .unwrap_or_else(Uuid::new_v4);
         let entry = json!({
-            "device_id": device_id,
+            "device_id": client_device_id.to_string(),
             "device_name": body.get("device_name").cloned().unwrap_or(json!("unknown")),
-            "phone_pubkey_fp": body.get("phone_pubkey_fp").cloned().unwrap_or(json!("")),
+            "device_pubkey_fp": body.get("device_pubkey_fp").cloned().unwrap_or(json!("")),
             "paired_at": 1_700_000_000_i64,
             "last_seen_at": 1_700_000_000_i64,
         });
@@ -168,7 +186,7 @@ impl MaicHttp for FakeMaic {
     fn delete_paired_device(
         &self,
         instance_id: &str,
-        device_id: i64,
+        device_id: Uuid,
     ) -> Result<(), PairingError> {
         self.record(
             "DELETE",
@@ -179,7 +197,8 @@ impl MaicHttp for FakeMaic {
         if let Some(devices) = map.get_mut(instance_id) {
             devices.retain(|d| {
                 d.get("device_id")
-                    .and_then(|v| v.as_i64())
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok())
                     .map(|id| id != device_id)
                     .unwrap_or(true)
             });
@@ -841,11 +860,18 @@ fn live_post_paired_device_sends_post_not_put_on_the_wire() {
             let n = stream.read(&mut buf).unwrap_or(0);
             let captured = String::from_utf8_lossy(&buf[..n]).to_string();
             tx.send(captured).unwrap();
-            // Respond 200 with a minimal JSON body so ureq can decode it.
+            // Phase 2.4.1: device_id is a client-generated UUID v4
+            // (not an int64 like in v0.0.3). Echo whatever the test sends,
+            // or fall back to a fresh UUID if the request body is missing
+            // it. This is what MAIC's PairedDeviceCreateIn route does.
             use std::io::Write as _;
-            let _ = stream.write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 18\r\n\r\n{\"device_id\":42}",
+            let body = b"{\"device_id\":\"00000000-0000-0000-0000-000000000000\"}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
             );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(body);
             let _ = stream.flush();
         }
     });
@@ -855,9 +881,13 @@ fn live_post_paired_device_sends_post_not_put_on_the_wire() {
         "test-jwt".to_string(),
     );
 
+    // Phase 2.4.1: POST body now requires `device_id` (UUID v4) AND
+    // uses `device_pubkey_fp` (was `phone_pubkey_fp` in v0.0.3).
+    let test_device_id = uuid::Uuid::new_v4();
     let body = json!({
+        "device_id": test_device_id,
         "device_name": "wire-level-test-phone",
-        "phone_pubkey_fp": "abcd1234abcd1234",
+        "device_pubkey_fp": "abcd1234abcd1234",
     });
 
     // The call should not error. We only care about the wire method.
@@ -879,4 +909,157 @@ fn live_post_paired_device_sends_post_not_put_on_the_wire() {
         "expected paired-devices path, got: {}",
         first_line
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Lesson 894 (NEW 2026-09-10, Homebot): wire-level body-shape check
+// that exercises the FULL mc_initiate_pair → LiveMaicHttp → TCP stack.
+//
+// Homebot's mcmobile.txt caught that the GUI's `mc_initiate_pair` was
+// sending `phone_pubkey_fp` (old name) and no `device_id` (new field),
+// so the POST body didn't match the new MAIC PairedDeviceCreateIn
+// schema. The previous wire test (Lesson 892) only checked the HTTP
+// method — it passed a hand-crafted body that wasn't actually shaped
+// by `mc_initiate_pair`, so it would still pass if the GUI's body
+// builder had the wrong field name. This test invokes the real
+// `initiate_pair` function and inspects the wire-level body, so a
+// future refactor that re-introduces the old field name (or drops
+// the new one) will fail here.
+// ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn live_initiate_pair_sends_device_pubkey_fp_and_uuid_device_id() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel::<String>();
+
+    // Minimal 1-shot MAIC server: accepts the POST, captures the body,
+    // responds 200 with an empty body.
+    let _server = std::thread::spawn(move || {
+        use std::io::Read as _;
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = Vec::with_capacity(4096);
+            let mut tmp = [0u8; 4096];
+            let mut content_length: Option<usize> = None;
+            let mut header_end: Option<usize> = None;
+            loop {
+                let n = stream.read(&mut tmp).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if header_end.is_none() {
+                    if let Some(idx) = find_double_crlf(&buf) {
+                        header_end = Some(idx + 4);
+                        let headers = std::str::from_utf8(&buf[..idx]).unwrap_or("");
+                        for line in headers.lines() {
+                            if let Some(rest) = line.strip_prefix("Content-Length:") {
+                                content_length = rest.trim().parse().ok();
+                            } else if let Some(rest) = line.strip_prefix("content-length:") {
+                                content_length = rest.trim().parse().ok();
+                            }
+                        }
+                    }
+                }
+                if let (Some(h), Some(cl)) = (header_end, content_length) {
+                    if buf.len() >= h + cl {
+                        break;
+                    }
+                }
+            }
+            let captured = String::from_utf8_lossy(&buf).to_string();
+            tx.send(captured).unwrap();
+            use std::io::Write as _;
+            // Empty 200 — initiate_pair will tolerate this since it
+            // only checks the JSON parse, not the field.
+            let body = b"{}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(body);
+            let _ = stream.flush();
+        }
+    });
+
+    // Build a real LiveMaicHttp pointed at our test server and a
+    // PairingCommands that wraps it. Set the instance_id so
+    // initiate_pair's `require_instance_id()` check passes.
+    let live = LiveMaicHttp::new(
+        format!("http://127.0.0.1:{}", port),
+        "test-jwt".to_string(),
+    );
+    let cmds = std::sync::Arc::new(PairingCommands::new(
+        std::sync::Arc::new(PairingState::new()),
+        std::sync::Arc::new(live),
+    ));
+    cmds.restore_instance_id("inst_test".to_string());
+
+    // Generate a real X25519 keypair so the body has a valid pubkey.
+    let (_phone_sec, phone_pub_b64) = make_phone_keypair();
+
+    // Call the actual production code path. This is what the GUI
+    // command would invoke.
+    let _ = initiate_pair(
+        &cmds,
+        phone_pub_b64,
+        "wire-initiate-test".to_string(),
+    );
+
+    let raw_request = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("server should have received the request");
+
+    // Split headers and body.
+    let parts: Vec<&str> = raw_request.split("\r\n\r\n").collect();
+    assert_eq!(parts.len(), 2, "request should have headers + body");
+    let body_str = parts[1];
+
+    // Parse body as JSON and check the field names + types.
+    let parsed: Value = serde_json::from_str(body_str)
+        .expect("POST body should be valid JSON");
+
+    // 1. The new field name `device_pubkey_fp` is present.
+    assert!(
+        parsed.get("device_pubkey_fp").is_some(),
+        "POST body missing `device_pubkey_fp` field. Got: {}",
+        body_str
+    );
+    // 2. The old field name `phone_pubkey_fp` is GONE.
+    assert!(
+        parsed.get("phone_pubkey_fp").is_none(),
+        "POST body should not have legacy `phone_pubkey_fp`. Got: {}",
+        body_str
+    );
+    // 3. `device_id` is present and a valid UUID string.
+    let device_id_str = parsed
+        .get("device_id")
+        .and_then(|v| v.as_str())
+        .expect("device_id should be a string");
+    let _ = Uuid::parse_str(device_id_str)
+        .expect("device_id should be a valid UUID v4");
+    // 4. `device_name` is present and matches what we passed.
+    assert_eq!(
+        parsed.get("device_name").and_then(|v| v.as_str()),
+        Some("wire-initiate-test")
+    );
+    // 5. Path is correct.
+    let first_line = raw_request.lines().next().expect("non-empty request");
+    assert!(
+        first_line.starts_with("POST "),
+        "expected POST request, got: {}",
+        first_line
+    );
+    assert!(
+        first_line.contains("/v1/users/me/desktops/inst_test/paired-devices"),
+        "expected paired-devices path, got: {}",
+        first_line
+    );
+}
+
+/// Find the index of the `\r\n\r\n` sequence in `buf`. Returns the
+/// position of the first `\r` of the sequence.
+fn find_double_crlf(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n")
 }

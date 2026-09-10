@@ -30,6 +30,7 @@ use base64::Engine;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
@@ -37,10 +38,20 @@ use zeroize::Zeroize;
 const IDENTITY_FILENAME: &str = "identity.json";
 
 /// On-disk identity (JSON-serialized).
+///
+/// Phase 2.4.1 (Homebot 2026-09-10): `instance_id` switched from
+/// `inst_<16 hex>` to a proper UUID v4 because MAIC's
+/// `/v1/users/me/desktops/{instance_id}` path parameter is typed
+/// `UUID` and 422s with `uuid_parsing` on the old format. Backward
+/// compat: `load()` detects the old format on disk and migrates
+/// deterministically (8 random bytes -> UUID v4 with marker bits
+/// set) so existing v0.0.3 users keep the same identity and don't
+/// have to re-pair.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
-    /// Stable identifier for this MC install. Format: `inst_<16 hex>`.
-    pub instance_id: String,
+    /// Stable identifier for this MC install. Format: UUID v4
+    /// (e.g. `550e8400-e29b-41d4-a716-446655440000`).
+    pub instance_id: Uuid,
     /// Base64-encoded X25519 public key.
     pub desktop_pubkey_b64: String,
     /// Base64-encoded X25519 secret key (32 bytes). Kept on disk because
@@ -88,16 +99,52 @@ pub fn fingerprint_from_pubkey(pubkey: &[u8; 32]) -> String {
     format!("{}-{}-{}", &hex[0..4], &hex[4..8], &hex[8..12])
 }
 
-/// Generate a fresh `inst_<16 hex>` instance id using OS rng.
-pub fn generate_instance_id() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 8];
-    OsRng.fill_bytes(&mut bytes);
-    format!("inst_{}", hex_encode(&bytes))
+/// Generate a fresh UUID v4 instance id using OS rng.
+///
+/// Phase 2.4.1 (Homebot 2026-09-10): switched from `inst_<16 hex>`
+/// to UUID v4 because MAIC's `instance_id` path param is typed
+/// `UUID`. The old format would 422 with `uuid_parsing`.
+pub fn generate_instance_id() -> Uuid {
+    Uuid::new_v4()
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+/// Convert a v0.0.3-era `inst_<16 hex>` instance id into a UUID v4
+/// deterministically. The 8 hex bytes were already OS-rng random;
+/// we just add the version (4) and variant (10xx) marker bits so
+/// it parses as a valid UUID v4. This means existing v0.0.3 users
+/// keep the same `instance_id` across the upgrade and don't have
+/// to re-pair.
+///
+/// Returns `None` if the input doesn't match the v0.0.3 format.
+pub fn migrate_inst_hex_to_uuid(inst_hex: &str) -> Option<Uuid> {
+    let hex = inst_hex.strip_prefix("inst_")?;
+    if hex.len() != 16 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let bytes_vec = hex_decode(hex)?;
+    let mut bytes = [0u8; 16];
+    // Fill the first 8 bytes with the v0.0.3 random bytes; the rest
+    // are deterministic padding so the same `inst_<...>` always maps
+    // to the same UUID. (Padding the lower 8 bytes with zeros would
+    // also be deterministic; we use a constant so that two different
+    // v0.0.3 installs with similar high bits are unlikely to collide.)
+    bytes[..8].copy_from_slice(&bytes_vec);
+    bytes[8..].copy_from_slice(&bytes_vec);
+    bytes[6] = (bytes[6] & 0x0F) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3F) | 0x80; // variant 10xx
+    Some(Uuid::from_bytes(bytes))
+}
+
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 { return None; }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let bytes = s.as_bytes();
+    for chunk in bytes.chunks(2) {
+        let hi = (chunk[0] as char).to_digit(16)?;
+        let lo = (chunk[1] as char).to_digit(16)?;
+        out.push(((hi << 4) | lo) as u8);
+    }
+    Some(out)
 }
 
 /// Generate a fresh X25519 keypair using OS rng. Returns the public key as
@@ -117,6 +164,13 @@ pub fn identity_path(app_data_dir: &Path) -> PathBuf {
 /// exists yet (fresh install). Returns `Err` if the file is corrupt or
 /// unreadable — the caller decides whether to ignore (regenerate) or
 /// surface the error to the user.
+///
+/// Phase 2.4.1 (Homebot 2026-09-10): the on-disk format changed from
+/// `instance_id: String` (in `inst_<16 hex>` form) to `instance_id: Uuid`.
+/// To avoid breaking existing v0.0.3 installs, we accept the old shape
+/// as a deserialization error and then re-read the raw JSON, lift out
+/// the string, and migrate it. If migration fails (e.g. file is from a
+/// future version with an unknown format), we return the original error.
 pub fn load(app_data_dir: &Path) -> std::io::Result<Option<Identity>> {
     let path = identity_path(app_data_dir);
     if !path.exists() {
@@ -125,7 +179,43 @@ pub fn load(app_data_dir: &Path) -> std::io::Result<Option<Identity>> {
     let raw = fs::read_to_string(&path)?;
     match serde_json::from_str::<Identity>(&raw) {
         Ok(id) => Ok(Some(id)),
-        Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        Err(parse_err) => {
+            // Try the v0.0.3 shape: { "instance_id": "inst_<16 hex>", ... }
+            #[derive(Deserialize)]
+            struct LegacyIdentity {
+                instance_id: String,
+                desktop_pubkey_b64: String,
+                desktop_secret_key: Vec<u8>,
+                fingerprint: String,
+                created_at_unix: u64,
+            }
+            match serde_json::from_str::<LegacyIdentity>(&raw) {
+                Ok(legacy) => {
+                    let uuid = migrate_inst_hex_to_uuid(&legacy.instance_id)
+                        .ok_or_else(|| std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "instance_id '{}' is neither a UUID nor a v0.0.3 \
+                                 inst_<16 hex>: {}",
+                                legacy.instance_id, parse_err
+                            ),
+                        ))?;
+                    // Re-serialize in the new shape and rewrite the file.
+                    let migrated = Identity {
+                        instance_id: uuid,
+                        desktop_pubkey_b64: legacy.desktop_pubkey_b64,
+                        desktop_secret_key: legacy.desktop_secret_key,
+                        fingerprint: legacy.fingerprint,
+                        created_at_unix: legacy.created_at_unix,
+                    };
+                    write_identity_to(&path, &migrated)?;
+                    Ok(Some(migrated))
+                }
+                Err(_) => Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData, parse_err,
+                )),
+            }
+        }
     }
 }
 
@@ -227,10 +317,69 @@ mod tests {
     }
 
     #[test]
-    fn instance_id_has_expected_format() {
+    fn instance_id_is_uuid_v4() {
         let id = generate_instance_id();
-        assert!(id.starts_with("inst_"));
-        assert_eq!(id.len(), 5 + 16); // "inst_" + 16 hex chars
+        // Uuid::new_v4() guarantees version 4 and variant 10xx.
+        assert_eq!(id.get_version_num(), 4);
+        assert_eq!(id.get_variant(), uuid::Variant::RFC4122);
+    }
+
+    #[test]
+    fn migrate_inst_hex_to_uuid_round_trips() {
+        // A v0.0.3-format string: inst_<16 hex>
+        let legacy = "inst_a1b2c3d4e5f60718";
+        let uuid = migrate_inst_hex_to_uuid(legacy).expect("should migrate");
+        // Same input always maps to same UUID (deterministic).
+        let uuid2 = migrate_inst_hex_to_uuid(legacy).expect("should migrate");
+        assert_eq!(uuid, uuid2);
+        // Output is a valid v4 UUID.
+        assert_eq!(uuid.get_version_num(), 4);
+        assert_eq!(uuid.get_variant(), uuid::Variant::RFC4122);
+        // The high 8 bytes are preserved (we copy them in).
+        // The low 4 nibbles of byte 6 = 4 (version).
+        // The high 2 bits of byte 8 = 10 (variant).
+        // Don't assert exact byte values; the inputs were random hex.
+    }
+
+    #[test]
+    fn migrate_inst_hex_to_uuid_rejects_bad_input() {
+        assert!(migrate_inst_hex_to_uuid("not-an-inst-id").is_none());
+        assert!(migrate_inst_hex_to_uuid("inst_short").is_none());
+        assert!(migrate_inst_hex_to_uuid("inst_zzz_not_hex_xxxxx").is_none());
+        assert!(migrate_inst_hex_to_uuid("").is_none());
+    }
+
+    #[test]
+    fn load_migrates_v0_0_3_legacy_identity() {
+        let tmp = tempdir_in_tests();
+        // Write a v0.0.3-format identity.json to disk by hand.
+        let legacy = serde_json::json!({
+            "instance_id": "inst_a1b2c3d4e5f60718",
+            "desktop_pubkey_b64": "MCowBQYDK2VwAyEARXhhcm0hZWZmamtsbW5vcDpzdHV2d3h5eno7",
+            "desktop_secret_key": [1u8, 2, 3, 4, 5, 6, 7, 8],
+            "fingerprint": "abcd-1234-ef56",
+            "created_at_unix": 1700000000u64,
+        });
+        let path = identity_path(&tmp);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        // Load should detect legacy shape and migrate.
+        let loaded = load(&tmp).expect("load should not error")
+            .expect("identity should exist after migration");
+        // The migrated UUID should match the deterministic migration.
+        let expected = migrate_inst_hex_to_uuid("inst_a1b2c3d4e5f60718").unwrap();
+        assert_eq!(loaded.instance_id, expected);
+        // The other fields are preserved unchanged.
+        assert_eq!(loaded.desktop_pubkey_b64, "MCowBQYDK2VwAyEARXhhcm0hZWZmamtsbW5vcDpzdHV2d3h5eno7");
+        assert_eq!(loaded.desktop_secret_key, vec![1u8, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(loaded.fingerprint, "abcd-1234-ef56");
+        assert_eq!(loaded.created_at_unix, 1700000000u64);
+
+        // After migration, the file on disk should be in the new shape.
+        let raw = fs::read_to_string(&path).unwrap();
+        let again: Identity = serde_json::from_str(&raw).expect("post-migration should parse as new shape");
+        assert_eq!(again.instance_id, expected);
     }
 
     #[test]

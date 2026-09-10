@@ -583,6 +583,19 @@ fn ensure_openclaw_json_minimal() -> io::Result<()> {
                 path.display()
             );
         }
+        // AP-833-U (2026-09-08, David): also retrofit `update.checkOnStart:
+        // false` + `update.auto.enabled: false` on existing installs so
+        // users on rc55.22 and earlier don't see "Update available: vX.Y.Z
+        // (running v2026.7.1-2)" notifications on their first rc55.23 launch.
+        // The check itself is gated on `cfg.update?.checkOnStart !== false`,
+        // so this is the real fix; `OPENCLAW_NO_AUTO_UPDATE=1` from
+        // launcher.rs is just defense-in-depth on the auto-install path.
+        if let Ok(true) = disable_update_check_for_existing_installs(&path) {
+            eprintln!(
+                "[miracle-claw] disabled openclaw auto-update in {} (rc55.23 first-run migration)",
+                path.display()
+            );
+        }
         return Ok(());
     }
     if let Some(parent) = path.parent() {
@@ -596,6 +609,17 @@ fn ensure_openclaw_json_minimal() -> io::Result<()> {
             "auth": {
                 "mode": "none"
             }
+        },
+        // AP-833-U (2026-09-08, David): disable openclaw's bundled startup
+        // update check + auto-install timer for fresh installs. See
+        // `disable_update_check_for_existing_installs` below for the
+        // reasoning — same flag set, just applied at file-create time
+        // instead of migration time.
+        "update": {
+            "checkOnStart": false,
+            "auto": {
+                "enabled": false
+            }
         }
     });
     let serialized = serde_json::to_string_pretty(&minimal)
@@ -606,6 +630,57 @@ fn ensure_openclaw_json_minimal() -> io::Result<()> {
         path.display()
     );
     Ok(())
+}
+
+/// AP-833-U (NEW 2026-09-08, David): inject
+/// `update.checkOnStart: false` + `update.auto.enabled: false` into an
+/// existing openclaw.json that lacks them. Idempotent — does NOT overwrite
+/// a `update` block the user explicitly set; we only create it when missing.
+///
+/// Why both flags:
+///   - `checkOnStart: false` is the REAL fix. The update check is gated on
+///     `params.cfg.update?.checkOnStart !== false` in update-startup-CQiVM-kJ.js,
+///     so setting this to false causes the orchestrator function to
+///     `return` before calling `setUpdateAvailableCache` (which is what
+///     fires the in-UI notification via `onUpdateAvailableChange`).
+///   - `auto.enabled: false` disables the hourly `scheduleGatewayUpdateCheck`
+///     timer that re-fires the registry fetch. Belt to the suspenders:
+///     checkOnStart already short-circuits, but if some future openclaw
+///     code path bypasses that gate, auto.enabled=false still kills the
+///     timer. The launcher ALSO sets `OPENCLAW_NO_AUTO_UPDATE=1` on the
+///     spawned node child for a third layer of defense.
+///
+/// Failure mode: best-effort migration. If the file is malformed or
+/// read-only, we silently return false and let setup() continue.
+fn disable_update_check_for_existing_installs(path: &Path) -> io::Result<bool> {
+    let raw = fs::read_to_string(path)?;
+    let mut parsed: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse: {e}")))?;
+
+    let obj = match parsed.as_object_mut() {
+        Some(o) => o,
+        None => return Ok(false),
+    };
+
+    // User already has an `update` block — respect their config. We don't
+    // want to clobber a `checkOnStart: true` they set on purpose. AP-833-B
+    // lesson: never overwrite a user's explicit value with our default.
+    if obj.contains_key("update") {
+        return Ok(false);
+    }
+
+    obj.insert(
+        "update".to_string(),
+        serde_json::json!({
+            "checkOnStart": false,
+            "auto": { "enabled": false }
+        }),
+    );
+
+    let serialized = serde_json::to_string_pretty(&parsed)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize: {e}")))?;
+    fs::write(path, serialized)?;
+    Ok(true)
 }
 
 /// Detect the legacy MC-shipped shape and rewrite it. Returns Ok(true) if
@@ -4033,12 +4108,40 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 /// a best-effort fallback for the race case where `openclaw_back_to_dashboard`
 /// runs before the first page-load event.
 fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    use tauri::{image::Image, WebviewUrl, WebviewWindowBuilder};
 
     // Embed the bridge script at compile time so it ships in the binary.
     // The script lives in `src-tauri/src/openclaw-host-bridge.js` and is
     // referenced via `include_str!` so cargo recompiles when it changes.
     let bridge_js = include_str!("openclaw-host-bridge.js");
+
+    // Lesson 834 (NEW 2026-09-08 17:56 MDT, David): MC's main webview
+    // window needs the lobster / MC logo as its icon so it integrates
+    // cleanly with the OS Start Menu, pinned taskbar, and window switcher.
+    // Without this, Windows shows a generic Tauri/blank icon and the
+    // user can't visually tell which window is "MiracleClaw" in the
+    // taskbar when several webview windows are open.
+    //
+    // We resolve from `BaseDirectory::Resource` because Tauri's bundler
+    // copies icons listed in `bundle.icon[]` into the Resources directory
+    // at install time. Both `.ico` (Windows app icon) and `.png` (fallback
+    // for *nix and high-DPI Windows taskbar previews) ship in the same
+    // place. Resolution is best-effort — if no icon is found we leave the
+    // window with Tauri's default; we never block app launch on a
+    // missing icon.
+    let resolved_icon: Option<tauri::image::Image<'static>> = {
+        let resolver = app_handle.path();
+        let mut resolved: Option<tauri::image::Image<'static>> = None;
+        for candidate in ["icons/icon.png", "icons/icon.ico", "icon.png", "icon.ico"] {
+            if let Ok(p) = resolver.resolve(candidate, tauri::path::BaseDirectory::Resource) {
+                if let Ok(img) = Image::from_path(&p) {
+                    resolved = Some(img);
+                    break;
+                }
+            }
+        }
+        resolved
+    };
 
     // Lesson 537 (rc31, David 10:45 MDT): capture the resolved dashboard
     // URL on the FIRST `on_page_load` event, NOT immediately after
@@ -4058,7 +4161,7 @@ fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
     // the same instant they opened the chat window). Most builds will
     // overwrite the fallback with the on_page_load value.
     let app_handle_for_load = app_handle.clone();
-    let window = WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app_handle,
         "main",
         WebviewUrl::App("index.html".into()),
@@ -4070,8 +4173,9 @@ fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
     .center()
     .visible(true)
     .decorations(true)
-    .initialization_script(bridge_js)
-    .on_page_load(move |_webview, payload| {
+    .initialization_script(bridge_js);
+    let window = builder
+        .on_page_load(move |_webview, payload| {
         // Lesson 538 (rc32): `on_page_load` fires for EVERY page-load,
         // not just the first one. That includes when the user navigates
         // from the dashboard INTO the chat (URL becomes
@@ -4159,6 +4263,26 @@ fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
     })
     .build()
     .map_err(|e| format!("WebviewWindowBuilder::build() failed for main window: {e}"))?;
+
+    // Lesson 834 (NEW 2026-09-08 17:56 MDT, David): set the window icon
+    // AFTER build via `WebviewWindow::set_icon(&self, ...)` because the
+    // builder's `icon(self, ...)` consumes self and we couldn't keep the
+    // settings on Err. set_icon is best-effort: a missing/corrupt icon
+    // never blocks app launch — we just log and let Tauri's default
+    // icon stay in place. Mirrors the Resources-dir lookup above; if
+    // both runs reach here without finding an icon, the user sees
+    // Tauri 2's bundled icon (a plain square).
+    if let Some(img) = resolved_icon {
+        if let Err(e) = window.set_icon(img) {
+            eprintln!(
+                "[miracle-claw] Lesson 834: window.set_icon failed: {e} — window will keep Tauri default"
+            );
+        }
+    } else {
+        eprintln!(
+            "[miracle-claw] Lesson 834: no Resources-dir icon resolved — window keeps Tauri default"
+        );
+    }
 
     // Best-effort immediate capture: if on_page_load already fired
     // synchronously (some Tauri versions do this on Linux/macOS), this
@@ -7986,7 +8110,7 @@ fn mc_paired_devices(
 #[tauri::command]
 fn mc_revoke_device(
     cmds: tauri::State<'_, pairing_commands::PairingCommands>,
-    device_id: i64,
+    device_id: uuid::Uuid,
 ) -> Result<(), String> {
     pairing_commands::revoke_device(&cmds, device_id).map_err(|e| e.to_string())
 }
@@ -10822,5 +10946,207 @@ mod tests {
         // The above is the locked-in v0 behavior. If we want to
         // accept lowercase, remove this assertion and update the
         // docstring.
+    }
+
+    // =====================================================================
+    // AP-833-U (NEW 2026-09-08, David): openclaw auto-update suppression.
+    //
+    // rc55.23 disables the bundled openclaw's startup update check so
+    // users don't see "Update available: vX.Y.Z (running v2026.7.1-2)"
+    // notifications in the embedded UI. The fix has three layers:
+    //
+    //   1. `ensure_openclaw_json_minimal` writes
+    //      `update.checkOnStart = false` + `update.auto.enabled = false`
+    //      on first install (fresh-install path).
+    //   2. `disable_update_check_for_existing_installs` retrofits the
+    //      same block onto existing openclaw.json files (migration path).
+    //   3. `launcher.rs:build_node_command` sets
+    //      `OPENCLAW_NO_AUTO_UPDATE=1` on the spawned node child.
+    //
+    // These tests cover layer 1 + 2 (layer 3 is verified manually + by
+    // grep on the binary strings in the rc55.23 build).
+    // =====================================================================
+
+    fn read_openclaw_json() -> serde_json::Value {
+        let raw = std::fs::read_to_string(openclaw_json_path()).expect("openclaw.json must exist after bootstrap");
+        serde_json::from_str(&raw).expect("parse openclaw.json")
+    }
+
+    #[test]
+    fn fresh_install_writes_update_check_disabled_block() {
+        // AP-833-U: A clean install (no existing openclaw.json) must
+        // pre-write the update block so openclaw's startup check
+        // short-circuits on `checkOnStart !== false`.
+        let _lock = lock_env();
+        let _g = fresh_env();
+
+        ensure_openclaw_json_minimal().expect("ok");
+
+        let cfg = read_openclaw_json();
+        let update = cfg
+            .get("update")
+            .expect("fresh install must write `update` block")
+            .as_object()
+            .expect("`update` must be an object");
+        assert_eq!(
+            update
+                .get("checkOnStart")
+                .and_then(|v| v.as_bool()),
+            Some(false),
+            "fresh install: update.checkOnStart must be false (AP-833-U)"
+        );
+        let auto = update
+            .get("auto")
+            .expect("update.auto must exist")
+            .as_object()
+            .expect("update.auto must be an object");
+        assert_eq!(
+            auto.get("enabled").and_then(|v| v.as_bool()),
+            Some(false),
+            "fresh install: update.auto.enabled must be false (AP-833-U)"
+        );
+
+        // Sanity: gateway block must still be there (don't regress the
+        // existing minimal-config contract).
+        let mode = cfg["gateway"]["auth"]["mode"].as_str();
+        assert_eq!(
+            mode,
+            Some("none"),
+            "fresh install: gateway.auth.mode must remain \"none\""
+        );
+    }
+
+    #[test]
+    fn migration_retrofits_update_block_when_missing() {
+        // AP-833-U: existing openclaw.json from rc55.22 and earlier has
+        // no `update` block. On the user's next launch (rc55.23),
+        // `disable_update_check_for_existing_installs` must inject the
+        // block so the bundled openclaw's startup check short-circuits.
+        let _lock = lock_env();
+        let _g = fresh_env();
+
+        // Pre-seed an rc55.22-era config: complete maic provider entry,
+        // NO `update` block.
+        let path = openclaw_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let pre = serde_json::json!({
+            "$schema": "https://openclaw.dev/schema/v1/openclaw.config.schema.json",
+            "gateway": { "mode": "local", "bind": "loopback", "auth": { "mode": "none" } },
+            "models": { "providers": { "maic": { "api": "openai-completions", "apiKey": "***", "baseUrl": "https://maicserver.com/v1" } } },
+            "plugins": { "entries": { "maic": { "enabled": true } } }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&pre).unwrap()).unwrap();
+
+        // Run bootstrap — this is what setup() calls on every launch.
+        ensure_openclaw_json_minimal().expect("ok");
+
+        let cfg = read_openclaw_json();
+        let update = cfg
+            .get("update")
+            .expect("migration must inject `update` block on existing install (AP-833-U)")
+            .as_object()
+            .expect("`update` must be an object");
+        assert_eq!(
+            update.get("checkOnStart").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            update["auto"]["enabled"].as_bool(),
+            Some(false),
+            "migration: update.auto.enabled must be false"
+        );
+
+        // User's existing config must be preserved.
+        assert_eq!(
+            cfg["gateway"]["auth"]["mode"].as_str(),
+            Some("none"),
+            "migration must NOT clobber user's gateway.auth.mode"
+        );
+        assert_eq!(
+            cfg["models"]["providers"]["maic"]["apiKey"].as_str(),
+            Some("***"),
+            "migration must NOT clobber user's maic apiKey"
+        );
+        assert_eq!(
+            cfg["plugins"]["entries"]["maic"]["enabled"].as_bool(),
+            Some(true),
+            "migration must NOT clobber user's plugin enabled flag"
+        );
+    }
+
+    #[test]
+    fn migration_is_idempotent_when_update_block_already_present() {
+        // AP-833-B lesson: respect the user's explicit config. If they
+        // already have an `update` block (maybe they want auto-updates
+        // for testing, or the dev runner set it), we must NOT overwrite
+        // it on the next launch.
+        let _lock = lock_env();
+        let _g = fresh_env();
+
+        let path = openclaw_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let user_value = serde_json::json!({
+            "gateway": { "mode": "local", "bind": "loopback", "auth": { "mode": "none" } },
+            "update": {
+                "checkOnStart": true,  // user explicitly opted in
+                "auto": { "enabled": true, "intervalHours": 12 }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&user_value).unwrap()).unwrap();
+
+        ensure_openclaw_json_minimal().expect("ok");
+
+        let cfg = read_openclaw_json();
+        let update = cfg["update"].as_object().expect("`update` block must still exist");
+        assert_eq!(
+            update.get("checkOnStart").and_then(|v| v.as_bool()),
+            Some(true),
+            "user's explicit checkOnStart=true must NOT be overwritten (AP-833-B)"
+        );
+        assert_eq!(
+            update["auto"]["enabled"].as_bool(),
+            Some(true),
+            "user's explicit auto.enabled=true must NOT be overwritten (AP-833-B)"
+        );
+        assert_eq!(
+            update["auto"]["intervalHours"].as_u64(),
+            Some(12),
+            "user's custom auto.intervalHours must be preserved (AP-833-B)"
+        );
+    }
+
+    #[test]
+    fn migration_handles_legacy_auth_plus_update_in_one_pass() {
+        // Lesson 535 + AP-833-U: when an old rc55.22-era config has BOTH
+        // the legacy `gateway.auth: \"none\"` flat-string bug AND no
+        // `update` block, both migrations must run on the same launch.
+        // (Order shouldn't matter; both are idempotent and don't touch
+        // each other's keys.)
+        let _lock = lock_env();
+        let _g = fresh_env();
+
+        let path = openclaw_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let pre = serde_json::json!({
+            "gateway": { "mode": "local", "bind": "loopback", "auth": "none" }
+            // No `update` block.
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&pre).unwrap()).unwrap();
+
+        ensure_openclaw_json_minimal().expect("ok");
+
+        let cfg = read_openclaw_json();
+        // Legacy auth migration ran.
+        assert_eq!(
+            cfg["gateway"]["auth"]["mode"].as_str(),
+            Some("none"),
+            "legacy auth migration must run alongside update migration"
+        );
+        // Update migration ran.
+        assert_eq!(
+            cfg["update"]["checkOnStart"].as_bool(),
+            Some(false),
+            "update migration must run alongside legacy auth migration (AP-833-U)"
+        );
     }
 }

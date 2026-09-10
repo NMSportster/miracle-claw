@@ -44,9 +44,15 @@ fn fingerprint_changes_with_input() {
 
 #[test]
 fn instance_id_format() {
+    // Phase 2.4.1: instance_id is a UUID v4, not `inst_<16 hex>`.
+    // 36 chars total: 8-4-4-4-12 hex with 4 hyphens, version nibble
+    // is '4', variant nibble is one of [89ab].
     let id = generate_instance_id();
-    assert!(id.starts_with("inst_"));
-    assert_eq!(id.len(), 5 + 16);
+    let s = id.to_string();
+    assert_eq!(s.len(), 36, "UUID v4 string is always 36 chars, got: {}", s);
+    assert!(s.chars().nth(14).unwrap() == '4', "version nibble must be 4, got: {}", s);
+    let variant = s.chars().nth(19).unwrap();
+    assert!(matches!(variant, '8' | '9' | 'a' | 'b'), "variant nibble must be 8/9/a/b, got: {}", s);
 }
 
 #[test]
