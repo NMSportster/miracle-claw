@@ -368,10 +368,15 @@ function _onClick(ev) {
       toast("Account menu — coming soon.");
       break;
     case "open-plans":
-      navigate("plans");
+      // rc55.25: plans page is registered as "pricing". Once the bucket 1
+      // rename lands (mc-launchpad-A), we add an alias or rename.
+      navigate("pricing");
       break;
     case "launch-chat":
-      navigate("chat");
+      // rc55.25: chat lives inside the main dashboard view. A dedicated
+      // "chat" page is on the Week 3-4 plan; for now route to dashboard
+      // which renders the chat tab.
+      navigate("dashboard");
       break;
     case "launch-terminal":
       navigate("terminal");
@@ -381,7 +386,9 @@ function _onClick(ev) {
       navigate("extras");
       break;
     case "add-tool":
-      navigate("marketplace");
+      // Marketplace page is Week 2 follow-up. Until it lands, surface a
+      // toast so the user knows the path is real but not yet built.
+      toast("Marketplace coming in this build — Week 2 follow-up.");
       break;
     case "run-tool": {
       const installedCard = target.closest("[data-module-id]");
