@@ -87,7 +87,11 @@ pub mod pairing_state;
 // Spec: docs/specs/mobile-desktop-pairing.md.
 // Phase 2.2: pairing_init sets up PairingCommands from the env (JWT + endpoint).
 // Spec: docs/specs/mobile-desktop-pairing.md.
-mod pairing_init;
+// Week 2.5 (miracle-claw-pair): make `pub` so the `miracle-claw-pair` bin can
+// call `build_pairing_state()` directly. The GUI still calls it from
+// `lib.rs::run`. Exposing the module doesn't leak the JWT or endpoint
+// resolution — those are still encapsulated in `build_pairing_state()`.
+pub mod pairing_init;
 pub mod pairing_commands;
 // Phase 2.3: tiny_http listener for phone-side pairing (POST /pair/initiate, GET /pair/health).
 // Spawned from setup(); heartbeat thread reads bound_port() to advertise the endpoint to MAIC.

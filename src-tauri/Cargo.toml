@@ -41,6 +41,14 @@ path = "src/launcher.rs"
 name = "miracle-claw-tools"
 path = "src/tools_main.rs"
 
+[[bin]]
+name = "miracle-claw-pair"
+path = "src/bin/pair.rs"
+# Headless pairing server for MC Mobile testing. Reuses the
+# existing pairing_commands / pairing_server / pairing_identity
+# modules (no duplicate logic). See src/bin/pair.rs module docs
+# and docs/mc-pairing-cli-2026-09.md for the spec.
+
 [build-dependencies]
 tauri-build = { version = "=2.6.3", features = [] }
 

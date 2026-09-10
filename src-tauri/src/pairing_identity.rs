@@ -134,17 +134,54 @@ pub fn save(app_data_dir: &Path, identity: &Identity) -> std::io::Result<()> {
     let dir = app_data_dir.join("pairing");
     fs::create_dir_all(&dir)?;
     let path = identity_path(app_data_dir);
+    write_identity_to(&path, identity)
+}
+
+/// Load an identity from a caller-specified path. Returns `Ok(None)` if
+/// the file does not exist. Returns `Err(InvalidData)` if the file is
+/// present but unparseable.
+///
+/// Added for `miracle-claw-pair --identity-file <path>` (Week 2.5).
+/// The XDG-default `load()` / `save()` above still handle the GUI
+/// path; this is the custom-path variant for the headless CLI.
+pub fn load_from(path: &Path) -> std::io::Result<Option<Identity>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(path)?;
+    match serde_json::from_str::<Identity>(&raw) {
+        Ok(id) => Ok(Some(id)),
+        Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+    }
+}
+
+/// Persist an identity to a caller-specified path. Creates parent
+/// directories if missing, sets 0600 perms on Unix (best-effort on
+/// Windows — inherits the user's profile ACL).
+///
+/// Added for `miracle-claw-pair --identity-file <path>` (Week 2.5).
+pub fn save_to(path: &Path, identity: &Identity) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    write_identity_to(path, identity)
+}
+
+/// Shared writer used by both `save` (XDG default) and `save_to`
+/// (custom path). Format and perms are identical — single source of
+/// truth for on-disk shape.
+fn write_identity_to(path: &Path, identity: &Identity) -> std::io::Result<()> {
     let serialized = serde_json::to_string_pretty(identity)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    fs::write(&path, serialized)?;
-    // Try to set 0600 perms (Unix only; on Windows the file ACL is whatever
-    // the user's profile gives it).
+    fs::write(path, serialized)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path)?.permissions();
+        let mut perms = fs::metadata(path)?.permissions();
         perms.set_mode(0o600);
-        fs::set_permissions(&path, perms)?;
+        fs::set_permissions(path, perms)?;
     }
     Ok(())
 }
@@ -227,5 +264,59 @@ mod tests {
         let p = base.join(unique);
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    // ── Tests for load_from / save_to (Week 2.5 miracle-claw-pair) ──
+
+    #[test]
+    fn load_from_returns_none_for_missing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("does-not-exist.json");
+        let r = load_from(&path).unwrap();
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn save_to_then_load_from_round_trips_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("custom-identity.json");
+        // Build a deterministic identity via the public API.
+        let saved = generate(dir.path()).expect("generate identity");
+        save_to(&path, &saved).expect("save_to custom path");
+
+        let loaded = load_from(&path).unwrap().expect("file should exist");
+        assert_eq!(loaded.instance_id, saved.instance_id);
+        assert_eq!(loaded.desktop_pubkey_b64, saved.desktop_pubkey_b64);
+        assert_eq!(loaded.desktop_secret_key, saved.desktop_secret_key);
+        assert_eq!(loaded.fingerprint, saved.fingerprint);
+        assert_eq!(loaded.created_at_unix, saved.created_at_unix);
+    }
+
+    #[test]
+    fn save_to_creates_missing_parent_dirs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("a").join("b").join("c").join("id.json");
+        let id = generate(dir.path()).expect("generate");
+        save_to(&nested, &id).expect("save_to nested path");
+        assert!(nested.exists());
+        // Round-trip reads back what we wrote.
+        let loaded = load_from(&nested).unwrap().expect("file should exist");
+        assert_eq!(loaded.instance_id, id.instance_id);
+    }
+
+    #[test]
+    fn save_to_sets_unix_0600_perms() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("perm.json");
+            let id = generate(dir.path()).expect("generate");
+            save_to(&path, &id).expect("save_to");
+            let perms = fs::metadata(&path).unwrap().permissions();
+            assert_eq!(perms.mode() & 0o777, 0o600,
+                "custom-path save should set 0600 like the XDG default");
+        }
+        // On non-Unix the perms test is a no-op (Windows uses profile ACL).
     }
 }
