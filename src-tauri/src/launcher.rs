@@ -6,7 +6,7 @@
 //   to expose Node.js directly to the permission allowlist (that's a shell
 //   escape into the user's machine). So we ship this small Rust binary as the
 //   sidecar; it owns the lookup of the bundled Node + openclaw bundle and
-//   execs `node openclaw.mjs gateway ...`. Tauri's allowlist locks the
+//   execs `node miracle-claw-gateway.mjs gateway ...`. Tauri's allowlist locks the
 //   exact invocation pattern of THIS binary — see src-tauri/capabilities/main.json
 //   for `cmd: "miracle-claw-launcher"` with the `--gateway-port` arg validator.
 //
@@ -15,7 +15,7 @@
 //   <resources>/
 //     node.exe                      (Tauri resource, Windows)
 //     node/                         (Tauri resource, *nix)
-//     openclaw.mjs                  (Tauri resource — points at node_modules/ + dist/)
+//     miracle-claw-gateway.mjs                  (Tauri resource — points at node_modules/ + dist/)
 //     package.json
 //     node_modules/
 //     dist/
@@ -67,7 +67,7 @@ enum LauncherError {
     /// bad input — but we re-validate here as defense-in-depth).
     InvalidPort,
     MissingPort,
-    /// Bundle is broken: missing openclaw.mjs, missing node executable, etc.
+    /// Bundle is broken: missing miracle-claw-gateway.mjs, missing node executable, etc.
     MissingBundleResource(&'static str),
     /// node openclaw exited with non-zero status. Carries the exit code.
     NodeNonZero(i32),
@@ -176,13 +176,13 @@ fn locate_resources() -> Result<PathBuf, LauncherError> {
 
     if let Ok(exe) = env::current_exe() {
         if let Some(dir) = exe.parent() {
-            if dir.join("openclaw.mjs").is_file() {
+            if dir.join("miracle-claw-gateway.mjs").is_file() {
                 return Ok(dir.to_path_buf());
             }
             // Common install layout: sidecar lives under bin/, resources next to it.
             if let Some(up) = dir.parent() {
                 let res = up.join("resources");
-                if res.is_dir() && res.join("openclaw.mjs").is_file() {
+                if res.is_dir() && res.join("miracle-claw-gateway.mjs").is_file() {
                     return Ok(res);
                 }
             }
@@ -191,7 +191,7 @@ fn locate_resources() -> Result<PathBuf, LauncherError> {
         let mut cursor = exe.parent();
         while let Some(dir) = cursor {
             let candidate = dir.join("resources");
-            if candidate.join("openclaw.mjs").is_file() {
+            if candidate.join("miracle-claw-gateway.mjs").is_file() {
                 return Ok(candidate);
             }
             cursor = dir.parent();
@@ -199,7 +199,7 @@ fn locate_resources() -> Result<PathBuf, LauncherError> {
     }
 
     Err(LauncherError::MissingBundleResource(
-        "could not locate resources directory (looked for openclaw.mjs)",
+        "could not locate resources directory (looked for miracle-claw-gateway.mjs)",
     ))
 }
 
@@ -261,11 +261,11 @@ fn which_in_path(name: &str) -> std::io::Result<Option<PathBuf>> {
 }
 
 fn build_node_command(args: &Args, node_bin: &Path, resources: &Path) -> Command {
-    let openclaw_mjs = resources.join("openclaw.mjs");
+    let miracle_claw_gateway = resources.join("miracle-claw-gateway.mjs");
     let node_path = resources.join("node_modules");
 
     let mut cmd = Command::new(node_bin);
-    cmd.arg(&openclaw_mjs)
+    cmd.arg(&miracle_claw_gateway)
         .arg("gateway")
         .arg("--port")
         .arg(args.gateway_port.to_string())
@@ -297,7 +297,7 @@ fn build_node_command(args: &Args, node_bin: &Path, resources: &Path) -> Command
         .env("OPENCLAW_NO_AUTO_UPDATE", "1")
         // Run from resources dir so the bundled `node` symlink (Linux dev)
         // resolves and openclaw's relative imports (skills/, dist/) find their
-        // siblings. Absolute paths we pass (openclaw.mjs) would still work
+        // siblings. Absolute paths we pass (miracle-claw-gateway.mjs) would still work
         // without this, but openclaw resolves some paths relative to cwd.
         .current_dir(resources)
         .stdin(Stdio::null())
@@ -334,8 +334,8 @@ fn run(args: Args) -> Result<(), LauncherError> {
     let resources = locate_resources()?;
     let node_bin = locate_node_executable(&resources)?;
 
-    if !resources.join("openclaw.mjs").is_file() {
-        return Err(LauncherError::MissingBundleResource("openclaw.mjs"));
+    if !resources.join("miracle-claw-gateway.mjs").is_file() {
+        return Err(LauncherError::MissingBundleResource("miracle-claw-gateway.mjs"));
     }
     if !resources.join("package.json").is_file() {
         return Err(LauncherError::MissingBundleResource(

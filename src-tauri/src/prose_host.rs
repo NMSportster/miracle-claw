@@ -221,16 +221,16 @@ pub(crate) fn prose_run(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    // Spawn the OpenProse VM via the bundled node + openclaw.mjs.
+    // Spawn the OpenProse VM via the bundled node + miracle-claw-gateway.mjs.
     // Mirrors `mc_terminal_start`'s resource resolution: use the BUNDLED
-    // node.exe / openclaw.mjs shipped in installer resources, not the
+    // node.exe / miracle-claw-gateway.mjs shipped in installer resources, not the
     // user's PATH. Most end users don't have `openclaw` installed.
     let resources = crate::resources_dir(&app_handle);
     #[cfg(windows)]
     let node = resources.join("node.exe");
     #[cfg(not(windows))]
     let node = resources.join("node");
-    let mjs = resources.join("openclaw.mjs");
+    let mjs = resources.join("miracle-claw-gateway.mjs");
     if !node.exists() {
         return Err(plain_english_error(
             "Could not find the bundled runtime. Please reinstall MiracleClaw.",
@@ -383,7 +383,7 @@ pub(crate) fn prose_compile(
     let node = resources.join("node.exe");
     #[cfg(not(windows))]
     let node = resources.join("node");
-    let mjs = resources.join("openclaw.mjs");
+    let mjs = resources.join("miracle-claw-gateway.mjs");
 
     let output = Command::new(&node)
         .arg(&mjs)

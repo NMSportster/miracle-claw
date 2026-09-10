@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # bundle-runtime.sh — populate src-tauri/resources/ with the Node runtime +
-# openclaw gateway + MAIC plugin source so the Tauri installer is self-contained.
+# miracle-claw-gateway (formerly openclaw) + MAIC plugin source so the Tauri
+# installer is self-contained.
 #
 # Idempotent: re-running downloads nothing if the SHA256 of each vendored
 # artifact matches. Use --force to bypass the cache.
 #
 # Layout produced under src-tauri/resources/:
-#   openclaw.mjs              (openclaw launcher entry)
+#   miracle-claw-gateway.mjs  (chat gateway entry; rc56.0 Bucket 2 rename from openclaw.mjs)
 #   package.json              (openclaw metadata)
 #   node_modules/             (NOT vendored — see comment below)
 #   dist/                     (openclaw's prebuilt ESM dist/)

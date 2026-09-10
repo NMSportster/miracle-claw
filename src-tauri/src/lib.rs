@@ -128,6 +128,13 @@ pub mod modules;
 // naming contract (".prose program" → Workflow, "agent" → Specialist).
 pub mod prose_host;
 
+// rc56.0 Bucket 2 migration: rename openclaw.json → chat.json on
+// first launch. See docs/mc-module-driven-surfaces-2026-09.md §6.2
+// and src-tauri/src/migration.rs for the algorithm. Called from
+// setup() before ensure_openclaw_json_minimal() so the new file path
+// is the active one for the rest of the launch.
+pub mod migration;
+
 // Lesson 833 (NEW 2026-09-08, David): Pre-VM model alias rewriter.
 // OpenProse uses Anthropic/OpenAI model names (sonnet, opus, gpt-4*)
 // in `.prose` source files. MAIC serves a different family of model
@@ -348,7 +355,7 @@ fn resources_dir(_app: &tauri::AppHandle) -> PathBuf {
     let mut cursor = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from));
     while let Some(dir) = cursor {
         let candidate = dir.join("resources");
-        if candidate.join("openclaw.mjs").is_file() {
+        if candidate.join("miracle-claw-gateway.mjs").is_file() {
             return candidate;
         }
         cursor = dir.parent().map(PathBuf::from);
@@ -404,12 +411,20 @@ fn openclaw_extensions_dir() -> PathBuf {
     PathBuf::from("./.miracle-claw/extensions")
 }
 
-/// Returns the path to the user's openclaw.json.
+/// Returns the path to the user's chat config (rc56.0 Bucket 2 rename;
+/// was `openclaw.json` before Week 6 migration).
+///
+/// On rc55.x installs the file was named `openclaw.json`. The
+/// `migration::migrate_user_config` function called from `setup()`
+/// renames it to `chat.json` on first rc56.0 launch. This function
+/// always returns the NEW name; callers that need to read the
+/// pre-migration file should use `migration::active_config_path()`
+/// which falls back to the legacy path if migration hasn't run yet.
 fn openclaw_json_path() -> PathBuf {
     openclaw_extensions_dir()
         .parent()
-        .map(|p| p.join("openclaw.json"))
-        .unwrap_or_else(|| PathBuf::from("./openclaw.json"))
+        .map(|p| p.join("chat.json"))
+        .unwrap_or_else(|| PathBuf::from("./chat.json"))
 }
 
 /// Returns the path to the bundled MAIC plugin source (a directory containing
@@ -530,7 +545,8 @@ fn check_openclaw_json() -> io::Result<()> {
     match fs::read_to_string(&path) {
         Ok(raw) if raw.trim().is_empty() => {
             eprintln!(
-                "[miracle-claw] WARNING: openclaw.json exists but is empty; gateway will use defaults"
+                "[miracle-claw] WARNING: {} exists but is empty; gateway will use defaults",
+                path.display()
             );
             Ok(())
         }
@@ -538,7 +554,8 @@ fn check_openclaw_json() -> io::Result<()> {
             Ok(_) => Ok(()),
             Err(e) => {
                 eprintln!(
-                    "[miracle-claw] WARNING: openclaw.json is not valid JSON: {} — gateway may fail",
+                    "[miracle-claw] WARNING: {} is not valid JSON: {} — gateway may fail",
+                    path.display(),
                     e
                 );
                 Ok(())
@@ -579,7 +596,7 @@ fn ensure_openclaw_json_minimal() -> io::Result<()> {
         // with the legacy flat `gateway.auth: "none"` shape, rewrite it.
         if let Ok(true) = migrate_legacy_mc_config(&path) {
             eprintln!(
-                "[miracle-claw] migrated legacy openclaw.json (gateway.auth: \"none\" → nested object) at {}",
+                "[miracle-claw] migrated legacy {} (gateway.auth: \"none\" → nested object)",
                 path.display()
             );
         }
@@ -626,7 +643,7 @@ fn ensure_openclaw_json_minimal() -> io::Result<()> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize config: {e}")))?;
     fs::write(&path, serialized)?;
     eprintln!(
-        "[miracle-claw] wrote minimal openclaw.json to {} (first-run bootstrap)",
+        "[miracle-claw] wrote minimal config to {} (first-run bootstrap)",
         path.display()
     );
     Ok(())
@@ -3628,7 +3645,12 @@ fn maic_logout(
 
     // 5. If the v1.1.0 dashboard has spawned the OpenClaw child window,
     //    close it. (v1.0.x doesn't spawn a window; this is a no-op then.)
-    if let Some(w) = app_handle.get_webview_window("openclaw") {
+    //
+    //    rc56.0 Bucket 2 rename (Week 6): window label was "openclaw";
+    //    now "miracle-claw-chat". The lookup stays defensive — the
+    //    post-rc13 chat surface is the main webview navigated to
+    //    localhost:28789 (Lesson 491), so this is normally a no-op.
+    if let Some(w) = app_handle.get_webview_window("miracle-claw-chat") {
         let _ = w.close();
     }
 
@@ -3876,6 +3898,32 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     //
     //    We don't touch an existing user-edited config (skip if the file
     //    exists, even empty — that's the user's domain).
+    //
+    //    rc56.0 Bucket 2 migration (Lesson 897, derived from Lesson 195):
+    //    Before we ensure a minimal openclaw.json exists, check if the user
+    //    has the LEGACY openclaw.json from rc55.x and migrate it to
+    //    chat.json. This is a read-old → write-new → verify → delete-old
+    //    migration; on any failure we leave the old file in place and log
+    //    the rollback reason, so the next launch retries.
+    match migration::migrate_user_config() {
+        migration::MigrationOutcome::Migrated { from, to } => {
+            eprintln!(
+                "[miracle-claw] migrated user config {} → {} (rc56.0 Bucket 2)",
+                from.display(),
+                to.display()
+            );
+        }
+        migration::MigrationOutcome::NoOp { active } => {
+            eprintln!("[miracle-claw] user config: no migration needed ({})", active.display());
+        }
+        migration::MigrationOutcome::RolledBack { reason, from } => {
+            eprintln!(
+                "[miracle-claw] WARNING: user-config migration rolled back; will retry next launch. reason='{}' legacy={}",
+                reason,
+                from.display()
+            );
+        }
+    }
     ensure_openclaw_json_minimal()?;
 
     // 3. Wire MAIC as the agent provider (Lesson 431).
@@ -3892,11 +3940,11 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         maic_bootstrap.provider_configured, maic_bootstrap.endpoint, maic_bootstrap.api_key_source
     );
 
-    // 4. Sanity-check openclaw.json (read-only — do NOT mutate the user's
+    // 4. Sanity-check the user config (read-only — do NOT mutate the user's
     //    config; openclaw 2026.7.1+ auto-discovers plugins from <stateDir>/extensions).
     match check_openclaw_json() {
-        Ok(()) => eprintln!("[miracle-claw] openclaw.json: ok"),
-        Err(e) => eprintln!("[miracle-claw] openclaw.json read error: {}", e),
+        Ok(()) => eprintln!("[miracle-claw] {}: ok", openclaw_json_path().display()),
+        Err(e) => eprintln!("[miracle-claw] {} read error: {}", openclaw_json_path().display(), e),
     }
 
     // 4a. Lesson 713 (2026-08-28, David): restore BYO provider keys
@@ -4407,12 +4455,12 @@ fn log_to_file(msg: &str) {
     }
 }
 
-/// v1.0.9 (Lesson 462): kill any orphaned openclaw.mjs / node.exe holding
+/// v1.0.9 (Lesson 462): kill any orphaned miracle-claw-gateway.mjs / node.exe holding
 /// port 28789 BEFORE we try to spawn a fresh launcher.
 ///
 /// Why this exists: the launcher sidecar pattern is `launcher → node
-/// openclaw.mjs → launcher exits`. The launcher wrapper exits with code 0
-/// on shutdown, but the openclaw.mjs child process keeps running. On
+/// miracle-claw-gateway.mjs → launcher exits`. The launcher wrapper exits with code 0
+/// on shutdown, but the miracle-claw-gateway.mjs child process keeps running. On
 /// Windows, when MC restarts or tries to respawn the launcher, the new
 /// child process sees port 28789 bound by the orphan and bails with
 /// "port already in use" / "gateway already running". The new launcher
@@ -4492,7 +4540,7 @@ fn kill_orphan_holding_port(port: u16) -> Result<(), String> {
         );
 
         for pid in &orphan_pids {
-            // /F = force, /T = also kill child processes (the node openclaw.mjs
+            // /F = force, /T = also kill child processes (the node miracle-claw-gateway.mjs
             // child if the launcher wrapper is what's still bound — unlikely
             // on Windows but defensive).
             let kill = Command::new("taskkill")
@@ -6554,7 +6602,7 @@ fn resolve_shell_cmd(shell: &str) -> Result<(&'static str, Vec<&'static str>), S
             "pwsh" => Ok(("pwsh.exe", vec!["-NoLogo"])),
             "wsl" => Ok(("wsl.exe", vec!["--distribution", "Ubuntu", "bash"])),
             // Lesson 220 + 223: spawn the OpenClaw TUI. The bundled
-            // resources invoke `node <resources>/openclaw.mjs tui --local`
+            // resources invoke `node <resources>/miracle-claw-gateway.mjs tui --local`
             // (the actual wiring is in mc_terminal_start). With `--local`
             // the TUI runs an embedded agent runtime instead of trying to
             // reach a remote Gateway at ws://127.0.0.1:18789, which is
@@ -6757,7 +6805,7 @@ fn mc_terminal_start(
     let (cmd, args) = resolve_shell_cmd(&shell)?;
 
     // Lesson 221: for `mc-terminal`, use the BUNDLED node.exe +
-    // openclaw.mjs shipped in the installer resources, not the
+    // miracle-claw-gateway.mjs shipped in the installer resources, not the
     // user's system PATH. Most end users don't have `openclaw`
     // installed globally, and we ship a self-contained CLI here
     // so the Terminal tile Just Works. resolve_shell_cmd returns
@@ -6769,7 +6817,7 @@ fn mc_terminal_start(
         let node = resources.join("node.exe");
         #[cfg(not(windows))]
         let node = resources.join("node");
-        let mjs = resources.join("openclaw.mjs");
+        let mjs = resources.join("miracle-claw-gateway.mjs");
         if !node.exists() {
             return Err(format!(
                 "bundled node not found at {} (expected from installer resources)",
@@ -6778,7 +6826,7 @@ fn mc_terminal_start(
         }
         if !mjs.exists() {
             return Err(format!(
-                "bundled openclaw.mjs not found at {} (reinstall MiracleClaw)",
+                "bundled miracle-claw-gateway.mjs not found at {} (reinstall MiracleClaw)",
                 mjs.display()
             ));
         }
@@ -8482,7 +8530,7 @@ mod tests {
         let raw = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return serde_json::json!({}),
-            Err(e) => panic!("read openclaw.json: {e}"),
+            Err(e) => panic!("read chat config: {e}"),
         };
         serde_json::from_str(&raw).expect("parse openclaw.json")
     }
@@ -9629,9 +9677,9 @@ mod tests {
     fn fresh_openclaw_with_model(primary: Option<&str>, fallbacks: Option<Vec<&str>>) -> EnvGuard {
         let g = fresh_env();
         let path = if cfg!(windows) {
-            g._temp.path().join("MiracleClaw").join("openclaw.json")
+            g._temp.path().join("MiracleClaw").join("chat.json")
         } else {
-            g._temp.path().join(".miracle-claw").join("openclaw.json")
+            g._temp.path().join(".miracle-claw").join("chat.json")
         };
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut cfg = serde_json::json!({
@@ -9669,9 +9717,9 @@ mod tests {
     ) -> EnvGuard {
         let g = fresh_env();
         let path = if cfg!(windows) {
-            g._temp.path().join("MiracleClaw").join("openclaw.json")
+            g._temp.path().join("MiracleClaw").join("chat.json")
         } else {
-            g._temp.path().join(".miracle-claw").join("openclaw.json")
+            g._temp.path().join(".miracle-claw").join("chat.json")
         };
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut cfg = serde_json::json!({
@@ -9912,9 +9960,9 @@ mod tests {
     ) -> EnvGuard {
         let g = fresh_env();
         let path = if cfg!(windows) {
-            g._temp.path().join("MiracleClaw").join("openclaw.json")
+            g._temp.path().join("MiracleClaw").join("chat.json")
         } else {
-            g._temp.path().join(".miracle-claw").join("openclaw.json")
+            g._temp.path().join(".miracle-claw").join("chat.json")
         };
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let cfg = serde_json::json!({
@@ -10113,7 +10161,7 @@ mod tests {
         // rc18 upgrade (which only had `milagro-dev` seeded) gets the full
         // 17-id surface on the next ensure_maic_provider_config() run.
         //
-        // We simulate the rc18 state by populating openclaw.json with a
+        // We simulate the rc18 state by populating chat.json with a
         // complete (literal-key + baseUrl) provider entry whose models[]
         // has only the original `milagro-dev` entry — then re-run
         // ensure_maic_provider_config() and check the merge landed.
@@ -10121,9 +10169,9 @@ mod tests {
         let _env = lock_env();
         let g = fresh_env();
         let path = if cfg!(windows) {
-            g._temp.path().join("MiracleClaw").join("openclaw.json")
+            g._temp.path().join("MiracleClaw").join("chat.json")
         } else {
-            g._temp.path().join(".miracle-claw").join("openclaw.json")
+            g._temp.path().join(".miracle-claw").join("chat.json")
         };
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let cfg = serde_json::json!({
@@ -10678,7 +10726,7 @@ mod tests {
             assert!(resolve_shell_cmd("zsh").is_ok());
             let mc = resolve_shell_cmd("mc-terminal").expect("mc-terminal must resolve on *nix too");
             // Lesson 221 + 223: sentinel marker; mc_terminal_start
-            // expands it to bundled openclaw.mjs. The full tuple is
+            // expands it to bundled miracle-claw-gateway.mjs. The full tuple is
             // validated by `mc_terminal_maps_to_openclaw_tui_local`.
             assert_eq!(mc.0, "__MC_TERMINAL__");
             assert_eq!(mc.1, vec!["tui", "--local"]);
@@ -10968,8 +11016,8 @@ mod tests {
     // =====================================================================
 
     fn read_openclaw_json() -> serde_json::Value {
-        let raw = std::fs::read_to_string(openclaw_json_path()).expect("openclaw.json must exist after bootstrap");
-        serde_json::from_str(&raw).expect("parse openclaw.json")
+        let raw = std::fs::read_to_string(openclaw_json_path()).expect("chat config must exist after bootstrap");
+        serde_json::from_str(&raw).expect("parse chat config")
     }
 
     #[test]

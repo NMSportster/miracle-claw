@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "chat-capability",
+  "description": "Miracle Claw chat window — hosts the bundled chat gateway at localhost:28789. Loaded as a separate webview so the dashboard (main window) is not navigated away when the user opens chat. The launcher sidecar is already spawned by the main window; this window just consumes the running gateway. (rc56.0 Bucket 2 rename: was 'openclaw.json' / 'openclaw-capability' / 'openclaw-chat' before Week 6 migration.)",
+  "windows": ["miracle-claw-chat"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:webview:default",
+    "core:event:default"
+  ]
+}

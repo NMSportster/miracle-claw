@@ -35,7 +35,7 @@
     ],
     "resources": [
       "resources/node.exe",
-      "resources/openclaw.mjs",
+      "resources/miracle-claw-gateway.mjs",
       "resources/package.json",
       "resources/node_modules",
       "resources/dist",
