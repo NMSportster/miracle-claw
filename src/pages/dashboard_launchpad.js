@@ -759,7 +759,7 @@ async function mount(root, ctx) {
   root.addEventListener("click", _onClick);
 }
 
-function _onClick(ev) {
+async function _onClick(ev) {
   const target = ev.target.closest("[data-action]");
   if (!target) return;
   const action = target.dataset.action;
@@ -778,10 +778,22 @@ function _onClick(ev) {
       navigate("pricing");
       break;
     case "launch-chat":
-      // rc55.25: chat lives inside the main dashboard view. A dedicated
-      // "chat" page is on the Week 3-4 plan; for now route to dashboard
-      // which renders the chat tab.
-      navigate("dashboard");
+      // rc56.0: chat lives in the OpenClaw gateway, opened as a separate
+      // native window via openclaw_open_window. (The Week 3-4 plan
+      // had a dedicated in-app "chat" page, but we kept the gateway
+      // window approach instead so the runtime and UI share one
+      // transcript store.) Start the gateway first (idempotent if
+      // already running) and then open the window.
+      try {
+        await invoke("start_gateway_after_login");
+      } catch (err) {
+        console.warn("[launchpad] start_gateway_after_login failed (gateway may already be up):", err);
+      }
+      try {
+        await invoke("openclaw_open_window");
+      } catch (err) {
+        toast(`Could not open chat window: ${String(err && err.message || err)}`, { kind: "error" });
+      }
       break;
     case "launch-terminal":
       navigate("terminal");

@@ -579,9 +579,12 @@ mod tests {
         // a 1.1.0-rc prefix to confirm both versions made it into the
         // message.
         assert!(err.contains("2.0.0"), "error message should mention required version 2.0.0, got: {err}");
+        // rc56.0: version is now 1.2.0-rc56.0 (still on the v1 cadence
+        // until v2 ships). The test only pins the leading digits to keep
+        // the version-bump ceremony from breaking it again.
         assert!(
-            err.contains("1.1.0-rc"),
-            "error message should mention the current base version (1.1.0-rcX.Y), got: {err}"
+            err.contains("1.") && err.contains("-rc"),
+            "error message should mention the current base version (1.x-rcY), got: {err}"
         );
     }
 

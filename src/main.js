@@ -23,10 +23,17 @@ import { register, mount as mountPage, setAuthState } from "./page_registry.js";
 import { initModuleRuntime, isModuleInstalled, invokeModule, reapplyAllUiHooks } from "./modules-runtime.js";
 import { loginPage } from "./pages/login.js";
 import { dashboardPage } from "./pages/dashboard.js";
-// rc56.0: launchpad variant of the dashboard, registered as a
-// separate page id so we can swap once it's stable without touching
-// the existing dashboard.js surface.
+// rc56.0: launchpad replaces the old dashboard at the "dashboard" route.
+// The old page is still importable for shared helpers (wireAttachZone,
+// iconFor, formatBytes) used by terminal.js and other pages — but the
+// post-login landing now mounts the launchpad. Back buttons in
+// settings/terminal/files/etc. that say onBackToDashboard -> navigate("dashboard")
+// all land on the launchpad, which is the new home.
 import { dashboardLaunchpadPage } from "./pages/dashboard_launchpad.js";
+// Keep the import for shared helpers (wireAttachZone, iconFor, formatBytes).
+// The page itself (dashboardPage) is no longer registered as a route —
+// its UI was the old tile catalog that the launchpad supersedes.
+import "./pages/dashboard.js";
 import { settingsPage } from "./pages/settings.js";
 import { terminalPage } from "./pages/terminal.js";
 import { filesPage } from "./pages/files.js";
@@ -80,8 +87,10 @@ const root = document.getElementById("root");
 // New pages just call register(...) here. main.js doesn't change again
 // until we add a router with deep links.
 
+// rc56.0: launchpad is the new home. Keep "dashboard-launchpad" registered
+// as an alias so any deep links / hash routes targeting it still resolve.
 register("login", loginPage);
-register("dashboard", dashboardPage);
+register("dashboard", dashboardLaunchpadPage);
 register("dashboard-launchpad", dashboardLaunchpadPage);
 register("settings", settingsPage);
 register("terminal", terminalPage);
@@ -128,7 +137,14 @@ installNavigation({
   mount: mountPage,
   builders: new Map([
     [
+      // rc56.0: launchpad is the new home. The page's own back-to-home
+      // handler is a no-op (it's already home), but the ctx still
+      // exposes onNeedsLogin so an expired JWT bounces correctly.
       "dashboard",
+      () => pageCtx(),
+    ],
+    [
+      "dashboard-launchpad",
       () => pageCtx(),
     ],
     [
