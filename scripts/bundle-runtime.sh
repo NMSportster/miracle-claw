@@ -187,9 +187,12 @@ mv "$TMP_OC"/package/* "$RESOURCES_DIR"/
 rmdir "$TMP_OC/package"
 rmdir "$TMP_OC"
 # Trim noise the launcher doesn't need (build stamps, lockfiles, etc.).
+# pnpm-workspace.yaml is REQUIRED to be kept (Lesson 952: pnpm 11 walks up the
+# tree to find a workspace; if we delete it, pnpm finds the Tauri app's
+# pnpm-lock.yaml at the project root and silently 'Already up to date'-skips
+# the install, leaving node_modules empty).
 rm -f "$RESOURCES_DIR/.buildstamp" \
-      "$RESOURCES_DIR/.runtime-postbuildstamp" \
-      "$RESOURCES_DIR/pnpm-workspace.yaml" 2>/dev/null || true
+      "$RESOURCES_DIR/.runtime-postbuildstamp" 2>/dev/null || true
 
 # 4a.5. Run a production install so openclaw's ESM imports resolve.
 # openclaw's lockfile is pnpm-based (npm-shrinkwrap + pnpm-lock), and its
