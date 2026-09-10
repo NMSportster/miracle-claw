@@ -44,6 +44,95 @@ function escapeHtml(s) {
   })[c]);
 }
 
+// Week 7.3 (2026-09-10, David): friendly error mapping.
+//
+// The Rust side now surfaces MAIC's actual response body in the
+// error string (e.g. `HTTP 401: {"detail":"Session expired or revoked"}`).
+// This helper turns that into a short user-facing headline plus
+// optional action. The full technical detail stays in the
+// `result.dataset.rawError` so power users can copy-paste it
+// into a bug report; the headline is what they read first.
+//
+// Returns { headline, detail, action } where action is a
+// `{ label, callback }` or null.
+function mapMclawError(err) {
+  const raw = String(err?.message || err || "");
+
+  // Parse the Rust-side `HTTP <code>: <body>` shape.
+  const m = raw.match(/^HTTP\s+(\d{3}):\s*(.*)$/s);
+  if (!m) {
+    // Non-HTTP error (network, timeout, etc.). Show as-is.
+    return { headline: raw || "Something went wrong.", detail: null, action: null };
+  }
+  const status = parseInt(m[1], 10);
+  const body = m[2].trim();
+
+  // Try to extract the MAIC `detail` field for the detail line.
+  let detailText = body;
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed && typeof parsed.detail === "string") {
+      detailText = parsed.detail;
+    }
+  } catch {
+    // body wasn't JSON; use it as-is.
+  }
+
+  switch (status) {
+    case 401:
+      return {
+        headline: "Your session expired. Please sign in again.",
+        detail: detailText,
+        action: { label: "Sign in", callback: () => navigate("login") },
+      };
+    case 403:
+      return {
+        headline: "You don't have access to this module.",
+        detail: detailText,
+        action: null,
+      };
+    case 404:
+      return {
+        headline: "This module isn't installed. Try installing it again.",
+        detail: detailText,
+        action: { label: "Install", callback: null /* caller fills in */ },
+      };
+    case 409:
+      return {
+        headline: "This module is already installed.",
+        detail: detailText,
+        action: null,
+      };
+    case 422:
+      return {
+        headline: "Invalid input. Check the form fields and try again.",
+        detail: detailText,
+        action: null,
+      };
+    case 429:
+      return {
+        headline: "Too many requests. Wait a moment and try again.",
+        detail: detailText,
+        action: null,
+      };
+    case 502:
+    case 503:
+    case 504:
+      return {
+        headline: "MAIC is temporarily unavailable. Try again in a moment.",
+        detail: detailText,
+        action: null,
+      };
+    default:
+      return {
+        headline: `MAIC returned ${status}.`,
+        detail: detailText,
+        action: null,
+      };
+  }
+}
+
+
 function formatTierLabel(tier) {
   switch (tier) {
     case "free": return "Free";
@@ -76,6 +165,8 @@ function firstName(displayName) {
 
 let _abortController = null;
 let _openModal = null;
+let _currentRoot = null;
+let _currentCtx = null;
 
 function _closeModal() {
   if (_openModal) {
@@ -88,6 +179,8 @@ function unmount() {
   if (_abortController) _abortController.abort();
   _abortController = null;
   _closeModal();
+  _currentRoot = null;
+  _currentCtx = null;
 }
 
 // --- section renderers ---------------------------------------------------
@@ -200,6 +293,90 @@ function renderYourTools(installed) {
   `;
 }
 
+// Week 7.1 (2026-09-10, David): empty state for new users.
+//
+// When the user has no installed modules, the normal "Your Tools" grid
+// is just one "+ Add a tool" tile — not very welcoming. Replace it
+// with a curated set of 3-4 starter modules from the marketplace so
+// the first-run user has a guided path to "I ran a tool" in 30s.
+//
+// The curated list (STARTER_MODULE_IDS) is ordered by usefulness for
+// the typical first-run user: data analysis (universally applicable),
+// marketing copy (saves time for small businesses like David's auto
+// repair shop), brand assets (visible output), web research
+// (fetch_url is the single most demoable module). Order matters: this
+// is the order the user sees them, and it's also the order we try to
+// fall back from if a starter is missing.
+const STARTER_MODULE_IDS = [
+  "data-analyzer",
+  "marketing-suite",
+  "brand-asset-kit",
+  "firecrawl",
+];
+
+// Render the empty state. `marketplaceModules` is the (possibly
+// empty) list returned by mc_list_marketplace. We pick starters that
+// are present in the marketplace, then top up with whatever's at the
+// top of the marketplace list, until we have 3-4 cards. Worst case
+// (marketplace is unreachable), we render 0 starter tiles plus the
+// persistent "+ Browse the marketplace" tile so the user always has a
+// way forward.
+function renderStarters(marketplaceModules) {
+  const byId = new Map(
+    (marketplaceModules || []).map((m) => [m.module_id || m.id, m])
+  );
+
+  // 1. Curated starters, in order, that exist in the marketplace.
+  const curated = STARTER_MODULE_IDS
+    .map((id) => byId.get(id))
+    .filter(Boolean);
+
+  // 2. Top up with the first non-curated marketplace entries, up to
+  //    a total of 4 starters.
+  const curatedIds = new Set(curated.map((m) => m.module_id || m.id));
+  const topups = (marketplaceModules || [])
+    .filter((m) => !curatedIds.has(m.module_id || m.id));
+  const starters = [...curated, ...topups].slice(0, 4);
+
+  const tiles = starters.map((m) => {
+    const id = m.module_id || m.id;
+    const emoji = m.icon || "🧩";
+    const name = m.name || m.title || id;
+    const desc = m.description || m.summary || "";
+    return `
+      <div class="mc-tool-tile mc-starter-tile" data-module-id="${escapeHtml(id)}">
+        <div class="mc-tool-emoji">${emoji}</div>
+        <div class="mc-tool-name">${escapeHtml(name)}</div>
+        <div class="mc-tool-desc">${escapeHtml(desc)}</div>
+        <button class="mc-tool-run" data-action="install-starter">Install</button>
+      </div>
+    `;
+  }).join("");
+
+  const browseAll = `
+    <button class="mc-tool-tile mc-tool-add" data-action="add-tool">
+      <div class="mc-tool-emoji">＋</div>
+      <div class="mc-tool-name">Browse all</div>
+      <div class="mc-tool-desc">See the full marketplace</div>
+    </button>
+  `;
+
+  return `
+    <section class="mc-tools">
+      <div class="mc-tools-header">
+        <h2>Get started in 30 seconds</h2>
+        <span class="mc-tools-count">${tiles ? "" : ""}</span>
+        <button class="mc-link" data-action="add-tool">+ Browse the marketplace</button>
+      </div>
+      <p class="mc-tools-blurb">Pick one of these popular tools. You can change it any time.</p>
+      <div class="mc-tools-grid">
+        ${tiles}
+        ${browseAll}
+      </div>
+    </section>
+  `;
+}
+
 function renderRecent(runs) {
   const items = (runs || []).slice(0, 3);
   if (items.length === 0) {
@@ -276,6 +453,23 @@ function openModuleModal(module) {
   const form = modal.querySelector("form.mc-modal-form");
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
+
+    // Week 7.2 (2026-09-10, David): pre-submit validation.
+    //
+    // Before we round-trip to MAIC, run the browser's native
+    // constraint check (HTML5 `required`, `min`, `max`,
+    // `minlength`, `maxlength`, `pattern`) so the user sees the
+    // error inline next to the bad field rather than as a
+    // 30-second "MAIC error: ..." toast. `reportValidity()` shows
+    // the bubble, focuses the first invalid field, and returns
+    // false on failure.
+    if (!form.reportValidity()) return;
+
+    // After HTML5 passes, check for type-coercion failures that
+    // HTML5 doesn't catch: an empty number field that wasn't
+    // `required` (e.g. optional with min=0) where the user typed
+    // something non-numeric. We can't do this until after the
+    // form's input values are read.
     const fd = new FormData(form);
     const inputs = {};
     for (const [k, v] of fd.entries()) {
@@ -303,6 +497,32 @@ function openModuleModal(module) {
         inputs[f.name] = !!form.querySelector(`input[name="${cssEscape(f.name)}"]:checked`);
       }
     }
+
+    // Re-check for number fields whose empty string failed the
+    // HTML5 check (because they weren't required) but would still
+    // produce a NaN when coerced. Treat this as "missing optional
+    // number" — the apply-defaults step above already filled in
+    // defaults, so any number field that survived to here is
+    // either valid (Number.isFinite) or genuinely broken. We
+    // surface the latter as a toast.
+    const broken = [];
+    for (const f of fields) {
+      if ((f.type === "number" || f.type === "integer") && inputs[f.name] !== undefined) {
+        if (typeof inputs[f.name] === "string" && inputs[f.name].trim() === "") {
+          // Empty string on a number field after HTML5 passed;
+          // strip the bad value so MAIC gets a clean absence.
+          delete inputs[f.name];
+        } else if (typeof inputs[f.name] === "number" && !Number.isFinite(inputs[f.name])) {
+          broken.push(f);
+        }
+      }
+    }
+    if (broken.length > 0) {
+      const result = modal.querySelector(".mc-modal-result");
+      result.hidden = false;
+      result.textContent = `Invalid number: ${broken.map((f) => f.label).join(", ")}. Use a numeric value (e.g. 42, 3.14).`;
+      return;
+    }
     const result = modal.querySelector(".mc-modal-result");
     result.hidden = false;
     result.textContent = "Running…";
@@ -324,7 +544,34 @@ function openModuleModal(module) {
       result.textContent = stripped || out || "(no output)";
       result.dataset.rawOutput = out;
     } catch (err) {
-      result.textContent = `Error: ${err?.message || err}`;
+      // Week 7.3: friendly error mapping. Show a short headline
+      // with the raw technical detail collapsed below.
+      const result = modal.querySelector(".mc-modal-result");
+      const mapped = mapMclawError(err);
+      result.hidden = false;
+      result.classList.add("mc-modal-result-error");
+      result.textContent = mapped.headline;
+      result.dataset.rawError = String(err?.message || err);
+      // Render the detail in a `<details>` block if present.
+      if (mapped.detail && mapped.detail !== mapped.headline) {
+        const details = document.createElement("details");
+        details.className = "mc-modal-result-detail";
+        const summary = document.createElement("summary");
+        summary.textContent = "Show details";
+        details.appendChild(summary);
+        const pre = document.createElement("pre");
+        pre.textContent = mapped.detail;
+        details.appendChild(pre);
+        result.appendChild(details);
+      }
+      // Wire the action button if present.
+      if (mapped.action && mapped.action.callback) {
+        const btn = document.createElement("button");
+        btn.className = "mc-link mc-modal-action";
+        btn.textContent = mapped.action.label;
+        btn.addEventListener("click", mapped.action.callback);
+        result.appendChild(btn);
+      }
     }
   });
 }
@@ -441,6 +688,8 @@ function cssEscape(s) {
 async function mount(root, ctx) {
   _abortController = new AbortController();
   const signal = _abortController.signal;
+  _currentRoot = root;
+  _currentCtx = ctx;
 
   // Initial shell — render before we know the data, so the user sees
   // something immediately.
@@ -451,11 +700,20 @@ async function mount(root, ctx) {
   `;
 
   // Fetch in parallel. Use settled so one failure doesn't break the rest.
-  const [tierRes, quotaRes, installedRes, userRes] = await Promise.allSettled([
+  //
+  // Week 7.1: when installed is empty we ALSO fetch a slice of the
+  // marketplace (no category filter) so the empty state can show
+  // curated starters. This is one extra round-trip on the first
+  // launchpad visit only; subsequent visits with installed modules
+  // skip the marketplace fetch entirely.
+  const marketplacePromise = invoke("mc_list_marketplace", { category: null })
+    .catch(() => ({ modules: [] }));
+  const [tierRes, quotaRes, installedRes, userRes, marketplaceRes] = await Promise.allSettled([
     invoke("mc_refresh_tier").catch(() => null),
     invoke("mc_get_quota").catch(() => null),
     invoke("mc_list_installed_modules").catch(() => ({ modules: [], grouped_by_category: {} })),
     invoke("mc_get_user_info").catch(() => null),
+    marketplacePromise,
   ]);
 
   if (signal.aborted) return;
@@ -465,12 +723,24 @@ async function mount(root, ctx) {
   const installed = installedRes.status === "fulfilled"
     ? (installedRes.value?.modules || [])
     : [];
+  const marketplace = marketplaceRes.status === "fulfilled"
+    ? (Array.isArray(marketplaceRes.value) ? marketplaceRes.value : (marketplaceRes.value?.modules || []))
+    : [];
   const user = userRes.status === "fulfilled" ? userRes.value : null;
   const displayName = user?.name || user?.email || ctx?.user?.name || "";
 
   // Recent invocations: not wired in Week 2 yet (needs module_runs table
   // populated by mclaw CLI in Week 5). Show empty state for now.
   const recent = [];
+
+  // Week 7.1: choose between the normal "Your Tools" grid and the
+  // curated empty state based on whether the user has any installed
+  // modules. The empty state also depends on the marketplace list, so
+  // it's a function of BOTH the installed count and what we got back
+  // from mc_list_marketplace.
+  const toolsSection = installed.length === 0
+    ? renderStarters(marketplace)
+    : renderYourTools(installed);
 
   root.innerHTML = `
     <div class="mc-launchpad">
@@ -479,7 +749,7 @@ async function mount(root, ctx) {
       <main class="mc-container">
         ${renderGreeting(displayName)}
         ${renderLaunchTiles()}
-        ${renderYourTools(installed)}
+        ${toolsSection}
         ${renderRecent(recent)}
       </main>
     </div>
@@ -537,6 +807,43 @@ function _onClick(ev) {
       }).catch((err) => toast(`Failed to load module: ${err}`));
       break;
     }
+    case "install-starter": {
+      // Week 7.1: empty-state "Install" button. Same Rust command as
+      // the marketplace's install button, but instead of navigating
+      // away we re-mount the page so the empty state is replaced
+      // with the normal "Your Tools" grid (and the just-installed
+      // module shows up).
+      const card = target.closest("[data-module-id]");
+      if (!card) return;
+      const moduleId = card.dataset.moduleId;
+      const button = card.querySelector("button");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Installing…";
+      }
+      invoke("mc_install_module", { moduleId })
+        .then(() => {
+          toast(`Installed ${moduleId}.`);
+          // Re-mount the page. mount() handles its own abort via
+          // _abortController, so we can safely call it again — the
+          // previous AbortController is replaced.
+          if (_currentRoot && _currentCtx) {
+            // Clear the existing click listener before re-rendering.
+            _currentRoot.removeEventListener("click", _onClick);
+            // Re-mount (sets a fresh AbortController, re-fetches data,
+            // re-renders the shell).
+            mount(_currentRoot, _currentCtx);
+          }
+        })
+        .catch((err) => {
+          toast(`Install failed: ${err}`);
+          if (button) {
+            button.disabled = false;
+            button.textContent = "Install";
+          }
+        });
+      break;
+    }
     default:
       break;
   }
@@ -547,4 +854,10 @@ export const dashboardLaunchpadPage = { mount, unmount, requiresAuth: true };
 // Test-only namespace. Mirrors the workflow page pattern (Lesson 833):
 // expose pure helpers so node:test can drive them without needing a
 // DOM. Not part of the public page surface.
-export const _formSchemaInternals = { formFieldsFromSchema, propJsonSchemaTypeToUiType, renderField };
+export const _formSchemaInternals = {
+  formFieldsFromSchema,
+  propJsonSchemaTypeToUiType,
+  renderField,
+  // Week 7.3: error mapper.
+  mapMclawError,
+};

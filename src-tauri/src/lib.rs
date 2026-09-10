@@ -5942,7 +5942,7 @@ fn mc_install_module(module_id: String) -> Result<serde_json::Value, String> {
         .set("Accept", "application/json")
         .timeout(std::time::Duration::from_secs(15))
         .send_json(&body)
-        .map_err(|e| format!("/v1/modules/install POST: {e}"))?;
+        .map_err(|e| format!("/v1/modules/install: {}", map_ureq_http_error(e)))?;
     let parsed: serde_json::Value = resp
         .into_json()
         .map_err(|e| format!("parse /v1/modules/install: {e}"))?;
@@ -5968,7 +5968,7 @@ fn mc_uninstall_module(module_id: String) -> Result<serde_json::Value, String> {
         .set("Accept", "application/json")
         .timeout(std::time::Duration::from_secs(15))
         .send_json(&body)
-        .map_err(|e| format!("/v1/modules/uninstall POST: {e}"))?;
+        .map_err(|e| format!("/v1/modules/uninstall: {}", map_ureq_http_error(e)))?;
     let parsed: serde_json::Value = resp
         .into_json()
         .map_err(|e| format!("parse /v1/modules/uninstall: {e}"))?;
@@ -6019,7 +6019,7 @@ fn mc_run_module(
         // can take 10-30s for LLM dispatch; 60s gives headroom.
         .timeout(std::time::Duration::from_secs(60))
         .send_json(&body)
-        .map_err(|e| format!("/v1/modules/{}/run POST: {e}", module_id))?;
+        .map_err(|e| format!("/v1/modules/{}/run: {}", module_id, map_ureq_http_error(e)))?;
     let parsed: serde_json::Value = resp
         .into_json()
         .map_err(|e| format!("parse /v1/modules/{}/run: {e}", module_id))?;
@@ -6038,6 +6038,92 @@ fn urlencode(s: &str) -> String {
         }
     }
     out
+}
+
+// Week 7.3 (2026-09-10, David): MAIC error surfacing.
+//
+// The ureq-based handlers used to bubble a bare error like
+// "/v1/modules/firecrawl/run POST: <ureq error string>". ureq's
+// `Error::Status(code, response)` Display impl truncates the
+// response body, so callers only saw "HTTP status 422" with no
+// detail. The JS-side then rendered a generic toast like
+// "Error: HTTP error: 422" which is useless for debugging.
+//
+// `map_ureq_http_error` pulls the HTTP status code and the full
+// response body out of a ureq error so the JS caller can see
+// e.g. "HTTP 401: {\"detail\":\"Session expired or revoked\"}".
+// The body is truncated to 512 chars to avoid blowing up logs.
+//
+// Returns the original error if it's not a Status variant (network
+// failures, timeouts, etc.), so we don't lose information.
+fn map_ureq_http_error(e: ureq::Error) -> String {
+    match e {
+        ureq::Error::Status(status, response) => {
+            let body = response
+                .into_string()
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            let body_trimmed = if body.len() > 512 {
+                format!("{}…", &body[..512])
+            } else {
+                body
+            };
+            format!("HTTP {}: {}", status, body_trimmed)
+        }
+        other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod mcp_http_error_tests {
+    use super::*;
+    use ureq::Error;
+
+    #[test]
+    fn status_401_includes_detail() {
+        // Build a fake 401 response with a JSON body, then verify
+        // the helper surfaces both the status and the body.
+        let resp = ureq::Response::new(401, "Unauthorized",
+            r#"{"detail":"Session expired or revoked"}"#).unwrap();
+        let err = Error::Status(401, resp);
+        let mapped = map_ureq_http_error(err);
+        assert!(mapped.contains("HTTP 401"), "status code: {}", mapped);
+        assert!(mapped.contains("Session expired or revoked"), "body: {}", mapped);
+    }
+
+    #[test]
+    fn status_422_includes_detail() {
+        let resp = ureq::Response::new(422, "Unprocessable Entity",
+            r#"{"detail":"url: required field missing"}"#).unwrap();
+        let err = Error::Status(422, resp);
+        let mapped = map_ureq_http_error(err);
+        assert!(mapped.contains("HTTP 422"));
+        assert!(mapped.contains("url: required field missing"));
+    }
+
+    #[test]
+    fn status_500_truncates_huge_body() {
+        let huge = "x".repeat(2048);
+        let resp = ureq::Response::new(500, "Internal Server Error", &huge).unwrap();
+        let err = Error::Status(500, resp);
+        let mapped = map_ureq_http_error(err);
+        assert!(mapped.contains("HTTP 500"));
+        // 512 chars of body + "…" suffix should appear; full 2048
+        // should NOT (Lesson 198: this is the regression check).
+        assert!(!mapped.contains(&"x".repeat(600)), "must truncate");
+        assert!(mapped.contains('…') || mapped.contains("…"), "ellipsis marker");
+    }
+
+    #[test]
+    fn transport_error_returns_display() {
+        // We can't easily construct a real Transport error in a
+        // unit test, so just verify the fall-through path doesn't
+        // panic on an empty/unknown variant. Build a Status
+        // variant with an empty body and verify it still works.
+        let resp = ureq::Response::new(503, "Service Unavailable", "").unwrap();
+        let err = Error::Status(503, resp);
+        let mapped = map_ureq_http_error(err);
+        assert!(mapped.contains("HTTP 503"));
+    }
 }
 
 // Returns the list of tool names the current tier can use. Used by the

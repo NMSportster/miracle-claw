@@ -6233,6 +6233,19 @@ kbd {
 
 /* recent ------------------------------------------------------------- */
 
+.mc-tools-blurb {
+  margin: 0 0 12px 0;
+  font-size: 13px;
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+
+.mc-starter-tile {
+  /* Subtle "this is a suggestion, not a tool yet" affordance. */
+  border-style: dashed;
+  background: linear-gradient(180deg, var(--bg-card) 0%, transparent 100%);
+}
+
 .mc-recent h2 {
   margin: 0 0 12px 0;
   font-size: 18px;
@@ -6376,6 +6389,54 @@ kbd {
   font-size: 13px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   white-space: pre-wrap;
+}
+
+/* Week 7.3: friendly error mapping. The result box gets a
+   red border when it contains an error headline (set by JS via
+   class), and the details/action children are inline rather
+   than pre-formatted. */
+.mc-modal-result-error {
+  border-color: var(--danger, #c0392b);
+  background: var(--bg-error, rgba(192, 57, 43, 0.06));
+  white-space: normal; /* allow headline + details to flow */
+}
+
+.mc-modal-result-detail {
+  margin-top: 8px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+}
+
+.mc-modal-result-detail summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  user-select: none;
+}
+
+.mc-modal-result-detail pre {
+  margin: 4px 0 0 0;
+  padding: 8px;
+  background: var(--bg-code, rgba(0, 0, 0, 0.04));
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mc-modal-action {
+  display: inline-block;
+  margin-top: 8px;
+  margin-right: 8px;
+  background: var(--accent, #0e7c66);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mc-modal-action:hover {
+  filter: brightness(1.1);
 }
 
 .mc-modal-footer {
