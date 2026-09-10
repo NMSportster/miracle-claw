@@ -16,7 +16,14 @@ use clap::Args;
 
 use crate::client::{self, AskJsonOut, ChatResp};
 
+/// One-shot ask: send a prompt, print the response, exit.
 #[derive(Args, Debug)]
+#[command(about = "Send a prompt to a model and print the response", long_about = "Send a prompt to a model and print the response, then exit.\n\n\
+EXAMPLES:\n  \
+mclaw ask \"What's the weather in Albuquerque?\"\n  \
+mclaw ask \"summarize this URL\" --input url=https://example.com\n  \
+mclaw ask --model milagro-dev \"write a haiku about Rust\"\n  \
+mclaw ask --no-tools \"explain quicksort\"")]
 pub struct AskArgs {
     /// The prompt to send to the model.
     prompt: String,

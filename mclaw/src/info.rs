@@ -10,7 +10,12 @@ use clap::Args;
 
 use crate::client;
 
+/// Print the current user, tier, and plan.
 #[derive(Args, Debug)]
+#[command(about = "Print the current MAIC user, tier, and plan", long_about = "Print the current MAIC user, tier (free / pro / pro_plus / team), and plan_code.\n\n\
+EXAMPLES:\n  \
+mclaw whoami\n  \
+mclaw whoami --json | jq .tier")]
 pub struct WhoAmIArgs {
     /// Output as JSON
     #[arg(long)]
@@ -40,7 +45,9 @@ pub async fn whoami(args: WhoAmIArgs) -> Result<i32> {
     Ok(0)
 }
 
+/// Print quota and current usage. (Coming in rc55.27.)
 #[derive(Args, Debug)]
+#[command(about = "Print quota and current usage (placeholder for rc55.27)", long_about = "Print MAIC quota and current usage. PLACEHOLDER: not yet implemented; coming in rc55.27. Exits 1 for now.")]
 pub struct UsageArgs {
     /// Output as JSON
     #[arg(long)]
@@ -53,7 +60,12 @@ pub async fn usage(_args: UsageArgs) -> Result<i32> {
     Ok(1)
 }
 
+/// List available models.
 #[derive(Args, Debug)]
+#[command(about = "List available models (MAIC /v1/models)", long_about = "List the models available to the current user via MAIC's /v1/models endpoint.\n\n\
+EXAMPLES:\n  \
+mclaw models\n  \
+mclaw models --json | jq '.[].id'")]
 pub struct ModelsArgs {
     /// Output as JSON
     #[arg(long)]

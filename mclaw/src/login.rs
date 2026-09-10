@@ -18,7 +18,14 @@ use serde::Deserialize;
 
 use crate::auth;
 
+/// Log in to MAIC and store the JWT in the OS keychain.
 #[derive(Args, Debug)]
+#[command(about = "Log in to MAIC and store the JWT in the OS keychain", long_about = "Log in to MAIC and store the JWT in the OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager).\n\n\
+The JWT is reused for every subsequent `mclaw` invocation; you only need to log in again if it expires (7 days) or is revoked server-side.\n\n\
+EXAMPLES:\n  \
+mclaw login\n  \
+mclaw login --username david\n  \
+mclaw login --maic-url https://staging.maicserver.com")]
 pub struct LoginArgs {
     /// Username (skip the prompt). MAIC uses `name` as the login identifier.
     #[arg(long, alias = "email")]
@@ -120,6 +127,7 @@ struct LoginResp {
 }
 
 #[derive(Args, Debug)]
+#[command(about = "Log out and wipe the keychain entry", long_about = "Log out by removing the stored JWT from the OS keychain. After this, the next `mclaw` invocation will return \"not logged in\" and prompt you to run `mclaw login`.")]
 pub struct LogoutArgs {}
 
 pub async fn logout(_args: LogoutArgs) -> Result<i32> {

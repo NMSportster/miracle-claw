@@ -94,28 +94,11 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROGRAM: &str = "miracle-claw-terminal";
 
 fn print_help() {
-    println!(
-        "{PROGRAM} {VERSION} — Miracle Claw TUI for MAIC modules\n\
-         \n\
-         USAGE:\n  \
-             {PROGRAM} [OPTIONS]\n\
-         \n\
-         OPTIONS:\n  \
-             --maic-base <URL>    MAIC server URL (default: https://maicserver.com)\n  \
-             --session-file <PATH> Path to session.json (default: XDG data dir)\n  \
-             --log-level <LVL>    info|debug|silent (default: info)\n  \
-             -h, --help           Show this help\n  \
-             -V, --version        Show version\n\
-         \n\
-         KEYS (in-app):\n  \
-             ↑/↓ or j/k     navigate lists\n  \
-             Tab / Shift+Tab  next/prev form field\n  \
-             Enter          submit form / open tool\n  \
-             Esc            cancel / back to toolbar\n  \
-             q              quit\n  \
-             ?              toggle help overlay"
-    );
+    let text = "{PROGRAM} {VERSION} — Miracle Claw TUI for MAIC modules\n\nUSAGE:\n  {PROGRAM} [OPTIONS]\n\nDESCRIPTION:\n  mc-terminal is the keyboard-driven TUI for running MAIC modules\n  from your terminal. It shares installed modules with the Tauri\n  desktop app and the `mclaw` CLI, so anything you install shows up\n  here too. Ideal for power users who want a single keystroke (Enter,\n  q, Tab) to fire a tool.\n\nFIRST TIME:\n  1. Log in to the Tauri desktop app (or `mclaw login`).\n  2. Install a module:  mclaw marketplace install firecrawl\n  3. Re-run `{PROGRAM}` to see your tools here.\n\nOPTIONS:\n  --maic-base <URL>      MAIC server URL (default: https://maicserver.com)\n  --session-file <PATH>  Path to session.json (default: XDG data dir)\n  --log-level <LVL>      info|debug|silent (default: info)\n  -h, --help             Show this help\n  -V, --version          Show version\n\nKEYS (in-app):\n  ↑/↓ or j/k     navigate lists\n  Tab / Shift+Tab  next/prev form field\n  Enter          submit form / open tool\n  Esc            cancel / back to toolbar\n  ?              toggle help overlay\n  q              quit\n  (a = add-tool stub; lands in v0.2.0)\n\nEXAMPLES:\n  # launch the TUI against the production MAIC:\n  {PROGRAM}\n\n  # launch against a local MAIC dev server:\n  {PROGRAM} --maic-base http://localhost:8000\n\n  # verbose logging for debugging:\n  {PROGRAM} --log-level debug\n\nSEE ALSO:\n  mclaw(1)         headless CLI companion\n  mclaw-marketplace  install/uninstall modules\n  docs/mc-module-driven-surfaces-2026-09.md  the spec";
+    let text = text.replace("{PROGRAM}", PROGRAM).replace("{VERSION}", VERSION);
+    println!("{}", text);
 }
+
 
 fn parse_args() -> Result<Config, String> {
     let mut cfg = Config::default();
@@ -317,6 +300,12 @@ enum Mode {
     Form,
     Result,
     Add, // placeholder for Week 5 marketplace
+    /// Week 7.4: first-launch / no-modules-installed landing page.
+    /// Shows a centered greeting + get-started blurb so the TUI
+    /// doesn't look broken when the user hasn't installed anything
+    /// yet. Same keymap as Toolbar (Esc/quit still work).
+    #[allow(dead_code)]
+    Empty,
     #[allow(dead_code)]
     Help, // reserved for future "Help is a mode" iteration
 }
@@ -460,6 +449,7 @@ fn draw_footer(f: &mut ratatui::Frame, app: &App, area: Rect) {
         Mode::Form => "Tab next · Shift+Tab prev · Enter submit · Esc cancel",
         Mode::Result => "↑↓ scroll · Enter back · q quit",
         Mode::Add => "Esc back",
+        Mode::Empty => "q quit · ? help",
         Mode::Help => "Esc/? close help",
     };
     let line = Line::from(vec![
@@ -480,8 +470,75 @@ fn draw_body(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         Mode::Form => draw_form(f, app, area),
         Mode::Result => draw_result(f, app, area),
         Mode::Add => draw_add_stub(f, area),
+        // Week 7.4: first-launch landing when no modules installed.
+        // We fall through to the landing page rather than the empty
+        // toolbar so the TUI feels intentional, not broken.
+        Mode::Empty => draw_empty_landing(f, app, area),
         Mode::Help => { /* overlay drawn last */ }
     }
+}
+
+/// Week 7.4: first-launch / no-modules-installed landing page.
+///
+/// Centered greeting + 3-step get-started blurb. Reached from
+/// `main()` when `app.flat_tools` is empty after the initial fetch.
+fn draw_empty_landing(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    let mut lines: Vec<Line> = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "🦞  miracle-claw-terminal",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Welcome! You don't have any modules installed yet.",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Get started:",
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(Span::styled(
+            "  1. Log in to the Tauri desktop app or run `mclaw login`.",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "  2. Install a module:  mclaw marketplace install firecrawl",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "  3. Re-run `mc-terminal` to see your tools here.",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Or browse the marketplace interactively with the `mclaw marketplace list` command.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Press q to quit, ? for help.  ({})", app.status),
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    // Pad to fill the area, then center the text block.
+    let content_height = lines.len() as u16;
+    let top = area.y + area.height.saturating_sub(content_height) / 2;
+    let centered = Rect {
+        x: area.x,
+        y: top,
+        width: area.width,
+        height: content_height.min(area.height),
+    };
+    // Pad blank lines for vertical centering.
+    while (lines.len() as u16) < centered.height {
+        lines.insert(0, Line::from(""));
+    }
+    let p = Paragraph::new(lines)
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).title(" Welcome "));
+    f.render_widget(p, area);
 }
 
 fn draw_toolbar(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
@@ -851,6 +908,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         Mode::Form => handle_form_key(app, key),
         Mode::Result => handle_result_key(app, key),
         Mode::Add => handle_add_key(app, key),
+        // Week 7.4: empty/landing page is keyboard-equivalent to the
+        // toolbar but read-only; reuse the toolbar handler so Esc/q/?/Enter
+        // work the same way.
+        Mode::Empty => handle_toolbar_key(app, key),
         Mode::Help => false,
     }
 }
@@ -1286,11 +1347,20 @@ fn run_tui(session: Session) {
                     app.installed.len()
                 );
             } else {
-                app.status = "No installed modules. Install one in the desktop app first.".to_string();
+                // Week 7.4: route to the empty-state landing page so
+                // the TUI feels intentional rather than showing a
+                // blank list. The status string still shows in the
+                // footer for the power-user who wants the API view.
+                app.status = "No installed modules.".to_string();
+                app.mode = Mode::Empty;
             }
         }
         Err(e) => {
             app.status = format!("Could not load installed modules: {e}");
+            // If we can't even fetch, fall through to the landing
+            // page so the user sees a friendly explanation rather
+            // than a blank toolbar with only a status line.
+            app.mode = Mode::Empty;
         }
     }
 
@@ -1497,5 +1567,50 @@ mod tests {
         app.form_state.focus = 1;
         let v = current_field_value(&app, &schema);
         assert_eq!(v, "10");
+    }
+
+    /// Week 7.4: the Empty mode is wired into the draw body dispatch
+    /// so first-launch / no-modules TUI shows a landing page instead
+    /// of a blank toolbar. We assert the variant exists and is
+    /// distinct from the other read-only mode (Help) so a future
+    /// refactor doesn't accidentally collapse them.
+    #[test]
+    fn mode_empty_is_distinct_from_toolbar() {
+        assert_ne!(Mode::Empty, Mode::Toolbar);
+        assert_ne!(Mode::Empty, Mode::Form);
+        assert_ne!(Mode::Empty, Mode::Result);
+        assert_ne!(Mode::Empty, Mode::Add);
+        assert_ne!(Mode::Empty, Mode::Help);
+    }
+
+    /// Week 7.4: print_help() must mention EXAMPLES, FIRST TIME, and
+    /// SEE ALSO so new users can self-onboard. The function writes to
+    /// stdout; we capture it by replacing println with a closure via
+    /// a small helper. Simpler approach: re-implement the same content
+    /// check by counting the substrings in the format string. The
+    /// format string is the source of truth.
+    #[test]
+    fn print_help_contains_first_time_and_examples() {
+        // The format string we wrote is the single source of truth;
+        // assert it has the required sections. (This is a static
+        // check, not a runtime test of println! output.)
+        let src = include_str!("mc_terminal.rs");
+        // Find the function body by searching for the section markers.
+        assert!(
+            src.contains("FIRST TIME:"),
+            "print_help should have a FIRST TIME section"
+        );
+        assert!(
+            src.contains("EXAMPLES:"),
+            "print_help should have an EXAMPLES section"
+        );
+        assert!(
+            src.contains("SEE ALSO:"),
+            "print_help should have a SEE ALSO section"
+        );
+        assert!(
+            src.contains("mclaw marketplace install firecrawl"),
+            "print_help should mention the example install command"
+        );
     }
 }

@@ -40,7 +40,9 @@ use crate::client::{self, Client, RunJsonOut};
 // `mclaw run <module>.<tool> [args]`
 // ─────────────────────────────────────────────────────────────────────
 
+/// Run a tool on an installed module.
 #[derive(Args, Debug)]
+#[command(about = "Run a tool on an installed module", long_about = "Run a tool on an installed first-party module. The module must be installed first via `mclaw marketplace install <id>`.\n\nThe `module.tool` shorthand is preferred; the explicit `--tool` form is for shells where `.` is awkward.\n\nEXAMPLES:\n  mclaw run firecrawl.fetch_url --input url=https://example.com\n  mclaw run firecrawl.fetch_url --input url=https://example.com --json\n  mclaw run data-analyzer --tool summarize --input dataset=customers --input rows=100\n  mclaw run brand-asset-kit --tool generate --input 'prompt=a calm blue logo'")]
 pub struct RunArgs {
     /// Module ID (e.g. "firecrawl") OR `module.tool` shorthand.
     positional: Vec<String>,
@@ -171,7 +173,9 @@ fn parse_kv(s: &str) -> Result<(String, Value), String> {
 // `mclaw tools`
 // ─────────────────────────────────────────────────────────────────────
 
+/// List installed modules grouped by category.
 #[derive(Args, Debug)]
+#[command(about = "List installed modules grouped by category", long_about = "List installed modules grouped by category.\n\nEXAMPLES:\n  mclaw tools\n  mclaw tools --json\n  mclaw tools --category data")]
 pub struct ToolsArgs {
     /// Output machine-readable JSON (includes full client_manifest).
     #[arg(long)]
@@ -275,6 +279,7 @@ pub async fn tools(args: ToolsArgs) -> Result<i32> {
 /// marketplace install firecrawl` binds the right way, instead of
 /// clap matching 'install' to the optional category positional.
 #[derive(Args, Debug)]
+#[command(about = "Browse the module marketplace (list / install / uninstall)", long_about = "Browse the module marketplace.\n\nEXAMPLES:\n  mclaw marketplace list\n  mclaw marketplace list data\n  mclaw marketplace install firecrawl\n  mclaw marketplace install data-analyzer --json\n  mclaw marketplace uninstall firecrawl")]
 pub struct MarketplaceArgs {
     /// Action: `list` (default), `install <module_id>`, `uninstall <module_id>`.
     #[command(subcommand)]

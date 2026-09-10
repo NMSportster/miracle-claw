@@ -83,6 +83,28 @@ bash scripts/build-windows-docker.sh
 | `scripts/bundle-runtime.sh` | Download + stage OpenClaw + Node into `depot/` |
 | `scripts/build-windows-docker.sh` | Cross-compile a Windows installer via Docker + cargo-xwin |
 
+## Module-driven surfaces (rc56.0)
+
+The `Module-Driven Surfaces` feature (`docs/mc-module-driven-surfaces-2026-09.md`) ships three ways to run the same MAIC modules — pick the surface that fits the moment:
+
+| Surface | Best for | Entry point |
+|---|---|---|
+| **Launchpad** (Tauri) | One-off tool runs, browse the marketplace, fill forms with the keyboard/mouse | Click `Launchpad` in the sidebar; tiles appear on the dashboard |
+| **mc-terminal** (TUI) | Keyboard-driven, terminal-native, scripable | `miracle-claw-terminal` (bundled with the Tauri installer) |
+| **mclaw** (CLI) | Cron jobs, CI, headless servers, REPL workflows | `mclaw` (separate binary; lives at `mclaw/target/release/mclaw`) |
+
+All three surfaces call the same MAIC endpoints and render the same response shape — install a module in one, see it in all three. See the spec for the full wire contract and `mclaw --help` / `miracle-claw-terminal --help` for usage.
+
+Quick tour:
+
+```bash
+# Tauri: open the Launchpad tab, install `firecrawl`, fill the URL field.
+# mc-terminal: launch, press Enter on the Firecrawl tile, paste the URL, submit.
+mclaw login
+mclaw marketplace install firecrawl
+mclaw run firecrawl.fetch_url --input url=https://example.com
+```
+
 ## License
 
 Miracle Claw source code is © Milagro Distribution Corp. See [LICENSE](LICENSE) for full terms.

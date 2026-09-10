@@ -107,6 +107,22 @@ The same module, installed via `mclaw marketplace install`, shows up in
 the Tauri launchpad and the mc-terminal TUI toolbar — all three surfaces
 share the MAIC `module_installs` table.
 
+## Get help
+
+Every subcommand has a long help view with examples, keybindings, and
+exit codes:
+
+```bash
+mclaw --help                  # top-level: get started + exit codes
+mclaw help ask                # long help for `ask`, with EXAMPLES
+mclaw help chat               # long help for `chat`, with KEYBINDINGS
+mclaw help run                # long help for `run`, with EXAMPLES
+mclaw help marketplace        # long help for `marketplace`, with EXAMPLES
+
+# Short flag for the abbreviated help:
+mclaw ask -h
+```
+
 ## Exit codes
 
 | Code | Meaning |

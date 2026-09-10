@@ -19,7 +19,19 @@ use std::path::PathBuf;
 
 use crate::client::{self, ChatResp};
 
+/// Interactive REPL (readline + history + multi-turn).
 #[derive(Args, Debug)]
+#[command(about = "Start an interactive chat session (readline + history)", long_about = "Start an interactive chat session with readline editing, persistent history, and multi-turn context.\n\n\
+EXAMPLES:\n  \
+mclaw chat\n  \
+mclaw chat --model milagro-dev\n  \
+mclaw chat --no-tools\n\n\
+KEYBINDINGS:\n  \
+Ctrl-D      exit\n  \
+Ctrl-C      cancel current turn (or exit if idle)\n  \
+Up/Down     navigate history\n  \
+Tab         completion (models, /commands)\n  \
+/help       in-REPL command list")]
 pub struct ChatArgs {
     /// Initial model (default: user's default model from MAIC).
     #[arg(long, value_name = "ID")]
