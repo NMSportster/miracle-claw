@@ -15,10 +15,10 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use mclaw::VERSION;
-use mclaw::{ask, chat, info, login};
+use mclaw::{ask, banner, chat, info, login, modules};
 
 #[derive(Parser, Debug)]
-#[command(name = "mclaw", version = VERSION, about, long_about = None)]
+#[command(name = "mclaw", version = VERSION, about = banner::TAGLINE, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -40,6 +40,12 @@ enum Commands {
     Usage(info::UsageArgs),
     /// List available models.
     Models(info::ModelsArgs),
+    /// Run a tool on an installed module. `mclaw run <module>.<tool> [--input k=v ...]`
+    Run(modules::RunArgs),
+    /// List installed modules grouped by category.
+    Tools(modules::ToolsArgs),
+    /// Browse the module marketplace. Sub-commands: list | install | uninstall.
+    Marketplace(modules::MarketplaceArgs),
 }
 
 #[tokio::main]
@@ -50,6 +56,11 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // Brand text on login (also works for any interactive entry point).
+    if matches!(cli.command, Commands::Login(_)) {
+        banner::print_banner();
+    }
 
     let code = match cli.command {
         Commands::Ask(a) => ask::run(a).await.unwrap_or_else(|e| {
@@ -77,6 +88,18 @@ async fn main() -> Result<()> {
             1
         }),
         Commands::Models(a) => info::models(a).await.unwrap_or_else(|e| {
+            eprintln!("error: {:#}", e);
+            1
+        }),
+        Commands::Run(a) => modules::run(a).await.unwrap_or_else(|e| {
+            eprintln!("error: {:#}", e);
+            1
+        }),
+        Commands::Tools(a) => modules::tools(a).await.unwrap_or_else(|e| {
+            eprintln!("error: {:#}", e);
+            1
+        }),
+        Commands::Marketplace(a) => modules::marketplace(a).await.unwrap_or_else(|e| {
             eprintln!("error: {:#}", e);
             1
         }),

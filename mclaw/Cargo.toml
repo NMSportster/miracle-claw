@@ -1,6 +1,6 @@
 [package]
 name = "mclaw"
-version = "0.1.0-rc55.26"
+version = "0.2.0-rc56.0-week5"
 edition = "2021"
 description = "Miracle Claw CLI - ask MAIC from any shell, cron, or CI"
 license = "MIT"

@@ -19,10 +19,12 @@
 
 pub mod ask;
 pub mod auth;
+pub mod banner;
 pub mod chat;
 pub mod client;
 pub mod config;
 pub mod info;
 pub mod login;
+pub mod modules;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

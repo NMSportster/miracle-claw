@@ -106,6 +106,96 @@ impl Client {
         Ok(body.data)
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // Module endpoints (Week 5 — rc56.0 Module-Driven Surfaces)
+    //
+    // These back `mclaw run <module>.<tool>`, `mclaw tools`, and
+    // `mclaw marketplace`. Spec: docs/mc-module-driven-surfaces-2026-09.md
+    // §3.4 (endpoints) + §5.3 (mclaw CLI).
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Fetch `/v1/categories` — public, no auth.
+    pub async fn categories(&self) -> Result<Vec<Category>, Error> {
+        let resp = self.get("/v1/categories").await?;
+        if !resp.status().is_success() {
+            return Err(self.translate_error(resp).await);
+        }
+        let body: CategoriesResp = resp.json().await?;
+        Ok(body.categories)
+    }
+
+    /// Fetch `/v1/marketplace/modules` — full marketplace catalog.
+    /// Optional `category` filter (e.g. "data", "content").
+    pub async fn marketplace(&self, category: Option<&str>) -> Result<Vec<ModuleSummary>, Error> {
+        let mut path = "/v1/marketplace/modules".to_string();
+        if let Some(cat) = category {
+            // Server expects ?category=foo, url-encode the value just in case.
+            path.push_str(&format!("?category={}", urlencode(cat)));
+        }
+        let resp = self.get(&path).await?;
+        if !resp.status().is_success() {
+            return Err(self.translate_error(resp).await);
+        }
+        let body: MarketplaceResp = resp.json().await?;
+        Ok(body.modules)
+    }
+
+    /// Fetch `/v1/modules/installed` — modules the current user has installed.
+    pub async fn installed_modules(&self) -> Result<InstalledResponse, Error> {
+        let resp = self.get("/v1/modules/installed").await?;
+        if !resp.status().is_success() {
+            return Err(self.translate_error(resp).await);
+        }
+        let body: InstalledResponse = resp.json().await?;
+        Ok(body)
+    }
+
+    /// POST `/v1/modules/install` — install a module for the current user.
+    /// Idempotent: re-installing returns success with the current manifest.
+    pub async fn install_module(&self, module_id: &str) -> Result<InstallResponse, Error> {
+        let body = serde_json::json!({ "module_id": module_id });
+        let resp = self.post("/v1/modules/install", &body).await?;
+        if !resp.status().is_success() {
+            return Err(self.translate_error(resp).await);
+        }
+        let body: InstallResponse = resp.json().await?;
+        Ok(body)
+    }
+
+    /// POST `/v1/modules/uninstall` — uninstall a module. Idempotent.
+    pub async fn uninstall_module(&self, module_id: &str) -> Result<UninstallResponse, Error> {
+        let body = serde_json::json!({ "module_id": module_id });
+        let resp = self.post("/v1/modules/uninstall", &body).await?;
+        if !resp.status().is_success() {
+            return Err(self.translate_error(resp).await);
+        }
+        let body: UninstallResponse = resp.json().await?;
+        Ok(body)
+    }
+
+    /// POST `/v1/modules/{module_id}/run` — invoke a tool on a first-party module.
+    /// `surface` is one of "tauri", "tui", "mclaw" — MAIC tags the run
+    /// for analytics. We always pass "mclaw" from this CLI.
+    pub async fn run_module(
+        &self,
+        module_id: &str,
+        tool: &str,
+        inputs: &serde_json::Value,
+    ) -> Result<RunResponse, Error> {
+        let path = format!("/v1/modules/{}/run", urlencode(module_id));
+        let body = serde_json::json!({
+            "tool": tool,
+            "inputs": inputs,
+            "surface": "mclaw",
+        });
+        let resp = self.post(&path, &body).await?;
+        if !resp.status().is_success() {
+            return Err(self.translate_error(resp).await);
+        }
+        let body: RunResponse = resp.json().await?;
+        Ok(body)
+    }
+
     /// Fetch `/v1/dashboard/usage` — current usage stats.
     #[allow(dead_code)]
     pub async fn usage(&self) -> Result<UsageResp, Error> {
@@ -349,4 +439,141 @@ pub async fn timed_chat(
     let resp = client.chat_completion(prompt, model, tools_enabled).await?;
     let elapsed = start.elapsed();
     Ok((resp, elapsed))
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Module wire types (Week 5 — rc56.0 Module-Driven Surfaces)
+// ─────────────────────────────────────────────────────────────────────
+
+/// A category as returned by `/v1/categories`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Category {
+    pub id: String,
+    pub label: String,
+    pub emoji: String,
+    pub sort_order: i32,
+    #[serde(default)]
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CategoriesResp {
+    categories: Vec<Category>,
+}
+
+/// A module as it appears in the marketplace listing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleSummary {
+    pub module_id: String,
+    pub name: String,
+    pub description: String,
+    pub icon: String,
+    pub category: String,
+    #[serde(default)]
+    pub subcategory: Option<String>,
+    pub tier_required: String,
+    pub author: String,
+    #[serde(default)]
+    pub rating: f64,
+    #[serde(default)]
+    pub install_count: i64,
+    pub is_first_party: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MarketplaceResp {
+    modules: Vec<ModuleSummary>,
+}
+
+/// A module as it appears in the user's "Your Tools" grid.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstalledModule {
+    pub module_id: String,
+    pub name: String,
+    pub description: String,
+    pub icon: String,
+    pub category: String,
+    #[serde(default)]
+    pub subcategory: Option<String>,
+    pub installed_at: String,
+    #[serde(default)]
+    pub last_used_at: Option<String>,
+    pub client_manifest: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstalledResponse {
+    pub modules: Vec<InstalledModule>,
+    pub grouped_by_category: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstallResponse {
+    pub success: bool,
+    pub client_manifest: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UninstallResponse {
+    pub success: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunResponse {
+    pub outputs: String,
+    pub duration_ms: i64,
+    pub module_id: String,
+    pub tool: String,
+    pub run_id: i64,
+}
+
+/// JSON output shape for `mclaw run --json`. Includes the raw MAIC run_id
+/// for tracing and the wall-clock duration the CLI observed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunJsonOut {
+    pub module_id: String,
+    pub tool: String,
+    pub outputs: String,
+    pub run_id: i64,
+    pub duration_ms: i64,
+    pub cli_duration_ms: u128,
+}
+
+/// Minimal RFC 3986 percent-encoder for path/query values. Avoids pulling
+/// in the `urlencoding` crate — the inputs we encode are short module IDs
+/// and category slugs made of `[a-z0-9_-]`, so this is just defense in depth.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod urlencode_tests {
+    use super::urlencode;
+
+    #[test]
+    fn passthrough_for_safe_chars() {
+        assert_eq!(urlencode("hello-world_1.0"), "hello-world_1.0");
+    }
+
+    #[test]
+    fn encodes_spaces_and_slashes() {
+        assert_eq!(urlencode("a b/c"), "a%20b%2Fc");
+    }
+
+    #[test]
+    fn encodes_module_id_with_specials() {
+        // Tildes are safe (RFC 3986 unreserved), so we expect pass-through.
+        assert_eq!(urlencode("foo~bar"), "foo~bar");
+        // Question mark should encode (it's a delimiter).
+        assert_eq!(urlencode("a?b"), "a%3Fb");
+    }
 }
