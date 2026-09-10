@@ -5654,6 +5654,159 @@ fn mc_open_checkout_url(plan_code: String) -> Result<(), String> {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Module-driven surfaces (rc56.0, spec: docs/mc-module-driven-surfaces-2026-09.md §3.4)
+// 5 commands that proxy MAIC module endpoints to the Tauri app.
+//   await invoke("mc_list_categories")
+//   await invoke("mc_list_marketplace_modules", { category, sort })
+//   await invoke("mc_list_installed_modules")
+//   await invoke("mc_install_module", { moduleId })
+//   await invoke("mc_uninstall_module", { moduleId })
+
+// GET /v1/categories — public, no JWT.
+#[tauri::command]
+fn mc_list_categories() -> Result<serde_json::Value, String> {
+    let maic_base = resolve_maic_base_url();
+    let url = format!(
+        "{}/v1/categories",
+        crate::auth::tier::normalize_api_base(&maic_base)
+    );
+    let resp = ureq::get(&url)
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| format!("/v1/categories: {e}"))?;
+    let body: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse /v1/categories: {e}"))?;
+    Ok(body)
+}
+
+// GET /v1/marketplace/modules — authed. Optional category + sort.
+#[tauri::command]
+fn mc_list_marketplace_modules(
+    category: Option<String>,
+    sort: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let maic_base = resolve_maic_base_url();
+    let base = crate::auth::tier::normalize_api_base(&maic_base);
+
+    let mut url = format!("{}/v1/marketplace/modules", base);
+    let mut query_parts: Vec<String> = Vec::new();
+    if let Some(cat) = category.as_ref().filter(|s| !s.is_empty()) {
+        query_parts.push(format!("category={}", urlencode(cat)));
+    }
+    if let Some(s) = sort.as_ref().filter(|s| !s.is_empty()) {
+        let allowed = ["top_rated", "recent", "alphabetical"];
+        if !allowed.contains(&s.as_str()) {
+            return Err(format!("invalid sort: {s}"));
+        }
+        query_parts.push(format!("sort={}", s));
+    }
+    if !query_parts.is_empty() {
+        url = format!("{}?{}", url, query_parts.join("&"));
+    }
+
+    let resp = ureq::get(&url)
+        .set("Authorization", &format!("Bearer {jwt}"))
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| format!("/v1/marketplace/modules: {e}"))?;
+    let body: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse /v1/marketplace/modules: {e}"))?;
+    Ok(body)
+}
+
+// GET /v1/modules/installed — authed.
+#[tauri::command]
+fn mc_list_installed_modules() -> Result<serde_json::Value, String> {
+    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let maic_base = resolve_maic_base_url();
+    let url = format!(
+        "{}/v1/modules/installed",
+        crate::auth::tier::normalize_api_base(&maic_base)
+    );
+    let resp = ureq::get(&url)
+        .set("Authorization", &format!("Bearer {jwt}"))
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| format!("/v1/modules/installed: {e}"))?;
+    let body: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse /v1/modules/installed: {e}"))?;
+    Ok(body)
+}
+
+// POST /v1/modules/install — authed. Returns { success, client_manifest }.
+#[tauri::command]
+fn mc_install_module(module_id: String) -> Result<serde_json::Value, String> {
+    if module_id.is_empty() {
+        return Err("module_id is required".to_string());
+    }
+    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let maic_base = resolve_maic_base_url();
+    let url = format!(
+        "{}/v1/modules/install",
+        crate::auth::tier::normalize_api_base(&maic_base)
+    );
+    let body = serde_json::json!({ "module_id": module_id });
+    let resp = ureq::post(&url)
+        .set("Authorization", &format!("Bearer {jwt}"))
+        .set("Content-Type", "application/json")
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(15))
+        .send_json(&body)
+        .map_err(|e| format!("/v1/modules/install POST: {e}"))?;
+    let parsed: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse /v1/modules/install: {e}"))?;
+    Ok(parsed)
+}
+
+// POST /v1/modules/uninstall — authed. Returns { success }.
+#[tauri::command]
+fn mc_uninstall_module(module_id: String) -> Result<serde_json::Value, String> {
+    if module_id.is_empty() {
+        return Err("module_id is required".to_string());
+    }
+    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let maic_base = resolve_maic_base_url();
+    let url = format!(
+        "{}/v1/modules/uninstall",
+        crate::auth::tier::normalize_api_base(&maic_base)
+    );
+    let body = serde_json::json!({ "module_id": module_id });
+    let resp = ureq::post(&url)
+        .set("Authorization", &format!("Bearer {jwt}"))
+        .set("Content-Type", "application/json")
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(15))
+        .send_json(&body)
+        .map_err(|e| format!("/v1/modules/uninstall POST: {e}"))?;
+    let parsed: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse /v1/modules/uninstall: {e}"))?;
+    Ok(parsed)
+}
+
+// Small URL-encode helper for the category query param.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
 // Returns the list of tool names the current tier can use. Used by the
 // dashboard to render "what you have access to" + the upgrade CTA.
 #[tauri::command]
@@ -7556,6 +7709,12 @@ pub fn run() {
             mc_get_quota,
             mc_list_plans,
             mc_open_checkout_url,
+            // rc56.0: module-driven surfaces (spec docs/mc-module-driven-surfaces-2026-09.md)
+            mc_list_categories,
+            mc_list_marketplace_modules,
+            mc_list_installed_modules,
+            mc_install_module,
+            mc_uninstall_module,
             // v1.0.9-rc35: Settings page
             mc_get_user_info,
             mc_list_memory_files,

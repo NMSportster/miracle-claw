@@ -23,6 +23,10 @@ import { register, mount as mountPage, setAuthState } from "./page_registry.js";
 import { initModuleRuntime, isModuleInstalled, invokeModule, reapplyAllUiHooks } from "./modules-runtime.js";
 import { loginPage } from "./pages/login.js";
 import { dashboardPage } from "./pages/dashboard.js";
+// rc56.0: launchpad variant of the dashboard, registered as a
+// separate page id so we can swap once it's stable without touching
+// the existing dashboard.js surface.
+import { dashboardLaunchpadPage } from "./pages/dashboard_launchpad.js";
 import { settingsPage } from "./pages/settings.js";
 import { terminalPage } from "./pages/terminal.js";
 import { filesPage } from "./pages/files.js";
@@ -73,6 +77,7 @@ const root = document.getElementById("root");
 
 register("login", loginPage);
 register("dashboard", dashboardPage);
+register("dashboard-launchpad", dashboardLaunchpadPage);
 register("settings", settingsPage);
 register("terminal", terminalPage);
 register("files", filesPage);

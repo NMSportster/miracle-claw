@@ -22,6 +22,12 @@ permissions = [
   "allow-mc-get-quota",
   "allow-mc-list-plans",
   "allow-mc-open-checkout-url",
+  # rc56.0: module-driven surfaces (spec docs/mc-module-driven-surfaces-2026-09.md)
+  "allow-mc-list-categories",
+  "allow-mc-list-marketplace-modules",
+  "allow-mc-list-installed-modules",
+  "allow-mc-install-module",
+  "allow-mc-uninstall-module",
   # v1.0.9-rc35: Settings page commands
   "allow-mc-get-user-info",
   "allow-mc-list-memory-files",
