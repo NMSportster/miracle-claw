@@ -109,3 +109,23 @@ test("last_used_at can be null (never-used module)", () => {
   const neverUsed = CANONICAL_FIXTURE.modules.find((m) => m.module_id === "data-analyzer");
   assert.equal(neverUsed.last_used_at, null);
 });
+
+test("launchpad walks client_manifest.tools (not m.tools)", () => {
+  // Lesson 963: the launchpad used to read m.tools directly and showed
+  // "No tools" for every installed module because the m1-t1 contract
+  // puts the tool list under m.client_manifest.tools. Pin the rule
+  // here so a future refactor doesn't reintroduce the bug.
+  //
+  // We don't import the launchpad's renderYourTools helper (it lives
+  // inside dashboard_launchpad.js as an unexported function), so we
+  // replicate the tool-extraction step and assert the result matches
+  // the canonical firecrawl fixture.
+  const firecrawl = CANONICAL_FIXTURE.modules.find((m) => m.module_id === "firecrawl");
+  // Direct read (the bug):
+  const directTools = firecrawl.tools || [];
+  // Canonical read (the fix):
+  const canonicalTools = (firecrawl.client_manifest && firecrawl.client_manifest.tools) || [];
+  assert.equal(directTools.length, 0, "fixture has no top-level .tools; the bug relies on this");
+  assert.equal(canonicalTools.length, 1, "firecrawl should expose 1 tool under client_manifest");
+  assert.equal(canonicalTools[0].name, "scrape");
+});

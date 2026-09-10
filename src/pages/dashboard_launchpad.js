@@ -256,8 +256,14 @@ function renderYourTools(installed) {
   const count = installed.length;
   const tiles = installed.map((m) => {
     const emoji = m.icon || "📦";
-    const tools = m.tools || [];
-    const firstTool = tools[0]?.name;
+    // Lesson 963 (2026-09-10, David): tools live under
+    // client_manifest.tools, not directly on the module row. The m1-t1
+    // contract puts the full tool list (form_schema, run target, etc.)
+    // inside client_manifest so the same shape works for TUI, CLI, and
+    // launchpad. The launchpad used to read m.tools directly and
+    // showed "No tools" for everything.
+    const tools = (m.client_manifest && m.client_manifest.tools) || [];
+    const firstTool = tools[0] && tools[0].name;
     return `
       <div class="mc-tool-tile" data-module-id="${escapeHtml(m.module_id)}">
         <div class="mc-tool-emoji">${emoji}</div>
@@ -406,7 +412,8 @@ function renderRecent(runs) {
 
 function openModuleModal(module) {
   _closeModal();
-  const tools = module.tools || [];
+  // Lesson 963: tools come from client_manifest.tools, not module.tools.
+  const tools = (module.client_manifest && module.client_manifest.tools) || [];
   if (tools.length === 0) {
     toast(`${module.name} has no tools to run.`);
     return;
@@ -796,7 +803,13 @@ async function _onClick(ev) {
       }
       break;
     case "launch-terminal":
-      navigate("terminal");
+      // Lesson 963: this tile should open the Terminal page with the
+      // mc-terminal (TUI) shell pre-selected, not a bare cmd.exe pty.
+      // The OLD dashboard had a separate "OpenClaw · Terminal" tile
+      // wired through onOpenOpenClawTerminal (defaultShell: "mc-terminal");
+      // the launchpad condenses the two tiles but still needs to land
+      // on the TUI shell so the toolbar + form mode are visible.
+      navigate("terminal", { defaultShell: "mc-terminal" });
       break;
     case "launch-commands":
       // For Week 2, route to extras hub; replace with `mclaw run` UI in Week 5.
