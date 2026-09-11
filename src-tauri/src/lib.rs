@@ -1876,13 +1876,22 @@ fn replace_secret_ref_with_literal() -> bool {
 // ---------------------------------------------------------------------------
 // Lesson 517 (NEW, 2026-08-20): tier-conditional default model + fallbacks.
 //
-// On login (or any time we fetch a fresh tier), we write
+// On login (or on app start, see Lesson 970), we write
 // `agents.defaults.model` into the user's openclaw.json so the chat panel
 // pre-selects the right model for the tier AND so openclaw's runtime
 // fallback walker has the chain it needs when the primary fails.
 //
-// Free  → primary = `milagro-dev`,       fallbacks = []                       (local only)
-// Paid  → primary = `milagro-oc-kimi`,   fallbacks = [MiniMax, GLM, local]   (cloud cascade)
+// Free  → primary = `maic/milagro-m1-t1`,     fallbacks = [t2, t3, nemotron-nano]
+// Paid  → primary = `maic/milagro-oc-glm`,   fallbacks = [MiniMax, kimi, t3]
+//
+// (Lesson 795 / rc55.12, 2026-08-30: Paid primary was switched from
+// `milagro-oc-kimi` → `milagro-oc-glm` because Kimi prefers openclaw
+// built-ins over plugin tools; GLM fires paid-tier tools reliably.)
+//
+// All entries are emitted with the `maic/` prefix (Lesson 521) so the
+// bundled openclaw gateway dispatches via the `maic` provider regardless
+// of catalog state — belt-and-suspenders against the bare-id
+// inference falling through to `defaultProvider = "openai"`.
 //
 // Idempotent: if the user's `agents.defaults.model` already matches the
 // tier-derived default, we don't rewrite it (preserves user choice of
@@ -3993,6 +4002,35 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         "[miracle-claw] MAIC provider bootstrap: configured={}, endpoint={}, key_source={:?}",
         maic_bootstrap.provider_configured, maic_bootstrap.endpoint, maic_bootstrap.api_key_source
     );
+
+    // 3a. Lesson 970 (2026-09-11): seed `agents.defaults.model` on app
+    //     start, not just on login. The bundled openclaw's gateway uses
+    //     `agents.defaults.model.primary` + `.fallbacks` as the
+    //     fallback chain — without it, the gateway falls through to
+    //     its hardcoded `openai/gpt-5.5` and reports
+    //     `missing-provider-auth` (no OpenAI key in the embedded
+    //     agent's auth store). Until the user logs in, the chain is
+    //     effectively empty.
+    //
+    //     We pass `Tier::Free` here (the conservative default).
+    //     `maic_login` re-runs this with the user's actual tier on
+    //     successful login, so a Free default is correct: paid users
+    //     will get their tier's chain overwritten on first login.
+    //
+    //     This function is idempotent (Lesson 517): if the user
+    //     already has `agents.defaults.model` set, we leave it alone
+    //     (or apply Lesson 824's bare-id prefix repair).
+    match ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free) {
+        Ok(true) => eprintln!(
+            "[miracle-claw] agents.defaults.model: seeded with Free default (maic/milagro-m1-t1 + fallbacks)"
+        ),
+        Ok(false) => eprintln!(
+            "[miracle-claw] agents.defaults.model: already configured, no change"
+        ),
+        Err(e) => eprintln!(
+            "[miracle-claw] agents.defaults.model seed error: {e} (chat will fall back to login flow)"
+        ),
+    }
 
     // 4. Sanity-check the user config (read-only — do NOT mutate the user's
     //    config; openclaw 2026.7.1+ auto-discovers plugins from <stateDir>/extensions).
@@ -10051,14 +10089,79 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Lesson 970 (2026-09-11): regression test for the missing-agents.defaults
+    // bug found in production. When a user has `models.providers.maic` but
+    // NO `agents.defaults.model` block (e.g. the bundled openclaw's hardcoded
+    // `?? openai/gpt-5.5` fallback fires because no primary is set), the next
+    // call to `ensure_agents_default_model_for_tier(Tier::Free)` MUST seed
+    // the full chain so the gateway's fallback walker has something to walk.
+    //
+    // Without this fix, a never-logged-in user with a fresh AppData install
+    // gets `missing-provider-auth` on first chat because the bundled openclaw
+    // falls through to `defaultProvider = "openai"` and the embedded agent
+    // has no OpenAI key.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn lesson_970_free_seeds_chain_when_agents_defaults_model_missing() {
+        let _env = lock_env();
+        // David's exact failure shape: has `models.providers.maic` (from
+        // ensure_maic_provider_config on first install), but the migration
+        // carried an old openclaw.json with no `agents.defaults.model`.
+        let _g = fresh_openclaw_with_model(None, None);
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
+            .expect("writer must succeed even when agents.defaults is absent");
+        assert!(
+            wrote,
+            "must write because no agents.defaults.model exists (Lesson 970)"
+        );
+
+        let path = openclaw_json_path();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary").unwrap(),
+            "maic/milagro-m1-t1",
+            "Free primary must be maic-prefixed (Lesson 521)"
+        );
+        let fallbacks: Vec<String> = cfg
+            .pointer("/agents/defaults/model/fallbacks")
+            .expect("Free must have fallbacks inside model (Lesson 829)")
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            fallbacks,
+            vec![
+                "maic/milagro-m1-t2",
+                "maic/milagro-m1-t3",
+                "maic/chat-nemotron-nano"
+            ],
+            "Free chain must be local 7B → local 14B → cloud nano"
+        );
+        // Lesson 521: the prefix is what prevents `inferUniqueProviderFromCatalog`
+        // from falling through to `defaultProvider = "openai"`.
+        let raw_primary = cfg
+            .pointer("/agents/defaults/model/primary")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert!(
+            raw_primary.starts_with("maic/"),
+            "primary MUST be maic/-prefixed to bypass bare-id inference (Lesson 521)"
+        );
+    }
+
     #[test]
     fn lesson_517_free_clears_stale_paid_fallbacks_on_downgrade() {
-        let _env = lock_env();
         // User paid → had Kimi+fallbacks. Downgraded to Free. Next login
         // must rewrite the chain to Free's m1-t chain so the dropdown
         // shows the local models + cheap cloud fallback. We model this
         // by starting with empty primary + paid fallbacks (OBJECT form,
         // Lesson 829), then calling the writer with Free.
+        let _env = lock_env();
         let _g = fresh_openclaw_with_model(Some(""), Some(vec!["maic/milagro-oc-minimax", "maic/milagro-dev"]));
         let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
             .expect("writer should succeed");
