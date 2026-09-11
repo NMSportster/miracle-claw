@@ -1006,6 +1006,34 @@ code {
   outline-offset: 1px;
 }
 
+/* When the terminal is in fullscreen mode, swap the icon-link glyph
+   to an "exit fullscreen" indicator (arrows pointing inward). The
+   terminal.js handler toggles `.is-fullscreen` on the button when
+   the page-root has `.terminal-fullscreen-mode`. */
+.icon-link.is-fullscreen svg {
+  display: none;
+}
+.icon-link.is-fullscreen::after {
+  content: "⛶";
+  font-size: 18px;
+  line-height: 1;
+  color: var(--fg);
+}
+
+/* Position the count badge in the top-right of the icon-only modules
+   button. The toolbar-btn version had it inline next to the text;
+   for icon-link we use absolute positioning so the badge doesn't
+   push the 32x32 button wider. */
+.icon-link {
+  position: relative;
+}
+.icon-link .toolbar-btn-count {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  margin-left: 0;
+}
+
 /* Visible Ctrl+K chip in the dashboard header so users discover the
    command palette shortcut. Without this, the shortcut is invisible
    to anyone who didn't already know about it (rc52 feedback). */

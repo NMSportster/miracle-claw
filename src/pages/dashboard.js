@@ -442,43 +442,43 @@ export const dashboardPage = {
             <div class="dashboard-header-actions">
               <button
                 type="button"
-                class="toolbar-btn"
+                class="icon-link"
                 id="mc-voice-fab"
                 data-module-voice-installed="false"
+                title="Voice input"
                 aria-label="Voice input"
               >
-                <span class="toolbar-btn-icon">🎙</span>
-                <span>Voice</span>
+                <span class="icon-link-glyph" aria-hidden="true">🎙</span>
               </button>
               <button
                 type="button"
-                class="toolbar-btn"
+                class="icon-link"
                 id="mc-modules-btn"
+                title="Open installed modules"
                 aria-label="Open installed modules"
                 aria-haspopup="menu"
               >
-                <span class="toolbar-btn-icon">🧩</span>
-                <span>Modules</span>
+                <span class="icon-link-glyph" aria-hidden="true">🧩</span>
                 <span class="toolbar-btn-count" id="mc-modules-count" hidden>0</span>
               </button>
               <button
                 type="button"
-                class="toolbar-btn cmd-k-hint"
+                class="icon-link cmd-k-hint"
                 id="cmd-k-open"
                 title="Command palette (Ctrl+K)"
                 aria-label="Open command palette"
               >
-                <span class="toolbar-btn-icon">⌘</span>
-                <span><kbd>Ctrl</kbd>+<kbd>K</kbd></span>
+                <span class="icon-link-glyph" aria-hidden="true">⌘</span>
+                <span class="cmd-k-shortcut"><kbd>Ctrl</kbd>+<kbd>K</kbd></span>
               </button>
               <button
                 type="button"
-                class="toolbar-btn"
+                class="icon-link"
                 id="settings-link"
+                title="Open Settings"
                 aria-label="Open Settings"
               >
-                <span class="toolbar-btn-icon">⚙</span>
-                <span>Settings</span>
+                <span class="icon-link-glyph" aria-hidden="true">⚙</span>
               </button>
               <div class="tier-badge" id="tier-badge" data-tier="${escapeHtml(
                 tier?.tier || "free"
@@ -826,21 +826,22 @@ export const dashboardPage = {
       // buttons, and surfaces v0.1.8 diagnostics so we can debug
       // "No Speech Detected" failures (Lesson 592).
       const voiceFab = document.getElementById("mc-voice-fab");
+      const voiceGlyph = voiceFab.querySelector(".icon-link-glyph");
       const runVoiceFab = async () => {
         if (!isModuleInstalled("voice")) {
           toast("Voice module not installed. Install via Settings → Modules.", { kind: "warn" });
           return;
         }
         voiceFab.disabled = true;
-        const orig = voiceFab.textContent;
-        voiceFab.textContent = "🎙…";
+        const orig = voiceGlyph.textContent;
+        voiceGlyph.textContent = "🎙…";
         try {
           // Lesson 581 (2026-08-25 16:25 MDT, David): ensure whisper
           // model is present before transcribing. If missing,
           // auto-download (~75MB) so the user gets a working mic
           // without having to dig into the binary's env vars.
           const ready = await ensureVoiceModel((status) => {
-            voiceFab.textContent = status.startsWith("Downloading") ? "📥…" : "🎙…";
+            voiceGlyph.textContent = status.startsWith("Downloading") ? "📥…" : "🎙…";
           });
           if (!ready) {
             toast(
@@ -879,7 +880,7 @@ export const dashboardPage = {
           }
         } finally {
           voiceFab.disabled = false;
-          voiceFab.textContent = orig;
+          voiceGlyph.textContent = orig;
         }
       };
       if (voiceFab) {

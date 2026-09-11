@@ -102,5 +102,5 @@ test("form_schema renderer handles URL + integer + boolean fields", () => {
   assert.match(src, /type="text"/);
   // Coercion rules for booleans and numbers are present
   assert.match(src, /inputs\[f\.name\] = !!form\.querySelector/);
-  assert.match(src, /Number\(inputs\[k\]\)/);
+  assert.match(src, /Number\(inputs\[f\.name\]\)/);
 });

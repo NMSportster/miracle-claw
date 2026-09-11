@@ -286,23 +286,21 @@ export const terminalPage = {
                   data-state="starting">starting…</span>
             <button
               type="button"
-              class="toolbar-btn"
+              class="icon-link"
               id="terminal-fullscreen"
               title="Toggle larger terminal area"
               aria-label="Toggle larger terminal area"
             >
-              <span class="toolbar-btn-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9V3h6"/><path d="M21 9V3h-6"/><path d="M3 15v6h6"/><path d="M21 15v6h-6"/></svg></span>
-              <span>Fullscreen</span>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9V3h6"/><path d="M21 9V3h-6"/><path d="M3 15v6h6"/><path d="M21 15v6h-6"/></svg>
             </button>
             <button
               type="button"
-              class="toolbar-btn"
+              class="icon-link"
               id="terminal-back"
               title="Back to Dashboard"
               aria-label="Back to Dashboard"
             >
-              <span class="toolbar-btn-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg></span>
-              <span>Dashboard</span>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
             </button>
           </div>
         </header>
@@ -1117,12 +1115,16 @@ export const terminalPage = {
     // next tick to race the layout engine's paint.
     const fullscreenBtn = document.getElementById("terminal-fullscreen");
     const pageRoot = root.querySelector(".terminal-page");
+    const applyFullscreenState = (on) => {
+      pageRoot.classList.toggle("terminal-fullscreen-mode", on);
+      fullscreenBtn.classList.toggle("is-fullscreen", on);
+    };
     if (safeLocalGet("mc.terminal.fullscreen") === "1") {
-      pageRoot.classList.add("terminal-fullscreen-mode");
-      fullscreenBtn.textContent = "⛶";
+      applyFullscreenState(true);
     }
     fullscreenBtn.addEventListener("click", () => {
-      const on = pageRoot.classList.toggle("terminal-fullscreen-mode");
+      const on = !pageRoot.classList.contains("terminal-fullscreen-mode");
+      applyFullscreenState(on);
       safeLocalSet("mc.terminal.fullscreen", on ? "1" : "0");
       setTimeout(() => {
         try { fitAddon.fit(); } catch { /* ignore */ }
