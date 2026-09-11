@@ -1009,7 +1009,8 @@ code {
 /* Visible Ctrl+K chip in the dashboard header so users discover the
    command palette shortcut. Without this, the shortcut is invisible
    to anyone who didn't already know about it (rc52 feedback). */
-.icon-link.cmd-k-hint {
+.icon-link.cmd-k-hint,
+.toolbar-btn.cmd-k-hint {
   width: auto;
   height: 32px;
   padding: 0 10px;
@@ -1019,7 +1020,8 @@ code {
   color: var(--fg-muted);
   letter-spacing: 0.02em;
 }
-.icon-link.cmd-k-hint kbd {
+.icon-link.cmd-k-hint kbd,
+.toolbar-btn.cmd-k-hint kbd {
   font-family: inherit;
   font-size: inherit;
   /* Inline kbd (no extra chip styling) so the chip reads as one label */
@@ -1778,17 +1780,20 @@ code {
    same button gets the `.terminal-fullscreen-mic` selector via the
    `[data-module-voice-installed="true"]` style below; we use CSS to
    ensure the icon stays visible against the dark fullscreen bg. */
-.icon-link[data-module-voice-installed="false"] {
+.icon-link[data-module-voice-installed="false"],
+.toolbar-btn[data-module-voice-installed="false"] {
   opacity: 0.4;
   cursor: not-allowed;
   pointer-events: none;
 }
-.icon-link[data-module-voice-installed="false"]:hover {
+.icon-link[data-module-voice-installed="false"]:hover,
+.toolbar-btn[data-module-voice-installed="false"]:hover {
   /* Hover state suppressed while disabled — no transform, no color shift */
   background: transparent;
   border-color: var(--border);
 }
-.icon-link[data-module-voice-installed="true"] {
+.icon-link[data-module-voice-installed="true"],
+.toolbar-btn[data-module-voice-installed="true"] {
   opacity: 1;
   cursor: pointer;
   pointer-events: auto;
@@ -6477,4 +6482,173 @@ kbd {
 .mc-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* --- Toolbar button (inline icon + text) ---------------------------
+ * Lesson 969 (2026-09-11, David): the dashboard header and terminal
+ * toolbar were using bare .icon-link buttons with title= attributes
+ * for hover tooltips. Those native tooltips look out of place in a
+ * Tauri app and don't carry the meaning of the action. This class
+ * makes the button an inline icon+text chip — proper HTML, part of
+ * the page, no floating popups. Used by dashboard.js and terminal.js
+ * for Voice, Modules, Settings, Cmd+K, etc.
+ */
+.toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.toolbar-btn:hover {
+  background: var(--tile-hover);
+  border-color: var(--accent);
+}
+
+.toolbar-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.toolbar-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toolbar-btn-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.toolbar-btn-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent, #2d6cdf);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 2px;
+}
+
+/* --- Modules dropdown ------------------------------------------
+ * Inline popover anchored to a trigger button. Sibling in the DOM
+ * (so layout absorbs it) and absolutely positioned directly below
+ * the button. Closes on outside-click or Escape.
+ */
+.mc-modules-menu {
+  position: fixed;
+  z-index: 1100;
+  min-width: 240px;
+  max-width: 320px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-card, #1e1e24);
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mc-modules-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--fg, #e5e5e5);
+  text-align: left;
+  font-family: inherit;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.mc-modules-menu-item:hover,
+.mc-modules-menu-item:focus-visible {
+  background: var(--tile-hover, rgba(255, 255, 255, 0.05));
+  outline: none;
+}
+
+.mc-modules-menu-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+  width: 24px;
+  text-align: center;
+}
+
+.mc-modules-menu-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.mc-modules-menu-name {
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.mc-modules-menu-sub {
+  font-size: 11px;
+  color: var(--fg-muted, #888);
+  line-height: 1.2;
+}
+
+/* --- Module result actions -------------------------------------
+ * Three buttons below the form output: Send to Chat / Copy / Close.
+ * These bridge scrape-style tools (Firecrawl, Marketing Suite) into
+ * the agent chat. Click Send-to-Chat to push content into the
+ * dashboard chat input (or clipboard as fallback). Lesson 969.
+ */
+.mc-modal-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 24px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-card, transparent);
+  align-items: center;
+}
+
+.mc-modal-result-actions .toolbar-btn {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.mc-modal-result-actions .mc-primary.toolbar-btn {
+  background: var(--accent, #2d6cdf);
+  color: #fff;
+  border-color: var(--accent, #2d6cdf);
+}
+
+.mc-modal-result-actions .mc-primary.toolbar-btn:hover {
+  filter: brightness(1.1);
+}
+
+/* When the result section is visible, hide the form's default footer
+ * so the result-actions row replaces it visually. */
+.mc-modal-form:has(+ .mc-modal-result:not([hidden])) .mc-modal-footer {
+  display: none;
 }

@@ -1,7 +1,7 @@
 {
   "name": "miracle-claw",
   "private": true,
-  "version": "1.2.0-rc56.1",
+  "version": "1.2.0-rc56.2",
   "type": "module",
   "description": "Miracle Claw \u2014 Milagro Distribution Corp's desktop chat client for MAIC models",
   "scripts": {
@@ -10,7 +10,7 @@
     "build:no-clean": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test:js": "node src/secrets/preprocessor.test.mjs && node --test src/pages/workflows.test.mjs && node --test src/catch-block-audit.test.mjs && node --test scripts/prebuild-clean.test.mjs && node --test src/pages/dashboard_launchpad_form_schema.test.mjs && node --test src/pages/dashboard_launchpad_modal_position.test.mjs && node --test src/pages/installed_response_contract.test.mjs"
+    "test:js": "node src/secrets/preprocessor.test.mjs && node --test src/pages/workflows.test.mjs && node --test src/catch-block-audit.test.mjs && node --test scripts/prebuild-clean.test.mjs && node --test src/pages/dashboard_launchpad_form_schema.test.mjs && node --test src/pages/dashboard_launchpad_modal_position.test.mjs && node --test src/pages/installed_response_contract.test.mjs && node --test src/modules-menu.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

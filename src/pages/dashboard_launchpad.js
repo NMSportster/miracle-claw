@@ -31,6 +31,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { navigate } from "../navigation.js";
 import { toast } from "../toast.js";
+// Lesson 969 (2026-09-11, David): the new inline Modules dropdown in
+// the dashboard + terminal toolbars lives in src/modules-menu.js and
+// shares the same form_schema / result-modal logic. The launchpad's
+// existing openModuleModal stays local for now (same behavior, separate
+// code path); a follow-up can de-dup. We don't import the shared
+// openModuleModal here because that would pull in modules-runtime +
+// Tauri APIs which the launchpad's offline test suite can't load.
 
 // --- helpers -------------------------------------------------------------
 

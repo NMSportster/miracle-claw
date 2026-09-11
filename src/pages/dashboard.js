@@ -22,7 +22,8 @@ import { openPalette as openCmdKPalette } from "../cmd_k_palette.js";
 // Lesson 571 (2026-08-25 00:37 MDT, David): MC Module Framework —
 // dashboard FAB calls the voice module via the JS-side runtime.
 // Button starts greyed out (data-module-voice-installed="false").
-import { isModuleInstalled, invokeModule, ensureVoiceModel } from "../modules-runtime.js";
+import { isModuleInstalled, invokeModule, ensureVoiceModel, listInstalledModules } from "../modules-runtime.js";
+import { mountModulesMenu, closeModuleModal } from "../modules-menu.js";
 import { toast } from "../toast.js";
 
 function escapeHtml(s) {
@@ -441,26 +442,44 @@ export const dashboardPage = {
             <div class="dashboard-header-actions">
               <button
                 type="button"
-                class="icon-link"
+                class="toolbar-btn"
                 id="mc-voice-fab"
-                title="Voice input (requires Voice for MiracleClaw module)"
-                aria-label="Voice input"
                 data-module-voice-installed="false"
-              >🎙</button>
+                aria-label="Voice input"
+              >
+                <span class="toolbar-btn-icon">🎙</span>
+                <span>Voice</span>
+              </button>
               <button
                 type="button"
-                class="icon-link cmd-k-hint"
+                class="toolbar-btn"
+                id="mc-modules-btn"
+                aria-label="Open installed modules"
+                aria-haspopup="menu"
+              >
+                <span class="toolbar-btn-icon">🧩</span>
+                <span>Modules</span>
+                <span class="toolbar-btn-count" id="mc-modules-count" hidden>0</span>
+              </button>
+              <button
+                type="button"
+                class="toolbar-btn cmd-k-hint"
                 id="cmd-k-open"
                 title="Command palette (Ctrl+K)"
                 aria-label="Open command palette"
-              ><kbd>Ctrl</kbd>+<kbd>K</kbd></button>
+              >
+                <span class="toolbar-btn-icon">⌘</span>
+                <span><kbd>Ctrl</kbd>+<kbd>K</kbd></span>
+              </button>
               <button
                 type="button"
-                class="icon-link"
+                class="toolbar-btn"
                 id="settings-link"
-                title="Open Settings"
                 aria-label="Open Settings"
-              >⚙</button>
+              >
+                <span class="toolbar-btn-icon">⚙</span>
+                <span>Settings</span>
+              </button>
               <div class="tier-badge" id="tier-badge" data-tier="${escapeHtml(
                 tier?.tier || "free"
               )}" title="Click to refresh tier from MAIC">
@@ -770,6 +789,19 @@ export const dashboardPage = {
         cmdKBtn.addEventListener("click", () => openCmdKPalette());
       }
 
+      // Lesson 969 (2026-09-11, David): inline Modules dropdown in the
+      // header. Lists all installed modules, opens the same form/result
+      // modal as the launchpad, and bridges scrape results into chat
+      // via the shared modules-menu helper. Lives as a sibling of the
+      // trigger button so layout absorbs it (Lesson 968 sibling lesson).
+      const modulesMenuBtn = document.getElementById("mc-modules-btn");
+      if (modulesMenuBtn) {
+        mountModulesMenu(modulesMenuBtn, { surface: "dashboard" });
+        updateModulesCount();
+        window.addEventListener("mc:module-installed", updateModulesCount);
+        window.addEventListener("mc:module-uninstalled", updateModulesCount);
+      }
+
       // Lesson TBD (2026-08-27): voice-setup banner dismiss + open.
       // Dismiss is sticky via localStorage so it doesn't nag returning
       // users. Open routes to Settings → Voice section.
@@ -968,8 +1000,31 @@ export const dashboardPage = {
     // rc53.29: also tear down the voice preview modal (uses .voice-
     // modal-overlay, not .modal-overlay — keeps its own scoped class).
     closeVoiceResultModal();
+    // Lesson 969: tear down any module modals + the open dropdown, and
+    // drop the count-badge listeners.
+    closeModuleModal();
+    if (typeof window !== "undefined") {
+      window.removeEventListener("mc:module-installed", updateModulesCount);
+      window.removeEventListener("mc:module-uninstalled", updateModulesCount);
+    }
   },
 };
+
+// --- helpers below are not part of the page API ---
+
+// Lesson 969: count badge updater for the inline Modules button.
+// Module-scoped so unmount() can detach the listeners.
+function updateModulesCount() {
+  const count = document.getElementById("mc-modules-count");
+  if (!count) return;
+  const items = listInstalledModules();
+  if (items.length === 0) {
+    count.hidden = true;
+  } else {
+    count.hidden = false;
+    count.textContent = String(items.length);
+  }
+}
 
 // --- helpers below are not part of the page API ---
 

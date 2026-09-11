@@ -51,7 +51,8 @@ import "@xterm/xterm/css/xterm.css";
 // the JS-side module runtime. The button starts greyed out
 // (data-module-voice-installed="false") and lights up when the
 // voice module installs.
-import { isModuleInstalled, invokeModule, ensureVoiceModel } from "../modules-runtime.js";
+import { isModuleInstalled, invokeModule, ensureVoiceModel, listInstalledModules } from "../modules-runtime.js";
+import { mountModulesMenu, closeModuleModal } from "../modules-menu.js";
 import { toast } from "../toast.js";
 // rc53.5 (feature/secrets-vault): mount the secrets page inside an
 // overlay when the toolbar button is clicked. Re-uses the existing
@@ -285,18 +286,24 @@ export const terminalPage = {
                   data-state="starting">starting…</span>
             <button
               type="button"
-              class="icon-link"
+              class="toolbar-btn"
               id="terminal-fullscreen"
               title="Toggle larger terminal area"
               aria-label="Toggle larger terminal area"
-            ><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9V3h6"/><path d="M21 9V3h-6"/><path d="M3 15v6h6"/><path d="M21 15v6h-6"/></svg></button>
+            >
+              <span class="toolbar-btn-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9V3h6"/><path d="M21 9V3h-6"/><path d="M3 15v6h6"/><path d="M21 15v6h-6"/></svg></span>
+              <span>Fullscreen</span>
+            </button>
             <button
               type="button"
-              class="icon-link"
+              class="toolbar-btn"
               id="terminal-back"
               title="Back to Dashboard"
               aria-label="Back to Dashboard"
-            ><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg></button>
+            >
+              <span class="toolbar-btn-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg></span>
+              <span>Dashboard</span>
+            </button>
           </div>
         </header>
 
@@ -319,21 +326,31 @@ export const terminalPage = {
             Kill session
           </button>
           <span class="terminal-toolbar-spacer"></span>
-          <button type="button" id="terminal-attach-btn" class="icon-link"
+          <button type="button" id="terminal-attach-btn" class="toolbar-btn"
                   title="Drop files to attach to your next chat message"
                   aria-label="Open attach zone">
-            📎 Attach
+            <span class="toolbar-btn-icon">📎</span>
+            <span>Attach</span>
           </button>
-          <button type="button" id="terminal-secrets-btn" class="icon-link"
+          <button type="button" id="terminal-secrets-btn" class="toolbar-btn"
                   title="Manage secrets vault (rc53.6 — Once / PerSession / Vault)"
                   aria-label="Open secrets vault">
-            🔑 Secrets
+            <span class="toolbar-btn-icon">🔑</span>
+            <span>Secrets</span>
           </button>
-          <button type="button" id="terminal-voice-btn" class="icon-link"
+          <button type="button" id="terminal-voice-btn" class="toolbar-btn"
                   title="Voice input (requires Voice for MiracleClaw module)"
                   aria-label="Voice input"
                   data-module-voice-installed="false">
-            🎙 Voice
+            <span class="toolbar-btn-icon">🎙</span>
+            <span>Voice</span>
+          </button>
+          <button type="button" id="terminal-modules-btn" class="toolbar-btn"
+                  aria-label="Open installed modules"
+                  aria-haspopup="menu">
+            <span class="toolbar-btn-icon">🧩</span>
+            <span>Modules</span>
+            <span class="toolbar-btn-count" id="terminal-modules-count" hidden>0</span>
           </button>
         </div>
 
@@ -1032,6 +1049,18 @@ export const terminalPage = {
     });
     document.getElementById("terminal-attach-btn").addEventListener("click", openAttachOverlay);
 
+    // Lesson 969: inline Modules dropdown in the terminal toolbar.
+    // Mirrors the dashboard header so users have the same module
+    // picker on both surfaces. Result modal's Send-to-Chat action
+    // will route the content to the chat input (Lesson 574 chain).
+    const modulesBtn = document.getElementById("terminal-modules-btn");
+    if (modulesBtn) {
+      mountModulesMenu(modulesBtn, { surface: "terminal" });
+      updateTerminalModulesCount();
+      window.addEventListener("mc:module-installed", updateTerminalModulesCount);
+      window.addEventListener("mc:module-uninstalled", updateTerminalModulesCount);
+    }
+
     // rc53.9 (Lesson 243): auto-open one of the overlays on mount if
     // requested. Three sources, in priority order:
     //   1. ctx.autoOpenOverlay (caller passed extras via navigate())
@@ -1198,5 +1227,26 @@ export const terminalPage = {
       delete root._terminalCleanup;
       c();
     }
+    // Lesson 969: tear down the modules dropdown + modal and detach
+    // the count-badge listeners.
+    closeModuleModal();
+    if (typeof window !== "undefined") {
+      window.removeEventListener("mc:module-installed", updateTerminalModulesCount);
+      window.removeEventListener("mc:module-uninstalled", updateTerminalModulesCount);
+    }
   },
 };
+
+// Lesson 969: count badge updater for the terminal Modules button.
+// Module-scoped so unmount() can detach the listeners.
+function updateTerminalModulesCount() {
+  const count = document.getElementById("terminal-modules-count");
+  if (!count) return;
+  const items = listInstalledModules();
+  if (items.length === 0) {
+    count.hidden = true;
+  } else {
+    count.hidden = false;
+    count.textContent = String(items.length);
+  }
+}
