@@ -324,30 +324,27 @@ export const terminalPage = {
             Kill session
           </button>
           <span class="terminal-toolbar-spacer"></span>
-          <button type="button" id="terminal-attach-btn" class="toolbar-btn"
+          <button type="button" id="terminal-attach-btn" class="icon-link"
                   title="Drop files to attach to your next chat message"
                   aria-label="Open attach zone">
-            <span class="toolbar-btn-icon">📎</span>
-            <span>Attach</span>
+            <span class="icon-link-glyph" aria-hidden="true">📎</span>
           </button>
-          <button type="button" id="terminal-secrets-btn" class="toolbar-btn"
+          <button type="button" id="terminal-secrets-btn" class="icon-link"
                   title="Manage secrets vault (rc53.6 — Once / PerSession / Vault)"
                   aria-label="Open secrets vault">
-            <span class="toolbar-btn-icon">🔑</span>
-            <span>Secrets</span>
+            <span class="icon-link-glyph" aria-hidden="true">🔑</span>
           </button>
-          <button type="button" id="terminal-voice-btn" class="toolbar-btn"
+          <button type="button" id="terminal-voice-btn" class="icon-link"
                   title="Voice input (requires Voice for MiracleClaw module)"
                   aria-label="Voice input"
                   data-module-voice-installed="false">
-            <span class="toolbar-btn-icon">🎙</span>
-            <span>Voice</span>
+            <span class="icon-link-glyph" aria-hidden="true">🎙</span>
           </button>
-          <button type="button" id="terminal-modules-btn" class="toolbar-btn"
+          <button type="button" id="terminal-modules-btn" class="icon-link"
+                  title="Open installed modules"
                   aria-label="Open installed modules"
                   aria-haspopup="menu">
-            <span class="toolbar-btn-icon">🧩</span>
-            <span>Modules</span>
+            <span class="icon-link-glyph" aria-hidden="true">🧩</span>
             <span class="toolbar-btn-count" id="terminal-modules-count" hidden>0</span>
           </button>
         </div>
@@ -891,20 +888,22 @@ export const terminalPage = {
     // terminal input row. v0.1.0 uses alert() as the result sink;
     // Lesson 572 will replace with a toast or inline status.
     const voiceBtn = document.getElementById("terminal-voice-btn");
+    const voiceGlyph = voiceBtn.querySelector(".icon-link-glyph");
     voiceBtn.addEventListener("click", async () => {
       if (!isModuleInstalled("voice")) {
         toast("Voice module not installed. Install via Settings → Modules.", { kind: "warn" });
         return;
       }
       voiceBtn.disabled = true;
-      voiceBtn.textContent = "🎙 Listening…";
+      const orig = voiceGlyph.textContent;
+      voiceGlyph.textContent = "🎙…";
       try {
         // Lesson 581 (2026-08-25 16:25 MDT, David): ensure whisper
         // model is present before transcribing. If missing,
         // auto-download (~75MB) so the user gets a working mic
         // without having to dig into the binary's env vars.
         const ready = await ensureVoiceModel((status) => {
-          voiceBtn.textContent = status.startsWith("Downloading") ? "📥 Downloading…" : "🎙 Preparing…";
+          voiceGlyph.textContent = status.startsWith("Downloading") ? "📥…" : "🎙…";
         });
         if (!ready) {
           toast(
@@ -946,7 +945,7 @@ export const terminalPage = {
         }
       } finally {
         voiceBtn.disabled = false;
-        voiceBtn.textContent = "🎙 Voice";
+        voiceGlyph.textContent = orig;
       }
     });
 

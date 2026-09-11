@@ -462,10 +462,54 @@ export function mountModulesMenu(buttonEl, opts = {}) {
       closeMenu();
       return;
     }
-    const items = listInstalledModules();
-    if (items.length === 0) {
-      toast("No modules installed yet. Visit Settings → Modules.", { kind: "info" });
-      return;
+    // Lesson 975 (2026-09-11 17:09 MDT, David): the toolbar Modules
+    // dropdown was reading `listInstalledModules()` which only knows
+    // about LOCAL modules (populated from `mc_module_list` at boot).
+    // Modules installed via MAIC's `/v1/modules/install` (Firecrawl,
+    // etc.) are tracked remotely but never registered locally, so the
+    // dropdown showed "No modules installed yet" even though the
+    // launchpad's "Your Tools" grid showed them. Fix: query the
+    // remote list (`mc_list_installed_modules`) for the dropdown and
+    // merge it with the local list. Both sources together cover the
+    // full installed set.
+    let items = [];
+    try {
+      const localItems = listInstalledModules();
+      const localIds = new Set(localItems.map((m) => m.id));
+      const remote = await invoke("mc_list_installed_modules");
+      const remoteItems = (remote?.modules || []).map((m) => {
+        // Normalize remote shape to the same {id, name, version,
+        // hooks, icon?} shape we use for local. The remote has
+        // `module_id` (not `id`) and `client_manifest.icon`.
+        const cm = m.client_manifest || {};
+        return {
+          id: m.module_id,
+          name: m.name,
+          version: cm.version || "",
+          hooks: cm.ui_hooks || [],
+          icon: m.icon || cm.icon,
+          _remote: true,
+        };
+      });
+      // Remote wins for any overlap (it has more recent install state).
+      // Local-only items keep their (richer) hooks info.
+      const remoteIds = new Set(remoteItems.map((m) => m.id));
+      items = [
+        ...remoteItems,
+        ...localItems.filter((m) => !remoteIds.has(m.id)),
+      ];
+      if (items.length === 0) {
+        toast("No modules installed yet. Visit Settings → Modules.", { kind: "info" });
+        return;
+      }
+    } catch (e) {
+      // Fall back to local-only list if the remote call fails.
+      console.warn("[modules-menu] remote list failed, using local only:", e);
+      items = listInstalledModules();
+      if (items.length === 0) {
+        toast("No modules installed yet. Visit Settings → Modules.", { kind: "info" });
+        return;
+      }
     }
     // Build dropdown — sibling of the button so layout absorbs it
     // naturally. The menu is positioned absolutely below the button.
@@ -525,7 +569,11 @@ export function mountModulesMenu(buttonEl, opts = {}) {
 }
 
 function defaultRenderItem(m) {
-  return { icon: "🧩", name: m.name || m.id, subtitle: m.version ? `v${m.version}` : "" };
+  return {
+    icon: m.icon || "🧩",
+    name: m.name || m.id,
+    subtitle: m.version ? `v${m.version}` : "",
+  };
 }
 
 // Re-export so callers don't need a second import.
