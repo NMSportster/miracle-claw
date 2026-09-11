@@ -6321,6 +6321,23 @@ kbd {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
   display: flex;
   flex-direction: column;
+  /* Lesson 968 (2026-09-11, David): the panel is a SIBLING of the
+   * .mc-modal-backdrop (not a child), so the backdrop's flex centering
+   * doesn't reach it. Without position: relative here the panel
+   * renders in normal document flow at the top of <body> and ends up
+   * hidden BEHIND the fixed-positioned backdrop — user sees only the
+   * gray overlay, clicks anywhere to close, never sees the form.
+   * The fix: lift the panel out of the flow and stack it above the
+   * backdrop via z-index. The backdrop's flex centering already
+   * positions us because both elements share the same parent, but
+   * only with the panel at position: fixed and a higher z-index.
+   * Kept `position: fixed` (not absolute) so the panel stays centered
+   * even if body has scrolled. */
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1001;
 }
 
 .mc-modal-header {
