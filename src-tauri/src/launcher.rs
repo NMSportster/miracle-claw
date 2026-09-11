@@ -281,6 +281,16 @@ fn build_node_command(args: &Args, node_bin: &Path, resources: &Path) -> Command
         // disk full). The user's config still wins when it exists.
         .arg("--allow-unconfigured")
         .env("OPENCLAW_STATE_DIR", default_openclaw_state_dir())
+        // Lesson 973 (2026-09-11): the bundled openclaw gateway reads its
+        // config from `openclaw.json` by default. MC writes to `chat.json`
+        // in the same state dir. Without this env var, the gateway ignores
+        // the `agents.defaults.model` block we seeded in lib.rs setup()
+        // and falls through to its hardcoded `openai/gpt-5.5` default,
+        // which has no key in the embedded agent's auth store → 401
+        // `missing-provider-auth` on every chat turn. Setting
+        // `OPENCLAW_CONFIG_PATH` to the same `chat.json` lib.rs writes
+        // makes the gateway pick up the seeded `maic/` provider chain.
+        .env("OPENCLAW_CONFIG_PATH", default_openclaw_config_path())
         .env("NODE_PATH", &node_path)
         // AP-833-U (2026-09-08, David): bundled openclaw (v2026.7.1-2)
         // has a startup update check that hits registry.npmjs.org/openclaw
@@ -328,6 +338,43 @@ fn default_openclaw_state_dir() -> OsString {
         return OsString::from(format!("{}/.miracle-claw", home));
     }
     OsString::from("miracle-claw")
+}
+
+/// Lesson 973 (2026-09-11 12:55 MDT, David): point the bundled openclaw
+/// gateway at `chat.json` inside MC's state dir, NOT the default
+/// `<stateDir>/openclaw.json`.
+///
+/// **Why this exists**: lib.rs's `openclaw_json_path()` returns
+/// `<stateDir>/chat.json` and writes `agents.defaults.model` + provider
+/// seed lists there. The bundled openclaw's `resolveConfigPath` (in
+/// `dist/paths-*.js`) defaults to `<stateDir>/openclaw.json` whenever
+/// `OPENCLAW_CONFIG_PATH` is unset. That mismatch meant the gateway was
+/// booting with NO config (relied on `--allow-unconfigured` to survive),
+/// which is why `chat.json`'s carefully-seeded `agents.defaults.model`
+/// block was ignored and the gateway fell through to its hardcoded
+/// `?? openai/gpt-5.5` default → `missing-provider-auth` 401 on every
+/// chat turn.
+///
+/// The TUI launch path in lib.rs (mc_terminal_start) already sets
+/// `OPENCLAW_CONFIG_PATH=<stateDir>/chat.json` for its own shell. The
+/// GUI launch path (this file) was missing the same env var — the
+/// launcher only set `OPENCLAW_STATE_DIR`, which is what made the
+/// bundled gateway look one directory up the wrong file.
+///
+/// We mirror the TUI's path here so both shells hit the same config.
+fn default_openclaw_config_path() -> OsString {
+    let state_dir = default_openclaw_state_dir();
+    let mut buf = OsString::with_capacity(state_dir.len() + 16);
+    buf.push(state_dir);
+    #[cfg(windows)]
+    {
+        buf.push("\\chat.json");
+    }
+    #[cfg(not(windows))]
+    {
+        buf.push("/chat.json");
+    }
+    buf
 }
 
 fn run(args: Args) -> Result<(), LauncherError> {
@@ -423,4 +470,56 @@ fn main() -> std::process::ExitCode {
     }
 
     std::process::ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lesson 973 (2026-09-11 12:55 MDT, David): `default_openclaw_config_path`
+    /// MUST return a path inside the same state dir as
+    /// `default_openclaw_state_dir`, with the basename `chat.json` (NOT
+    /// `openclaw.json`). The bundled openclaw gateway reads whichever file
+    /// this env var points at; if it points at a non-existent file the
+    /// gateway boots with no config and falls through to the hardcoded
+    /// `openai/gpt-5.5` default → 401 `missing-provider-auth` on first chat.
+    ///
+    /// This test pins two invariants:
+    /// 1. The directory portion of `default_openclaw_config_path()` matches
+    ///    `default_openclaw_state_dir()` — both must agree on where MC's
+    ///    state lives, otherwise we'd point the gateway at a dir the
+    ///    `setup()` writer never touched.
+    /// 2. The basename is `chat.json` — the file lib.rs's
+    ///    `openclaw_json_path()` actually writes to. If we ever rename the
+    ///    file, this test fails before the regression ships.
+    #[test]
+    fn lesson_973_config_path_lives_in_state_dir_and_ends_in_chat_json() {
+        let state_dir = default_openclaw_state_dir();
+        let config_path = default_openclaw_config_path();
+
+        let state_str = state_dir.to_string_lossy();
+        let config_str = config_path.to_string_lossy();
+
+        // The config path MUST start with the state dir — otherwise the
+        // gateway is looking somewhere other than where MC writes.
+        assert!(
+            config_str.starts_with(state_str.as_ref()),
+            "config path {} must live inside state dir {}",
+            config_str,
+            state_str
+        );
+
+        // The basename MUST be `chat.json` so we agree with
+        // `openclaw_json_path()` in lib.rs.
+        #[cfg(windows)]
+        let suffix = "\\chat.json";
+        #[cfg(not(windows))]
+        let suffix = "/chat.json";
+        assert!(
+            config_str.ends_with(suffix),
+            "config path {} must end with {} (lib.rs writes to chat.json, NOT openclaw.json)",
+            config_str,
+            suffix
+        );
+    }
 }

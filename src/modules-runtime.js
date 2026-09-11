@@ -24,8 +24,25 @@
 // safe to call before the Tauri backend is reachable — it just
 // silently waits for events.
 
-const { invoke } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
+// Lazily access window.__TAURI__ — defer the destructure so this
+// module can be imported in test environments (e.g. the launchpad's
+// offline form_schema test, src/modules-menu.test.mjs) without
+// crashing on `window is not defined`. The original top-level
+// destructure (Lesson 970, 2026-09-11 09:51 MDT) was fine in
+// production but broke offline tests as soon as the launchpad
+// started importing modules-menu.js.
+function tauriInvoke() {
+  if (typeof window === "undefined" || !window.__TAURI__) {
+    throw new Error("Tauri runtime not available");
+  }
+  return window.__TAURI__.core.invoke;
+}
+function tauriListen() {
+  if (typeof window === "undefined" || !window.__TAURI__) {
+    throw new Error("Tauri runtime not available");
+  }
+  return window.__TAURI__.event.listen;
+}
 
 // Installed modules: { [id]: { name, version, hooks: string[] } }
 const installed = new Map();
@@ -42,7 +59,7 @@ export async function initModuleRuntime() {
   listenerInstalled = true;
 
   // mc:module-installed — payload: { id, name, version, hooks }
-  await listen("mc:module-installed", (evt) => {
+  await tauriListen()("mc:module-installed", (evt) => {
     const { id, name, version, hooks } = evt.payload || {};
     if (!id) return;
     installed.set(id, { name, version, hooks: hooks || [] });
@@ -56,7 +73,7 @@ export async function initModuleRuntime() {
   });
 
   // mc:module-uninstalled — payload: { id }
-  await listen("mc:module-uninstalled", (evt) => {
+  await tauriListen()("mc:module-uninstalled", (evt) => {
     const { id } = evt.payload || {};
     if (!id) return;
     installed.delete(id);
@@ -70,7 +87,7 @@ export async function initModuleRuntime() {
   // Initial sync: ask Rust what's already installed (modules
   // discovered at startup before JS listeners were attached).
   try {
-    const list = await invoke("mc_module_list");
+    const list = await tauriInvoke()("mc_module_list");
     for (const m of list || []) {
       installed.set(m.id, {
         name: m.name,
@@ -114,7 +131,7 @@ export function listInstalledModules() {
 export async function invokeModule(command, params = {}) {
   const t0 = performance.now();
   try {
-    const resp = await invoke("mc_module_call", {
+    const resp = await tauriInvoke()("mc_module_call", {
       command,
       params,
     });
@@ -165,7 +182,7 @@ export async function installModuleFromUrl(id, url) {
   }
   const t0 = performance.now();
   try {
-    const result = await invoke("mc_module_install_url", { id, url });
+    const result = await tauriInvoke()("mc_module_install_url", { id, url });
     const elapsed = (performance.now() - t0).toFixed(0);
     console.log(
       `[modules] install ${id} from URL ok in ${elapsed}ms (${result?.verifiedFiles?.length || 0} files verified)`,

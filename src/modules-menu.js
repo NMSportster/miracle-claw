@@ -263,10 +263,15 @@ export function openModuleModal(module, opts = {}) {
       if (typeof v === "string" && v === "" && isCheckboxField(form, k)) continue;
       inputs[k] = v;
     }
+    // Coerce number/integer inputs to JS numbers before sending. Use
+    // the FIELD's name (f.name), not the FormData key from the outer
+    // loop — the original had a stray `k` here that mostly worked
+    // because the type guard short-circuited, but it was wrong (Lesson
+    // 970, 2026-09-11 09:51 MDT).
     for (const f of fields) {
-      if ((f.type === "number" || f.type === "integer") && k in inputs) {
-        const n = Number(inputs[k]);
-        if (!Number.isNaN(n)) inputs[k] = n;
+      if ((f.type === "number" || f.type === "integer") && f.name in inputs) {
+        const n = Number(inputs[f.name]);
+        if (!Number.isNaN(n)) inputs[f.name] = n;
       }
     }
     for (const f of fields) {
