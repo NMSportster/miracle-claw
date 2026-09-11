@@ -2381,7 +2381,7 @@ dependencies = [
 
 [[package]]
 name = "miracle-claw"
-version = "1.2.0-rc56.2"
+version = "1.2.0-rc56.3"
 dependencies = [
  "aes-gcm",
  "anyhow",
