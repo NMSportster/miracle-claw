@@ -1,0 +1,368 @@
+/* MiracleClaw chat-toolbar styles (Lesson 978, rc56.8)
+ *
+ * Scoped entirely under `.mc-oc-toolbar` so the openclaw host page's
+ * own styles can't bleed in and we can't bleed out. All classes are
+ * prefixed `mc-oc-` ("miracle claw — openclaw chat").
+ *
+ * Hard rules (from past lessons):
+ *   - Dropdowns are inline <div> SIBLINGS of the trigger (Lesson 968)
+ *   - Dropdowns measure after attach and right-align when clipping,
+ *     flip above when not enough room below (Lesson 976)
+ *   - No bare `position: fixed` dropdowns that survive scroll/resize
+ *     (close on outside click + scroll/resize)
+ *   - Icon-link 32x32 with dedicated glyph span (Lesson 974)
+ *   - State icons via CSS `::after` not textContent (Lesson 974)
+ */
+
+/* The toolbar itself. Pinned top-right of the chat viewport. z-index
+ * above the openclaw back-button (z=2147483647) so we always render
+ * on top of it. The bar floats; the chat input keeps its position. */
+.mc-oc-toolbar {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 2147483647;
+  display: inline-flex;
+  gap: 6px;
+  padding: 4px;
+  background: rgba(20, 20, 24, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  font: 500 12px/1.2 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #f5f5f7;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Reuse the Lesson 974 32x32 icon-link look. The toolbar is a compact
+ * group, so we keep the buttons tight. */
+.mc-oc-toolbar .mc-oc-icon-link {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease, border-color 0.15s ease;
+}
+.mc-oc-toolbar .mc-oc-icon-link:hover,
+.mc-oc-toolbar .mc-oc-icon-link:focus-visible {
+  background: rgba(255, 255, 255, 0.10);
+  border-color: rgba(255, 255, 255, 0.22);
+  outline: none;
+}
+.mc-oc-toolbar .mc-oc-icon-link:active {
+  transform: scale(0.95);
+}
+.mc-oc-toolbar .mc-oc-icon-link[aria-expanded="true"] {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.30);
+}
+
+/* Dedicated glyph span — JS code that mutates button text targets this
+ * span, not the button itself (Lesson 974). */
+.mc-oc-toolbar .mc-oc-icon-link-glyph {
+  display: inline-block;
+  line-height: 1;
+}
+
+/* Count badge for the Modules button (Lesson 976). */
+.mc-oc-toolbar .mc-oc-icon-link-count {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #ff5a5f;
+  color: #fff;
+  font: 700 10px/16px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px rgba(20, 20, 24, 0.85);
+}
+.mc-oc-toolbar .mc-oc-icon-link-count[hidden] {
+  display: none;
+}
+
+/* === Voice state — Lesson 974 pattern. CSS classes toggle, the
+ * ::after pseudo-element shows the new glyph so JS doesn't have to
+ * reach into the button text. === */
+.mc-oc-toolbar .mc-oc-voice-btn[data-state="idle"] .mc-oc-icon-link-glyph::after {
+  content: "🎙";
+}
+.mc-oc-toolbar .mc-oc-voice-btn[data-state="listening"] .mc-oc-icon-link-glyph::after {
+  content: "●";
+  color: #ff5a5f;
+  animation: mc-oc-pulse 1.1s ease-in-out infinite;
+}
+.mc-oc-toolbar .mc-oc-voice-btn[data-state="transcribing"] .mc-oc-icon-link-glyph::after {
+  content: "…";
+  color: #ffd86b;
+}
+@keyframes mc-oc-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+/* === Dropdown menu (sibling of trigger in DOM — Lesson 968). === */
+.mc-oc-dropdown {
+  position: fixed;
+  z-index: 2147483647;
+  min-width: 240px;
+  max-width: 360px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: rgba(20, 20, 24, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  padding: 6px;
+  color: #f5f5f7;
+  font: 500 12px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.mc-oc-dropdown[hidden] {
+  display: none;
+}
+.mc-oc-dropdown-header {
+  padding: 6px 10px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.55);
+}
+.mc-oc-dropdown-empty {
+  padding: 16px 12px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.55);
+  font-style: italic;
+}
+.mc-oc-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+.mc-oc-dropdown-item:hover,
+.mc-oc-dropdown-item:focus-visible {
+  background: rgba(255, 255, 255, 0.10);
+  outline: none;
+}
+.mc-oc-dropdown-item-icon {
+  font-size: 16px;
+  flex: 0 0 20px;
+  text-align: center;
+}
+.mc-oc-dropdown-item-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.mc-oc-dropdown-item-name {
+  font-weight: 600;
+  color: #f5f5f7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mc-oc-dropdown-item-meta {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mc-oc-dropdown-item-run {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.30);
+  border-radius: 4px;
+  font: 600 10px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #f5f5f7;
+  background: rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+}
+.mc-oc-dropdown-item-run:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* === Modal panel (sibling of backdrop — Lesson 968) === */
+.mc-oc-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.mc-oc-modal-backdrop[hidden] {
+  display: none;
+}
+.mc-oc-modal-panel {
+  position: relative; /* stays inside the centered flex; z-index inherits from backdrop */
+  z-index: 2147483647;
+  max-width: 520px;
+  width: 100%;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: rgba(24, 24, 28, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+  padding: 18px;
+  color: #f5f5f7;
+  font: 500 13px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.mc-oc-modal-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  color: #f5f5f7;
+}
+.mc-oc-modal-subtitle {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0 0 14px;
+}
+.mc-oc-modal-section {
+  margin-top: 14px;
+}
+.mc-oc-modal-section h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0 0 6px;
+  font-weight: 700;
+}
+.mc-oc-modal-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  margin-bottom: 4px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.mc-oc-modal-row-name {
+  font-weight: 600;
+}
+.mc-oc-modal-row-value {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 11px;
+}
+.mc-oc-modal-actions {
+  margin-top: 16px;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.mc-oc-modal-button {
+  padding: 6px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.30);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f5f5f7;
+  font: 600 12px/1.2 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+.mc-oc-modal-button:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+.mc-oc-modal-button.is-primary {
+  background: #4a8cff;
+  border-color: #4a8cff;
+}
+.mc-oc-modal-button.is-primary:hover {
+  background: #5d9aff;
+}
+
+/* === Attach dropzone (used inside attach modal) === */
+.mc-oc-attach-dropzone {
+  border: 2px dashed rgba(255, 255, 255, 0.30);
+  border-radius: 8px;
+  padding: 24px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.04);
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+.mc-oc-attach-dropzone.is-dragover {
+  background: rgba(74, 140, 255, 0.10);
+  border-color: #4a8cff;
+  color: #f5f5f7;
+}
+.mc-oc-attach-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mc-oc-attach-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.mc-oc-attach-list-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* === Toast (top-center, since openclaw's bottom-right can clash) === */
+.mc-oc-toast {
+  position: fixed;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2147483647;
+  padding: 8px 14px;
+  background: rgba(20, 20, 24, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  color: #f5f5f7;
+  font: 500 12px/1.3 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  max-width: 70vw;
+}
+.mc-oc-toast[hidden] {
+  display: none;
+}
+.mc-oc-toast.is-error {
+  background: rgba(120, 30, 30, 0.95);
+  border-color: rgba(255, 100, 100, 0.50);
+}
+.mc-oc-toast.is-success {
+  background: rgba(30, 100, 50, 0.95);
+  border-color: rgba(100, 200, 130, 0.50);
+}
