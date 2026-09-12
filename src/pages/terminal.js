@@ -52,7 +52,7 @@ import "@xterm/xterm/css/xterm.css";
 // (data-module-voice-installed="false") and lights up when the
 // voice module installs.
 import { isModuleInstalled, invokeModule, ensureVoiceModel, listInstalledModules } from "../modules-runtime.js";
-import { mountModulesMenu, closeModuleModal } from "../modules-menu.js";
+import { mountModulesMenu, closeModuleModal, getInstalledModulesMerged } from "../modules-menu.js";
 import { toast } from "../toast.js";
 // rc53.5 (feature/secrets-vault): mount the secrets page inside an
 // overlay when the toolbar button is clicked. Re-uses the existing
@@ -1240,14 +1240,33 @@ export const terminalPage = {
 
 // Lesson 969: count badge updater for the terminal Modules button.
 // Module-scoped so unmount() can detach the listeners.
-function updateTerminalModulesCount() {
+//
+// Lesson 976 (2026-09-11 18:05 MDT, David): was reading
+// `listInstalledModules()` which only counts LOCAL modules. For
+// MAIC-installed modules (FireCrawl, Marketing Suite, etc.) the
+// badge always showed "0" even though the dropdown showed them.
+// Use the shared `getInstalledModulesMerged()` helper so the badge
+// and dropdown always agree.
+let _terminalCountInflight = false;
+async function updateTerminalModulesCount() {
   const count = document.getElementById("terminal-modules-count");
   if (!count) return;
-  const items = listInstalledModules();
-  if (items.length === 0) {
+  if (_terminalCountInflight) return; // dedupe overlapping triggers
+  _terminalCountInflight = true;
+  try {
+    const items = await getInstalledModulesMerged();
+    if (items.length === 0) {
+      count.hidden = true;
+    } else {
+      count.hidden = false;
+      count.textContent = String(items.length);
+    }
+  } catch (e) {
+    // If even the merged fetch fails, hide the badge rather than
+    // show a stale 0.
+    console.warn("[terminal] modules count update failed:", e);
     count.hidden = true;
-  } else {
-    count.hidden = false;
-    count.textContent = String(items.length);
+  } finally {
+    _terminalCountInflight = false;
   }
 }

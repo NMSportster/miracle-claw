@@ -44,6 +44,51 @@ function cssEscape(s) {
   return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => `\\${c}`);
 }
 
+// Lesson 976 (2026-09-11 18:05 MDT, David): shared helper that returns
+// the merged installed-modules list (local + remote). The count badge
+// on the Modules button and the dropdown both need to agree on the
+// same set — if they disagree, the user sees "0" on the badge but
+// FireCrawl and Marketing Suite in the dropdown, which is confusing
+// and looks broken. Both surfaces should call this same helper.
+//
+// Local modules come from `listInstalledModules()` (populated from the
+// local Rust `mc_module_list` registry at boot). Remote modules come
+// from `invoke("mc_list_installed_modules")` (MAIC's
+// /v1/modules/installed). Remote wins for overlap (more recent
+// install state). Local-only items keep their richer hooks info.
+//
+// If the remote call fails (offline, JWT expired, MAIC down), fall
+// back to the local list so the UI still works.
+export async function getInstalledModulesMerged() {
+  const localItems = listInstalledModules();
+  try {
+    const remote = await invoke("mc_list_installed_modules");
+    const remoteItems = (remote?.modules || []).map(normalizeRemoteModule);
+    const remoteIds = new Set(remoteItems.map((m) => m.id));
+    return [
+      ...remoteItems,
+      ...localItems.filter((m) => !remoteIds.has(m.id)),
+    ];
+  } catch (e) {
+    console.warn("[modules-menu] remote list failed, using local only:", e);
+    return localItems;
+  }
+}
+
+// Map a MAIC /v1/modules/installed entry to our internal {id, name,
+// version, hooks, icon} shape (same as the local list).
+function normalizeRemoteModule(m) {
+  const cm = m.client_manifest || {};
+  return {
+    id: m.module_id,
+    name: m.name,
+    version: cm.version || "",
+    hooks: cm.ui_hooks || [],
+    icon: m.icon || cm.icon,
+    _remote: true,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // send-to-chat bridge
 //   Same lookup chain the voice modal uses (src/pages/dashboard.js:859-
@@ -212,11 +257,62 @@ export function closeModuleModal() {
   _openModal = null;
 }
 
+// Show a simple "module info" modal for modules that have no runnable
+// tools in their client_manifest. Lesson 976 (2026-09-11 18:05 MDT,
+// David): when a user clicks a module from the toolbar dropdown and
+// nothing visible happens, they think the click is broken. A modal
+// with the module's description, version, and category tells them
+// what they clicked on, and a "Run from launchpad" button points
+// them at the right place to use the module.
+function openModuleInfoModal(module) {
+  closeModuleModal();
+  const cm = module.client_manifest || {};
+  const version = cm.version || "";
+  const description = module.description || cm.description || "No description provided.";
+  const category = module.category || "";
+  const icon = module.icon || cm.icon || "🧩";
+
+  const modal = document.createElement("div");
+  modal.className = "mc-modal";
+  modal.innerHTML = `
+    <div class="mc-modal-backdrop" data-action="modal-close"></div>
+    <div class="mc-modal-panel">
+      <header class="mc-modal-header">
+        <h3><span class="mc-modules-menu-icon">${escapeHtml(icon)}</span> ${escapeHtml(module.name)}${version ? ` <span class="mc-modules-menu-sub">v${escapeHtml(version)}</span>` : ""}</h3>
+        <button class="mc-iconbtn" data-action="modal-close" title="Close">×</button>
+      </header>
+      <div class="mc-modal-info">
+        ${category ? `<div class="mc-modal-info-row"><span class="mc-modal-info-label">Category</span> ${escapeHtml(category)}</div>` : ""}
+        <p class="mc-modal-info-desc">${escapeHtml(description)}</p>
+        <p class="mc-modal-info-hint">This module has no runnable tools registered. Use the <strong>launchpad</strong> → "Your Tools" → <strong>Run</strong> button to use it, or visit Settings → Modules to manage installed modules.</p>
+      </div>
+      <footer class="mc-modal-footer">
+        <button type="button" data-action="modal-close" class="mc-primary">OK</button>
+      </footer>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  _openModal = modal;
+
+  modal.addEventListener("click", (ev) => {
+    const target = ev.target.closest("[data-action]");
+    if (!target) return;
+    if (target.dataset.action === "modal-close") {
+      closeModuleModal();
+    }
+  });
+}
+
 export function openModuleModal(module, opts = {}) {
   closeModuleModal();
   const tools = (module.client_manifest && module.client_manifest.tools) || [];
   if (tools.length === 0) {
-    toast(`${module.name} has no tools to run.`);
+    // Lesson 976 (2026-09-11 18:05 MDT, David): clicking a module with
+    // no tools used to just toast a 1-line "has no tools to run" and
+    // bail. That felt like nothing happened. Show a useful info modal
+    // instead: module description, version, and a hint to use the
+    // launchpad's "Run" button.
+    openModuleInfoModal(module);
     return;
   }
   const firstTool = tools[0];
@@ -472,44 +568,14 @@ export function mountModulesMenu(buttonEl, opts = {}) {
     // remote list (`mc_list_installed_modules`) for the dropdown and
     // merge it with the local list. Both sources together cover the
     // full installed set.
-    let items = [];
-    try {
-      const localItems = listInstalledModules();
-      const localIds = new Set(localItems.map((m) => m.id));
-      const remote = await invoke("mc_list_installed_modules");
-      const remoteItems = (remote?.modules || []).map((m) => {
-        // Normalize remote shape to the same {id, name, version,
-        // hooks, icon?} shape we use for local. The remote has
-        // `module_id` (not `id`) and `client_manifest.icon`.
-        const cm = m.client_manifest || {};
-        return {
-          id: m.module_id,
-          name: m.name,
-          version: cm.version || "",
-          hooks: cm.ui_hooks || [],
-          icon: m.icon || cm.icon,
-          _remote: true,
-        };
-      });
-      // Remote wins for any overlap (it has more recent install state).
-      // Local-only items keep their (richer) hooks info.
-      const remoteIds = new Set(remoteItems.map((m) => m.id));
-      items = [
-        ...remoteItems,
-        ...localItems.filter((m) => !remoteIds.has(m.id)),
-      ];
-      if (items.length === 0) {
-        toast("No modules installed yet. Visit Settings → Modules.", { kind: "info" });
-        return;
-      }
-    } catch (e) {
-      // Fall back to local-only list if the remote call fails.
-      console.warn("[modules-menu] remote list failed, using local only:", e);
-      items = listInstalledModules();
-      if (items.length === 0) {
-        toast("No modules installed yet. Visit Settings → Modules.", { kind: "info" });
-        return;
-      }
+    //
+    // Lesson 976: use the shared `getInstalledModulesMerged()` helper
+    // so the count badge and the dropdown always agree on the same
+    // set of installed modules.
+    const items = await getInstalledModulesMerged();
+    if (items.length === 0) {
+      toast("No modules installed yet. Visit Settings → Modules.", { kind: "info" });
+      return;
     }
     // Build dropdown — sibling of the button so layout absorbs it
     // naturally. The menu is positioned absolutely below the button.
@@ -533,10 +599,35 @@ export function mountModulesMenu(buttonEl, opts = {}) {
       .join("");
     // Place the menu right after the button in DOM (sibling).
     buttonEl.parentNode.insertBefore(menu, buttonEl.nextSibling);
-    // Position: directly below the button.
+    // Position: directly below the button. Lesson 976 (2026-09-11
+    // 18:05 MDT, David): if the button is close to the right edge,
+    // the menu extends past the viewport and gets clipped. Measure
+    // after attaching so we know the actual menu width, then right-
+    // align to the button's right edge if it would clip.
     const rect = buttonEl.getBoundingClientRect();
     menu.style.top = `${rect.bottom + 4}px`;
     menu.style.left = `${rect.left}px`;
+    menu.style.right = "auto";
+    // Force a layout pass so we can measure.
+    const menuWidth = menu.offsetWidth;
+    const margin = 8;
+    if (rect.left + menuWidth > window.innerWidth - margin) {
+      // Right-align: menu's right edge at button's right edge.
+      menu.style.left = "auto";
+      menu.style.right = `${window.innerWidth - rect.right}px`;
+    }
+    // Also clip to bottom: if the menu would extend past the
+    // viewport bottom, set max-height so it scrolls.
+    const maxMenuHeight = window.innerHeight - rect.bottom - margin;
+    if (maxMenuHeight < 200) {
+      // Not enough room below — flip above the button.
+      const neededHeight = 240; // approx. 4 items
+      if (rect.top > neededHeight) {
+        menu.style.top = `${rect.top - neededHeight - 4}px`;
+      } else {
+        menu.style.maxHeight = `${Math.max(120, window.innerHeight - margin * 2)}px`;
+      }
+    }
     _openMenu = menu;
 
     menu.addEventListener("click", async (itemEv) => {

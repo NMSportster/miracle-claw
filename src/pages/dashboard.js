@@ -23,7 +23,7 @@ import { openPalette as openCmdKPalette } from "../cmd_k_palette.js";
 // dashboard FAB calls the voice module via the JS-side runtime.
 // Button starts greyed out (data-module-voice-installed="false").
 import { isModuleInstalled, invokeModule, ensureVoiceModel, listInstalledModules } from "../modules-runtime.js";
-import { mountModulesMenu, closeModuleModal } from "../modules-menu.js";
+import { mountModulesMenu, closeModuleModal, getInstalledModulesMerged } from "../modules-menu.js";
 import { toast } from "../toast.js";
 
 function escapeHtml(s) {
@@ -1015,15 +1015,32 @@ export const dashboardPage = {
 
 // Lesson 969: count badge updater for the inline Modules button.
 // Module-scoped so unmount() can detach the listeners.
-function updateModulesCount() {
+//
+// Lesson 976 (2026-09-11 18:05 MDT, David): was reading
+// `listInstalledModules()` which only counts LOCAL modules. For
+// MAIC-installed modules (FireCrawl, Marketing Suite, etc.) the
+// badge always showed "0" even though the dropdown showed them.
+// Use the shared `getInstalledModulesMerged()` helper so the badge
+// and dropdown always agree.
+let _modulesCountInflight = false;
+async function updateModulesCount() {
   const count = document.getElementById("mc-modules-count");
   if (!count) return;
-  const items = listInstalledModules();
-  if (items.length === 0) {
+  if (_modulesCountInflight) return; // dedupe overlapping triggers
+  _modulesCountInflight = true;
+  try {
+    const items = await getInstalledModulesMerged();
+    if (items.length === 0) {
+      count.hidden = true;
+    } else {
+      count.hidden = false;
+      count.textContent = String(items.length);
+    }
+  } catch (e) {
+    console.warn("[dashboard] modules count update failed:", e);
     count.hidden = true;
-  } else {
-    count.hidden = false;
-    count.textContent = String(items.length);
+  } finally {
+    _modulesCountInflight = false;
   }
 }
 

@@ -6430,6 +6430,50 @@ kbd {
   font-size: 14px;
 }
 
+/* Lesson 976 (2026-09-11 18:05 MDT, David): info modal for modules
+   that have no runnable tools in their client_manifest. Shows the
+   module's description, version, and category, plus a hint that
+   points the user at the launchpad for the actual Run action. */
+.mc-modal-info {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 360px;
+  max-width: 480px;
+}
+.mc-modal-info-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--fg-muted, #aaa);
+}
+.mc-modal-info-label {
+  font-weight: 600;
+  color: var(--fg, #e5e5e5);
+  min-width: 80px;
+}
+.mc-modal-info-desc {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fg, #e5e5e5);
+  margin: 0;
+}
+.mc-modal-info-hint {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-muted, #aaa);
+  background: var(--bg-card, #1e1e24);
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0;
+}
+.mc-modal-info-hint strong {
+  color: var(--fg, #e5e5e5);
+}
+
 .mc-modal-result {
   margin-top: 12px;
   padding: 12px;
