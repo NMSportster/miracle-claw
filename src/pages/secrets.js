@@ -83,7 +83,7 @@ export const secretsPage = {
     root.innerHTML = `
       <div class="secrets-page">
         <header class="secrets-header">
-          <button class="icon-link" id="back-btn" title="Back to dashboard" aria-label="Back">←</button>
+          <button class="icon-link" id="back-btn" data-action="secrets-back" title="Back to dashboard" aria-label="Back">←</button>
           <h1>🔑 Secrets</h1>
           <span class="badge-ok" title="rc53.8 — AES-256-GCM at rest. Master key in OS keychain. Legacy plaintext vaults auto-migrate on first save.">🔒 Encrypted at rest</span>
         </header>
@@ -212,7 +212,11 @@ export const secretsPage = {
 
     // ----- Wire actions -----
 
-    document.getElementById("back-btn").addEventListener("click", () => onBack());
+    document.getElementById("back-btn").addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      onBack();
+    });
 
     const labelInput = document.getElementById("sec-label");
     const valueInput = document.getElementById("sec-value");

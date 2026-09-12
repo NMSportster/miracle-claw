@@ -104,3 +104,47 @@ test("form_schema renderer handles URL + integer + boolean fields", () => {
   assert.match(src, /inputs\[f\.name\] = !!form\.querySelector/);
   assert.match(src, /Number\(inputs\[f\.name\]\)/);
 });
+
+test("mountModulesMenu click handler uses cached module, not re-fetch (Lesson 980)", () => {
+  // Bug 2: clicking a module in the terminal toolbar didn't open the
+  // form because the click handler re-fetched the module list and the
+  // lookup failed silently. Fix: use the cached object from
+  // getInstalledModulesMerged() and only re-fetch as a fallback.
+  // Verify the click handler references menu._items and the
+  // cached._raw path.
+  assert.match(
+    src,
+    /menu\._items/,
+    "click handler reads cached items from menu"
+  );
+  assert.match(
+    src,
+    /cached\._raw/,
+    "click handler unwraps _raw to get the MAIC module shape"
+  );
+  // normalizeRemoteModule must preserve _raw so the click handler can
+  // find the original MAIC shape (with client_manifest.tools).
+  const normalizeFn = src.match(/function normalizeRemoteModule[\s\S]+?\n\s{2}\};/);
+  assert.ok(normalizeFn, "normalizeRemoteModule function exists");
+  assert.match(
+    normalizeFn[0],
+    /_raw:\s*m/,
+    "normalizeRemoteModule preserves _raw reference to the original MAIC entry"
+  );
+});
+
+test("bridge.json capability lists allow-mc-list-installed-modules (Lesson 980)", () => {
+  // Bug 4: the OpenClaw chat Modules dropdown said "No modules"
+  // because the bridge.json capability didn't allow
+  // mc_list_installed_modules. The Tauri ACL rejected the IPC and
+  // the toolbar's catch returned [], showing the empty state.
+  const bridgeJson = readFileSync(
+    join(__dirname, "..", "src-tauri", "capabilities", "bridge.json"),
+    "utf8"
+  );
+  assert.match(
+    bridgeJson,
+    /"allow-mc-list-installed-modules"/,
+    "bridge.json permits mc_list_installed_modules from the chat origin"
+  );
+});

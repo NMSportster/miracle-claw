@@ -86,6 +86,11 @@ function normalizeRemoteModule(m) {
     hooks: cm.ui_hooks || [],
     icon: m.icon || cm.icon,
     _remote: true,
+    // Lesson 980: keep the raw MAIC shape so the dropdown click
+    // handler can open the run modal without re-fetching (which
+    // used to fail silently if the second mc_list_installed_modules
+    // call returned a slightly different shape or blipped).
+    _raw: m,
   };
 }
 
@@ -630,24 +635,54 @@ export function mountModulesMenu(buttonEl, opts = {}) {
     }
     _openMenu = menu;
 
+    // Store the full module objects on the menu so the click handler
+    // doesn't need to re-fetch (Lesson 980: re-fetching was fragile —
+    // if the second mc_list_installed_modules call returned a slightly
+    // different shape or the network blipped, the lookup silently
+    // returned undefined and nothing opened).
+    menu._items = items;
     menu.addEventListener("click", async (itemEv) => {
       const item = itemEv.target.closest("[data-module-id]");
       if (!item) return;
       const moduleId = item.dataset.moduleId;
       closeMenu();
-      // Fetch full module manifest (with client_manifest.tools) and open
-      // the run modal.
-      try {
-        const list = await invoke("mc_list_installed_modules");
-        const mod = (list.modules || []).find((m) => m.module_id === moduleId);
-        if (!mod) {
-          toast(`Module ${moduleId} not found.`, { kind: "error" });
+      const cached = (menu._items || []).find((m) => (m.id || m.module_id) === moduleId);
+      let mod = null;
+      if (cached) {
+        // The cached object from getInstalledModulesMerged() may be the
+        // normalised {id, name, version, icon, _remote, _raw} shape, not
+        // the raw {module_id, client_manifest} shape that openModuleModal
+        // expects. Unwrap to the raw MAIC shape if we have it.
+        if (cached._raw) mod = cached._raw;
+        else if (cached.client_manifest || cached.module_id) mod = cached;
+        else mod = Object.assign({}, cached, {
+          module_id: cached.id,
+          name: cached.name,
+          icon: cached.icon,
+          client_manifest: {
+            name: cached.name,
+            version: cached.version,
+            tools: cached.tools || [],
+          },
+        });
+      }
+      // Fallback: re-fetch from the backend. If we still don't have the
+      // module after this, surface a clear error to the user.
+      if (!mod) {
+        try {
+          const list = await invoke("mc_list_installed_modules");
+          const arr = list.modules || list.installed || [];
+          mod = arr.find((m) => m.module_id === moduleId);
+        } catch (e) {
+          toast(`Failed to open module ${moduleId}: ${e}`, { kind: "error" });
           return;
         }
-        openModuleModal(mod, { surface: opts.surface || "tauri" });
-      } catch (e) {
-        toast(`Failed to open module: ${e}`, { kind: "error" });
       }
+      if (!mod) {
+        toast(`Module ${moduleId} not found in installed list.`, { kind: "error" });
+        return;
+      }
+      openModuleModal(mod, { surface: opts.surface || "tauri" });
     });
 
     setTimeout(() => {

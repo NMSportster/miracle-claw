@@ -1,7 +1,7 @@
 {
   "name": "miracle-claw",
   "private": true,
-  "version": "1.2.0-rc56.8",
+  "version": "1.2.0-rc56.9",
   "type": "module",
   "description": "Miracle Claw \u2014 Milagro Distribution Corp's desktop chat client for MAIC models",
   "scripts": {
@@ -10,7 +10,7 @@
     "build:no-clean": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test:js": "node src/secrets/preprocessor.test.mjs && node --test src/pages/workflows.test.mjs && node --test src/catch-block-audit.test.mjs && node --test scripts/prebuild-clean.test.mjs && node --test src/pages/dashboard_launchpad_form_schema.test.mjs && node --test src/pages/dashboard_launchpad_modal_position.test.mjs && node --test src/pages/installed_response_contract.test.mjs && node --test src/modules-menu.test.mjs && node --test src/pages/header_buttons_icon_only.test.mjs && node --test src/pages/modules_dropdown_remote_list.test.mjs && node --test src/pages/modules_count_badge_remote.test.mjs && node --test src/pages/chat_toolbar_openclaw_dist.test.mjs"
+    "test:js": "node src/secrets/preprocessor.test.mjs && node --test src/pages/workflows.test.mjs && node --test src/catch-block-audit.test.mjs && node --test scripts/prebuild-clean.test.mjs && node --test src/pages/dashboard_launchpad_form_schema.test.mjs && node --test src/pages/dashboard_launchpad_modal_position.test.mjs && node --test src/pages/installed_response_contract.test.mjs && node --test src/modules-menu.test.mjs && node --test src/pages/header_buttons_icon_only.test.mjs && node --test src/pages/modules_dropdown_remote_list.test.mjs && node --test src/pages/modules_count_badge_remote.test.mjs && node --test src/pages/chat_toolbar_openclaw_dist.test.mjs && node --test src/pages/terminal_overlay_close_routing.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

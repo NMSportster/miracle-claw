@@ -816,12 +816,23 @@
     });
     bar.appendChild(attachBtn);
 
-    var secretsBtn = makeButton('mc-oc-secrets-btn', '🔑', 'List local tools & secrets', 'List secrets');
+    var secretsBtn = makeButton('mc-oc-secrets-btn', '🔑', 'Add usernames, passwords, API keys to the MC secrets vault', 'Secrets');
     secretsBtn.addEventListener('click', function (ev) {
       ev.preventDefault();
       ev.stopPropagation();
       closeDropdown();
-      openSecretsModal();
+      // Lesson 980: open the actual MC secrets card (same overlay the
+      // Terminal page uses) instead of a tools-list modal. The MC main
+      // window navigates to #mcAutoOpen=secrets which the terminal
+      // page picks up and auto-opens the secrets overlay on. When the
+      // user closes the overlay, mc_close_overlay navigates them back
+      // to the chat URL (stashed by mc_open_overlay).
+      tauriInvoke('mc_open_overlay', { overlay_key: 'secrets' })
+        .then(function () { /* main window will navigate */ })
+        .catch(function (e) {
+          console.error('[mc-toolbar] mc_open_overlay(secrets) failed:', e);
+          alert('Failed to open Secrets: ' + (e && e.message ? e.message : e));
+        });
     });
     bar.appendChild(secretsBtn);
 

@@ -832,7 +832,18 @@ export const terminalPage = {
     const secretsCloseBtn = document.getElementById("terminal-secrets-close");
 
     let secretsOpen = false;
-    function openSecretsOverlay() {
+    // Lesson 982 (2026-09-11 21:00 MDT, David): the previous close
+    // handler always called `bridge.closeOverlay()` whenever the
+    // bridge existed. But the bridge is on the main window regardless
+    // of HOW the overlay was opened — local toolbar click vs. chat
+    // bridge auto-open. When opened from the local toolbar, no
+    // `overlay_return_url` is stashed in Rust, so `mc_close_overlay`
+    // falls back to navigating main window to the dashboard. That
+    // sent "Back" / "✕" on a locally-opened secrets card back to the
+    // Dashboard instead of the Terminal. Track the opener with this
+    // flag; only call closeOverlay when it's true.
+    let secretsOpenedByBridge = false;
+    function openSecretsOverlay({ fromBridge = false } = {}) {
       // Pause terminal polling so the overlay doesn't render behind
       // a moving terminal. Resume on close.
       if (pollTimer) {
@@ -840,6 +851,7 @@ export const terminalPage = {
         pollTimer = null;
       }
       secretsOpen = true;
+      secretsOpenedByBridge = fromBridge;
       secretsOverlay.removeAttribute("hidden");
       // Mount the secrets page into the overlay body. onBack = close.
       secretsPage.mount(secretsBody, {
@@ -856,30 +868,48 @@ export const terminalPage = {
       if (!ended && sessionId && !pollTimer) {
         pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS);
       }
-      // rc53.11 (Lesson 247): if the user opened this overlay from the
-      // OpenClaw chat window (via the floating 🔑 button in mc-chat-
-      // toolbar), the close handler should also navigate them BACK to
-      // the chat URL — not leave them stranded on the dashboard. The
-      // Rust mc_close_overlay command captures the URL we came from
-      // (stashed by mc_open_overlay) and navigates back.
-      //
-      // Fall back to plain DOM close if the bridge isn't present
-      // (e.g. dev/test environments) — the overlay still hides
-      // locally, the user just stays on whatever page they were on.
-      try {
-        const bridge = window.__openclawHostBridge;
-        if (bridge && typeof bridge.closeOverlay === 'function') {
-          bridge.closeOverlay();
-          return;
-        }
-      } catch (_) { /* fall through */ }
+      // Lesson 982: only navigate via the bridge if the overlay was
+      // OPENED by the bridge. For local toolbar opens, the overlay
+      // is just a UI element — closing it should hide it in place
+      // and let the user stay on the Terminal page. The fallback
+      // path in Rust would otherwise navigate to the dashboard.
+      if (secretsOpenedByBridge) {
+        secretsOpenedByBridge = false;
+        try {
+          const bridge = window.__openclawHostBridge;
+          if (bridge && typeof bridge.closeOverlay === 'function') {
+            bridge.closeOverlay();
+            return;
+          }
+        } catch (_) { /* fall through */ }
+      }
     }
     secretsCloseBtn.addEventListener("click", closeSecretsOverlay);
     // Esc closes the overlay when it's open.
     secretsOverlay.addEventListener("keydown", (e) => {
       if (e.key === "Escape") closeSecretsOverlay();
     });
-    document.getElementById("terminal-secrets-btn").addEventListener("click", openSecretsOverlay);
+    document.getElementById("terminal-secrets-btn").addEventListener("click", () => {
+      // Lesson 982: local toolbar click is a local open. Don't tell
+      // the bridge about it, or close will send the user to the
+      // dashboard.
+      openSecretsOverlay({ fromBridge: false });
+    });
+    // Lesson 980: delegated listener for the secrets card's back
+    // button. Catches data-action="secrets-back" anywhere in the
+    // overlay (the secrets page re-renders its innerHTML on every
+    // mount, so the inline listener on #back-btn can be shadowed by
+    // event handlers in the terminal header that live behind the
+    // overlay's z-index 10000). Delegated, so it's resilient to
+    // re-renders.
+    secretsOverlay.addEventListener("click", (e) => {
+      const t = e.target.closest("[data-action='secrets-back']");
+      if (t) {
+        e.stopPropagation();
+        e.preventDefault();
+        closeSecretsOverlay();
+      }
+    });
 
     // Lesson 571: voice button click. The button stays greyed out
     // until the voice module installs (CSS uses
@@ -1003,13 +1033,19 @@ export const terminalPage = {
 
     let attachOpen = false;
     let attachZoneWired = false;
-    function openAttachOverlay() {
+    // Lesson 982: same opener-tracking flag pattern as secrets so
+    // a locally-opened attach overlay stays on Terminal when closed
+    // (instead of bouncing to Dashboard via mc_close_overlay's
+    // dashboard fallback).
+    let attachOpenedByBridge = false;
+    function openAttachOverlay({ fromBridge = false } = {}) {
       // Pause terminal polling while overlay is up (same as secrets).
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;
       }
       attachOpen = true;
+      attachOpenedByBridge = fromBridge;
       attachOverlay.removeAttribute("hidden");
       // Wire the zone lazily — wireAttachZone registers document-level
       // drag listeners, so we only want them live while the overlay
@@ -1028,23 +1064,30 @@ export const terminalPage = {
       if (!ended && sessionId && !pollTimer) {
         pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS);
       }
-      // rc53.11 (Lesson 247): same close-and-return logic as secrets —
-      // if opened from the OpenClaw chat window, navigate back to the
-      // chat URL rather than stranding the user on the dashboard.
-      try {
-        const bridge = window.__openclawHostBridge;
-        if (bridge && typeof bridge.closeOverlay === 'function') {
-          bridge.closeOverlay();
-          return;
-        }
-      } catch (_) { /* fall through */ }
+      // Lesson 982: only navigate via the bridge if the overlay was
+      // OPENED by the bridge. See closeSecretsOverlay for the full
+      // explanation. The Rust fallback would otherwise navigate to
+      // the dashboard, which is wrong for local toolbar opens.
+      if (attachOpenedByBridge) {
+        attachOpenedByBridge = false;
+        try {
+          const bridge = window.__openclawHostBridge;
+          if (bridge && typeof bridge.closeOverlay === 'function') {
+            bridge.closeOverlay();
+            return;
+          }
+        } catch (_) { /* fall through */ }
+      }
     }
     attachCloseBtn.addEventListener("click", closeAttachOverlay);
     // Esc closes the overlay when it's open.
     attachOverlay.addEventListener("keydown", (e) => {
       if (e.key === "Escape") closeAttachOverlay();
     });
-    document.getElementById("terminal-attach-btn").addEventListener("click", openAttachOverlay);
+    document.getElementById("terminal-attach-btn").addEventListener("click", () => {
+      // Lesson 982: local toolbar click is a local open.
+      openAttachOverlay({ fromBridge: false });
+    });
 
     // Lesson 969: inline Modules dropdown in the terminal toolbar.
     // Mirrors the dashboard header so users have the same module
@@ -1103,8 +1146,12 @@ export const terminalPage = {
       // Defer one tick so listeners + DOM are fully settled (overlay
       // divs need to be appended first).
       setTimeout(() => {
-        if (desiredAutoOpen === "secrets") openSecretsOverlay();
-        else openAttachOverlay();
+        // Lesson 982: auto-open from URL hash is the bridge path —
+        // the chat toolbar invoked mc_open_overlay, which stashed
+        // the chat URL and navigated us here. Mark fromBridge=true
+        // so close returns to chat instead of dashboard.
+        if (desiredAutoOpen === "secrets") openSecretsOverlay({ fromBridge: true });
+        else openAttachOverlay({ fromBridge: true });
       }, 0);
     }
 
