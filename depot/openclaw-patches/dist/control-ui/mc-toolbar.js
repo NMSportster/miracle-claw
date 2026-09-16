@@ -374,10 +374,17 @@
   }
 
   function showRunForm(m, tool) {
-    // Show a modal with a form for the tool's inputs. For now we keep
-    // it simple: one textarea for free-form JSON inputs, and a Run
-    // button. Power users can paste inputs; everyone else gets the
-    // launchpad form for richer UX.
+    // Lesson 985 follow-up (2026-09-16): the toolbar used to render a
+    // single JSON-textarea modal that "ran" the module but pasted the
+    // result into an obscure chat-input selector chain. Two problems:
+    //   1. Users saw a different popup from the Launchpad, and
+    //   2. Even when the run succeeded, the paste target might not be
+    //      found (openclaw chat composer doesn't match any of the
+    //      placeholder selectors), so users saw no feedback at all.
+    // Fix: render the SAME form-schema fields the Launchpad /
+    // modules-menu use, and on Run show the result in a result area
+    // with Send-to-Chat / Copy / Close buttons — same UX as the
+    // Launchpad so users get a consistent experience.
     var backdrop = document.createElement('div');
     backdrop.className = 'mc-oc-modal-backdrop';
     var panel = document.createElement('div');
@@ -391,46 +398,102 @@
     var sub = document.createElement('p');
     sub.className = 'mc-oc-modal-subtitle';
     var desc = (tool.description || '').slice(0, 200);
-    sub.textContent = desc || 'Provide inputs as JSON. The result is pasted into the chat input.';
+    sub.textContent = desc || 'Provide inputs and run. The result shows below.';
     panel.appendChild(sub);
 
-    var label = document.createElement('div');
-    label.style.fontSize = '11px';
-    label.style.color = 'rgba(255,255,255,0.55)';
-    label.style.textTransform = 'uppercase';
-    label.style.letterSpacing = '0.08em';
-    label.style.margin = '12px 0 4px';
-    label.textContent = 'Inputs (JSON)';
-    panel.appendChild(label);
-    var ta = document.createElement('textarea');
-    ta.style.width = '100%';
-    ta.style.minHeight = '100px';
-    ta.style.padding = '8px';
-    ta.style.background = 'rgba(0,0,0,0.4)';
-    ta.style.color = '#f5f5f7';
-    ta.style.border = '1px solid rgba(255,255,255,0.20)';
-    ta.style.borderRadius = '4px';
-    ta.style.font = '12px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace';
-    ta.style.resize = 'vertical';
-    ta.placeholder = '{}';
-    // Pre-fill with the tool's input schema if we have it.
-    if (tool.inputs && typeof tool.inputs === 'object') {
+    var form = document.createElement('form');
+    form.className = 'mc-oc-modal-form';
+    form.setAttribute('data-module', m.id);
+    form.setAttribute('data-tool', tool.name || tool.id);
+
+    // Render form_schema fields if we have them. Otherwise show a
+    // JSON textarea (rare — most modules publish a schema).
+    var schema = tool.form_schema || (tool.inputs && tool.inputs.form_schema) || null;
+    var renderedFields = false;
+    if (schema && typeof schema === 'object' && schema.type === 'object' && schema.properties) {
       try {
-        var example = {};
-        Object.keys(tool.inputs).forEach(function (k) {
-          var spec = tool.inputs[k];
-          if (spec && spec.examples && spec.examples[0] != null) {
-            example[k] = spec.examples[0];
-          } else if (spec && spec.default != null) {
-            example[k] = spec.default;
-          } else if (spec && spec.type === 'string') {
-            example[k] = '';
+        var props = schema.properties || {};
+        var required = Array.isArray(schema.required) ? schema.required : [];
+        Object.keys(props).forEach(function (name) {
+          var prop = props[name];
+          if (!prop || typeof prop !== 'object') return;
+          var field = document.createElement('div');
+          field.className = 'mc-oc-modal-field';
+          var labelEl = document.createElement('label');
+          labelEl.textContent = prop.title || name;
+          if (required.indexOf(name) !== -1) {
+            var req = document.createElement('span');
+            req.className = 'mc-oc-modal-req';
+            req.textContent = ' *';
+            labelEl.appendChild(req);
           }
+          labelEl.setAttribute('for', 'mc-oc-field-' + name);
+          field.appendChild(labelEl);
+          var inputEl;
+          var t = prop.type || 'string';
+          if (Array.isArray(prop.enum) && prop.enum.length > 0) {
+            inputEl = document.createElement('select');
+            inputEl.innerHTML = '<option value="">— select —</option>' +
+              prop.enum.map(function (v) { return '<option value="' + escapeHtml(v) + '">' + escapeHtml(v) + '</option>'; }).join('');
+          } else if (t === 'number' || t === 'integer') {
+            inputEl = document.createElement('input');
+            inputEl.type = 'number';
+            inputEl.step = t === 'integer' ? '1' : 'any';
+            if (prop.minimum !== undefined) inputEl.min = String(prop.minimum);
+            if (prop.maximum !== undefined) inputEl.max = String(prop.maximum);
+          } else if (t === 'boolean') {
+            inputEl = document.createElement('input');
+            inputEl.type = 'checkbox';
+            inputEl.value = 'true';
+          } else {
+            inputEl = document.createElement('input');
+            inputEl.type = 'text';
+            if (prop.minLength !== undefined) inputEl.minLength = prop.minLength;
+            if (prop.maxLength !== undefined) inputEl.maxLength = prop.maxLength;
+          }
+          inputEl.id = 'mc-oc-field-' + name;
+          inputEl.name = name;
+          inputEl.dataset.fieldType = t;
+          if (prop.default !== undefined && prop.default !== null) {
+            if (t === 'boolean') inputEl.checked = !!prop.default;
+            else inputEl.value = String(prop.default);
+          }
+          if (required.indexOf(name) !== -1) inputEl.required = true;
+          field.appendChild(inputEl);
+          form.appendChild(field);
+          renderedFields = true;
         });
-        ta.value = JSON.stringify(example, null, 2);
-      } catch (e) { /* leave blank */ }
+      } catch (e) { renderedFields = false; }
     }
-    panel.appendChild(ta);
+    if (!renderedFields) {
+      // No form_schema: fall back to JSON textarea.
+      var label = document.createElement('div');
+      label.style.fontSize = '11px';
+      label.style.color = 'rgba(255,255,255,0.55)';
+      label.style.textTransform = 'uppercase';
+      label.style.letterSpacing = '0.08em';
+      label.style.margin = '12px 0 4px';
+      label.textContent = 'Inputs (JSON)';
+      form.appendChild(label);
+      var ta = document.createElement('textarea');
+      ta.name = '__json';
+      ta.style.width = '100%';
+      ta.style.minHeight = '100px';
+      ta.style.padding = '8px';
+      ta.style.background = 'rgba(0,0,0,0.4)';
+      ta.style.color = '#f5f5f7';
+      ta.style.border = '1px solid rgba(255,255,255,0.20)';
+      ta.style.borderRadius = '4px';
+      ta.style.font = '12px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+      ta.style.resize = 'vertical';
+      ta.placeholder = '{}';
+      form.appendChild(ta);
+    }
+
+    var result = document.createElement('div');
+    result.className = 'mc-oc-modal-result';
+    result.hidden = true;
+    form.appendChild(result);
 
     var actions = document.createElement('div');
     actions.className = 'mc-oc-modal-actions';
@@ -440,21 +503,54 @@
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', function () { document.body.removeChild(backdrop); });
     var run = document.createElement('button');
-    run.type = 'button';
+    run.type = 'submit';
     run.className = 'mc-oc-modal-button is-primary';
     run.textContent = 'Run';
-    run.addEventListener('click', async function () {
+    actions.appendChild(cancel);
+    actions.appendChild(run);
+    form.appendChild(actions);
+    panel.appendChild(form);
+    backdrop.appendChild(panel);
+    backdrop.addEventListener('click', function (ev) {
+      if (ev.target === backdrop) document.body.removeChild(backdrop);
+    });
+    document.body.appendChild(backdrop);
+
+    form.addEventListener('submit', async function (ev) {
+      ev.preventDefault();
       run.disabled = true;
       run.textContent = 'Running…';
-      var inputs;
-      try {
-        inputs = ta.value.trim() ? JSON.parse(ta.value) : {};
-      } catch (e) {
-        showToast('Invalid JSON: ' + e.message, 'error');
-        run.disabled = false;
-        run.textContent = 'Run';
-        return;
+      // Collect inputs from the rendered fields OR from the JSON textarea.
+      var inputs = {};
+      if (renderedFields) {
+        var allFields = form.querySelectorAll('[data-field-type]');
+        for (var k = 0; k < allFields.length; k++) {
+          var f = allFields[k];
+          var name = f.name;
+          var t = f.dataset.fieldType;
+          if (t === 'number' || t === 'integer') {
+            var n = f.value === '' ? undefined : Number(f.value);
+            if (n !== undefined && !Number.isNaN(n)) inputs[name] = n;
+          } else if (t === 'boolean') {
+            inputs[name] = !!f.checked;
+          } else {
+            inputs[name] = f.value;
+          }
+        }
+      } else {
+        var jsonText = (form.querySelector('textarea[name="__json"]').value || '').trim();
+        if (jsonText) {
+          try { inputs = JSON.parse(jsonText); }
+          catch (e) {
+            showToast('Invalid JSON: ' + e.message, 'error');
+            run.disabled = false;
+            run.textContent = 'Run';
+            return;
+          }
+        }
       }
+      result.hidden = false;
+      result.textContent = 'Running…';
       try {
         var resp = await tauriInvoke('mc_run_module', {
           moduleId: m.id,
@@ -468,23 +564,67 @@
           inputs: inputs,
           surface: 'openclaw_chat',
         });
-        document.body.removeChild(backdrop);
-        await pasteIntoChatInput(resp);
-        showToast('Module ran — result pasted into chat input', 'success');
+        var outText = '';
+        if (resp && typeof resp.outputs !== 'undefined') {
+          outText = typeof resp.outputs === 'string' ? resp.outputs : JSON.stringify(resp.outputs, null, 2);
+        } else if (resp && typeof resp.output !== 'undefined') {
+          outText = typeof resp.output === 'string' ? resp.output : JSON.stringify(resp.output, null, 2);
+        } else if (resp && typeof resp.result !== 'undefined') {
+          outText = typeof resp.result === 'string' ? resp.result : JSON.stringify(resp.result, null, 2);
+        } else {
+          outText = JSON.stringify(resp, null, 2);
+        }
+        result.textContent = outText || '(no output)';
+        result.dataset.rawOutput = outText;
+
+        // Action row: Send-to-Chat / Copy / Close.
+        var resultActions = document.createElement('div');
+        resultActions.className = 'mc-oc-modal-result-actions';
+        var sendChat = document.createElement('button');
+        sendChat.type = 'button';
+        sendChat.className = 'mc-oc-modal-button is-primary';
+        sendChat.textContent = '📤 Send to Chat';
+        sendChat.addEventListener('click', async function () {
+          var ok = await pasteIntoChatInput(outText);
+          if (ok) showToast('Result sent to chat input', 'success');
+        });
+        var copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'mc-oc-modal-button';
+        copy.textContent = '📋 Copy';
+        copy.addEventListener('click', async function () {
+          try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              await navigator.clipboard.writeText(outText);
+              showToast('Copied to clipboard', 'success');
+            } else { showToast('Clipboard not available', 'error'); }
+          } catch (e) { showToast('Copy failed: ' + e.message, 'error'); }
+        });
+        var close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'mc-oc-modal-button';
+        close.textContent = '✕ Close';
+        close.addEventListener('click', function () { document.body.removeChild(backdrop); });
+        resultActions.appendChild(sendChat);
+        resultActions.appendChild(copy);
+        resultActions.appendChild(close);
+        result.parentNode.insertBefore(resultActions, result.nextSibling);
+
+        run.textContent = 'Run again';
+        run.disabled = false;
+        // After the first run, clicking Run should submit again —
+        // the form is already wired, so simply toggle the actions
+        // row off via a new hidden input flag.
+        run.addEventListener('click', function () { form.requestSubmit(); });
+        showToast('Module ran', 'success');
       } catch (e) {
-        showToast('Run failed: ' + (e && e.message ? e.message : e), 'error');
+        result.classList.add('is-error');
+        result.textContent = 'Run failed: ' + (e && e.message ? e.message : e);
         run.disabled = false;
         run.textContent = 'Run';
+        showToast('Run failed: ' + (e && e.message ? e.message : e), 'error');
       }
     });
-    actions.appendChild(cancel);
-    actions.appendChild(run);
-    panel.appendChild(actions);
-    backdrop.appendChild(panel);
-    backdrop.addEventListener('click', function (ev) {
-      if (ev.target === backdrop) document.body.removeChild(backdrop);
-    });
-    document.body.appendChild(backdrop);
   }
 
   // Try to find the openclaw chat input and paste the module result into it.
@@ -497,22 +637,31 @@
       // Try to surface a human-readable summary.
       if (payload.output != null) text = typeof payload.output === 'string' ? payload.output : JSON.stringify(payload.output, null, 2);
       else if (payload.result != null) text = typeof payload.result === 'string' ? payload.result : JSON.stringify(payload.result, null, 2);
+      else if (payload.outputs != null) text = typeof payload.outputs === 'string' ? payload.outputs : JSON.stringify(payload.outputs, null, 2);
       else text = JSON.stringify(payload, null, 2);
     }
-    // Try common openclaw chat input selectors.
+    if (!text) return false;
+    // Try common openclaw chat input selectors. The OpenClaw chat
+    // composer doesn't expose a `placeholder` attr matching the
+    // legacy selectors (chat.composer.placeholder is a translated
+    // i18n string with no fixed English substring). Use a broader
+    // chain: textarea → [contenteditable] → contenteditable
+    // descendants → input[type='text'] (rare).
     var selectors = [
+      'textarea',
       'textarea[placeholder*="essage" i]',
       'textarea[placeholder*="chat" i]',
       'textarea[placeholder*="type" i]',
-      'textarea',
       '[contenteditable="true"]',
+      '[contenteditable=""]',
+      'div[contenteditable]',
+      'input[type="text"]',
     ];
     var el = null;
     for (var i = 0; i < selectors.length; i++) {
       var candidates = document.querySelectorAll(selectors[i]);
       for (var j = 0; j < candidates.length; j++) {
         var c = candidates[j];
-        // Prefer visible, non-empty elements
         if (c.offsetParent !== null) { el = c; break; }
       }
       if (el) break;
@@ -522,22 +671,24 @@
       el.value = existing + (existing ? '\n\n' : '') + text;
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.focus();
-      return;
+      return true;
     }
     if (el && el.isContentEditable) {
       el.innerText = (el.innerText || '') + '\n\n' + text;
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.focus();
-      return;
+      return true;
     }
     // Fallback: clipboard
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(text);
         showToast('Copied to clipboard — paste into chat (Ctrl+V)', 'info');
+        return true;
       } else {
         showToast('Could not locate chat input; result in console', 'error');
         console.log('[mc-toolbar] module result:', text);
+        return false;
       }
     } catch (e) {
       showToast('Could not locate chat input; result in console', 'error');

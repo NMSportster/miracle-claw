@@ -1,7 +1,7 @@
 {
   "name": "miracle-claw",
   "private": true,
-  "version": "1.2.0-rc56.10",
+  "version": "1.2.0-rc56.11",
   "type": "module",
   "description": "Miracle Claw \u2014 Milagro Distribution Corp's desktop chat client for MAIC models",
   "scripts": {

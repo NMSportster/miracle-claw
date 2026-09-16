@@ -32,6 +32,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile, stat } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -426,5 +427,83 @@ test("Lesson 985 Bug 4: terminal Modules Run click uses (m.id || m.module_id) ca
     menuSrc,
     /cached\._raw/,
     "modules-menu click handler must unwrap cached._raw to MAIC shape"
+  );
+});
+
+// ---------------------------------------------------------------------
+// Lesson 985 follow-up (2026-09-16, ~08:30 MDT, David user retest):
+// the chat toolbar used to render a JSON-textarea modal for module
+// Run, which felt different from the Launchpad's schema-form modal
+// and pasted into an unresolvable chat-input selector. The toolbar
+// must now render the same schema-driven form fields and show the
+// result IN the modal with Send-to-Chat / Copy / Close buttons.
+// ---------------------------------------------------------------------
+
+test("Lesson 985 follow-up Bug 3: chat toolbar renders form_schema fields (not just JSON textarea)", () => {
+  // User feedback 2026-09-16 08:28 MDT: "different popup from
+  // Dashboard, none of them work". Dashboard uses dashboard_launchpad.js
+  // / modules-menu openModuleModal which render schema fields. Toolbar
+  // must match — read tool.form_schema.properties and render proper
+  // <input>/<select>/<textarea> controls, not just one JSON textarea.
+  assert.match(
+    jsSrc,
+    /schema\s*=\s*tool\.form_schema/,
+    "showRunForm must read tool.form_schema"
+  );
+  assert.match(
+    jsSrc,
+    /schema\.properties/,
+    "showRunForm must iterate schema.properties"
+  );
+  assert.match(
+    jsSrc,
+    /data-field-type/,
+    "showRunForm must tag rendered inputs with data-field-type for collection"
+  );
+});
+
+test("Lesson 985 follow-up Bug 3: chat toolbar Run result stays in modal (not silent paste-to-chat)", () => {
+  // Old behaviour: pasteIntoChatInput ran automatically after Run,
+  // but the OpenClaw chat composer selector chain often failed
+  // (placeholder is a translated i18n string, not literal "essage").
+  // New behaviour: the modal's own result area + Copy/Send-to-Chat
+  // buttons always work; pasting only happens on Send-to-Chat click.
+  assert.match(
+    jsSrc,
+    /result\.textContent\s*=\s*outText/,
+    "showRunForm must set result.textContent = outText"
+  );
+  assert.match(
+    jsSrc,
+    /📤 Send to Chat|Send to Chat/,
+    "showRunForm must offer a Send-to-Chat button"
+  );
+  assert.match(
+    jsSrc,
+    /📋 Copy|Copy/,
+    "showRunForm must offer a Copy button"
+  );
+});
+
+test("Lesson 985 follow-up Bug 4: modules-menu logs click + openModuleModal calls (sidecar diagnostic)", () => {
+  // 08:28 MDT retest: terminal Modules Run still does nothing. The
+  // static code path is correct (Lesson 980) but the sidecar capture
+  // doesn't tell us whether the click reached the handler. Pin the
+  // console.log lines so future builds land in MC-openclaw info.txt.
+  // Console prefix `[miracle-claw]` is the sidecar's scan key.
+  assert.match(
+    readFileSync(resolve(REPO_ROOT, "src/modules-menu.js"), "utf8"),
+    /\[miracle-claw\]\s+modules-menu click/,
+    "modules-menu click handler must console.log with [miracle-claw] prefix"
+  );
+  assert.match(
+    readFileSync(resolve(REPO_ROOT, "src/modules-menu.js"), "utf8"),
+    /\[miracle-claw\]\s+modules-menu lookup/,
+    "modules-menu click handler must console.log the lookup result"
+  );
+  assert.match(
+    readFileSync(resolve(REPO_ROOT, "src/modules-menu.js"), "utf8"),
+    /\[miracle-claw\]\s+openModuleModal/,
+    "openModuleModal must console.log its inputs at entry"
   );
 });

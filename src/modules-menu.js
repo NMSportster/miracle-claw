@@ -309,6 +309,14 @@ function openModuleInfoModal(module) {
 }
 
 export function openModuleModal(module, opts = {}) {
+  // Lesson 985 follow-up (2026-09-16): diagnostic log so we can see
+  // in the sidecar capture whether openModuleModal was reached and
+  // how many tools the module has.
+  console.log(
+    `[miracle-claw] openModuleModal: moduleId=${module && (module.module_id || module.id)}, ` +
+    `tools=${(module && module.client_manifest && module.client_manifest.tools || []).length}, ` +
+    `surface=${opts.surface || "tauri"}`
+  );
   closeModuleModal();
   const tools = (module.client_manifest && module.client_manifest.tools) || [];
   if (tools.length === 0) {
@@ -645,6 +653,12 @@ export function mountModulesMenu(buttonEl, opts = {}) {
       const item = itemEv.target.closest("[data-module-id]");
       if (!item) return;
       const moduleId = item.dataset.moduleId;
+      // Lesson 985 follow-up (2026-09-16): diagnostic logging so the
+      // next sidecar capture will tell us whether the click reached the
+      // handler, what moduleId was resolved, and whether mod was found.
+      // Console-log prefix "[miracle-claw]" is picked up by the
+      // launcher-stderr capture so it lands in MC-openclaw info.txt.
+      console.log(`[miracle-claw] modules-menu click: moduleId=${moduleId}`);
       closeMenu();
       const cached = (menu._items || []).find((m) => (m.id || m.module_id) === moduleId);
       let mod = null;
@@ -666,6 +680,10 @@ export function mountModulesMenu(buttonEl, opts = {}) {
           },
         });
       }
+      console.log(
+        `[miracle-claw] modules-menu lookup: cached=${cached ? "yes" : "no"}, ` +
+        `mod=${mod ? "yes" : "no"}, tools=${(mod && mod.client_manifest && mod.client_manifest.tools || []).length}`
+      );
       // Fallback: re-fetch from the backend. If we still don't have the
       // module after this, surface a clear error to the user.
       if (!mod) {
