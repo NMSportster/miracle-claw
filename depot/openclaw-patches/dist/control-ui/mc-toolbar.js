@@ -458,7 +458,13 @@
       try {
         var resp = await tauriInvoke('mc_run_module', {
           moduleId: m.id,
-          tool: tool.id,
+          // Lesson 985: MAIC tools have `name` not `id`. The chat
+          // toolbar previously sent `tool: tool.id` (undefined),
+          // which Rust rejected with "tool is required". The
+          // launchpad (src/pages/dashboard_launchpad.js:548) and
+          // modules-menu openModuleModal both correctly use
+          // `tool: firstTool.name`. Match that convention.
+          tool: tool.name || tool.id,
           inputs: inputs,
           surface: 'openclaw_chat',
         });
@@ -827,7 +833,20 @@
       // page picks up and auto-opens the secrets overlay on. When the
       // user closes the overlay, mc_close_overlay navigates them back
       // to the chat URL (stashed by mc_open_overlay).
-      tauriInvoke('mc_open_overlay', { overlay_key: 'secrets' })
+      // Lesson 985 (2026-09-16 07:15 MDT, David): Tauri 2's IPC layer
+      // converts JS camelCase arg keys to snake_case Rust param names
+      // (same convention as __TAURI__.core.invoke). The Secrets
+      // button previously sent { overlay_key: 'secrets' } (snake_case),
+      // which the IPC layer rejected with:
+      //   "Failed to open Secrets: invalid args 'overlayKey' for
+      //    command 'mc_open_overlay': command mc_open_overlay
+      //    missing required key overlayKey"
+      // — the conversion landed on a key Tauri could not match to
+      // the Rust signature `fn mc_open_overlay(overlay_key: String,
+      // ...)`. The fix: send camelCase `overlayKey`, matching the
+      // rest of the toolbar (mc_run_module uses moduleId/tool/
+      // inputs/surface, mc_voice_native_capture uses timeoutMs).
+      tauriInvoke('mc_open_overlay', { overlayKey: 'secrets' })
         .then(function () { /* main window will navigate */ })
         .catch(function (e) {
           console.error('[mc-toolbar] mc_open_overlay(secrets) failed:', e);

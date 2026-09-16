@@ -305,3 +305,126 @@ test("MANIFEST.md also indexes the migrated mc-back-button.js patch (Lesson 502/
     "MANIFEST should reference mc-back-button.js as Lesson 502/511 / rc53.4"
   );
 });
+
+// Lesson 985 (2026-09-16 07:15 MDT, David): regression tests for the
+// 4 chat-toolbar bugs reported after installing 2 more modules:
+//   Bug 1 — Secrets button: sent snake_case `overlay_key` to
+//           `mc_open_overlay`, Tauri 2 IPC rejected with
+//           "missing required key overlayKey". Fix: camelCase `overlayKey`.
+//   Bug 2 — Modules Run from chat: `mc_run_module` invocations passed
+//           snake_case keys (`module_id`, `tool`) where Tauri 2 IPC
+//           expects camelCase. Fix: ensure camelCase `moduleId`/`tool`/
+//           `inputs`/`surface` consistently across the toolbar.
+//   Bug 3 — Voice button: passed `timeoutMs` correctly, but the
+//           MC native voice path returns code 5 when the user starts
+//           speaking too late. We add a listener-side `listening` state
+//           that the pill can react to + an explicit user-preflight
+//           hint (the rc56.9 message is the actual SAPI reply).
+//   Bug 4 — Terminal Modules Run does nothing: caused by an early
+//           `return` in the menu click handler when `moduleId` did not
+//           match the cache key. Fixed in Lesson 980 by using
+//           `(m.id || m.module_id)`. Pin the structure here.
+
+test("Lesson 985 Bug 1: Secrets button sends camelCase overlayKey (not snake_case overlay_key)", () => {
+  // The Rust fn signature is `fn mc_open_overlay(overlay_key: String, ...)`
+  // but Tauri 2's IPC requires JS callers to send camelCase keys; the
+  // IPC layer converts camelCase → snake_case when matching Rust params.
+  // Sending snake_case `overlay_key` causes a double-conversion bug
+  // where Tauri normalizes the JS key to camelCase first, then can't
+  // find the matching Rust param (which is snake_case). Error: "missing
+  // required key overlayKey".
+  assert.match(
+    jsSrc,
+    /tauriInvoke\(\s*['"]mc_open_overlay['"]\s*,\s*\{\s*overlayKey\s*:\s*['"]secrets['"]/,
+    "Secrets button should send { overlayKey: 'secrets' } (camelCase)"
+  );
+  assert.doesNotMatch(
+    jsSrc,
+    /tauriInvoke\(\s*['"]mc_open_overlay['"]\s*,\s*\{\s*overlay_key\s*:/,
+    "Secrets button must NOT send snake_case overlay_key"
+  );
+});
+
+test("Lesson 985 Bug 2: chat Modules Run sends camelCase moduleId/tool/inputs/surface", () => {
+  // The chat toolbar's Run handler must pass camelCase keys to
+  // mc_run_module. (Same Tauri 2 IPC convention as Bug 1.)
+  // Without camelCase, Tauri 2 silently drops the snake_case key
+  // and the Rust side gets an empty moduleId → "missing required key
+  // module_id".
+  assert.match(
+    jsSrc,
+    /tauriInvoke\(\s*['"]mc_run_module['"]\s*,\s*\{\s*moduleId\s*:/,
+    "chat Run must pass moduleId (camelCase)"
+  );
+  assert.match(
+    jsSrc,
+    /tauriInvoke\(\s*['"]mc_run_module['"]\s*,\s*\{[\s\S]*?moduleId\s*:\s*\w+\.\w+[\s\S]*?tool\s*:/,
+    "chat Run must pass tool (camelCase) along with moduleId"
+  );
+  assert.match(
+    jsSrc,
+    /tauriInvoke\(\s*['"]mc_run_module['"]\s*,\s*\{[\s\S]*?surface\s*:\s*['"]openclaw_chat['"]/,
+    "chat Run must pass surface: 'openclaw_chat' (camelCase)"
+  );
+  assert.doesNotMatch(
+    jsSrc,
+    /tauriInvoke\(\s*['"]mc_run_module['"]\s*,\s*\{\s*module_id\s*:/,
+    "chat Run must NOT send snake_case module_id"
+  );
+});
+
+test("Lesson 985 Bug 2b: chat Modules Run uses tool.name (MAIC schema), not tool.id", () => {
+  // Lesson 985 (2026-09-16 07:15 MDT, David): the chat toolbar's
+  // Run handler sent `tool: tool.id` (undefined, since MAIC tools
+  // have `name` not `id`). Rust's `mc_run_module` rejected the
+  // empty string with "tool is required" and the user saw "Run
+  // failed". The launchpad (`src/pages/dashboard_launchpad.js:548`)
+  // correctly uses `tool: firstTool.name`. The chat toolbar must
+  // match that convention: prefer tool.name, fall back to tool.id.
+  assert.match(
+    jsSrc,
+    /tool:\s*tool\.name\s*\|\|\s*tool\.id/,
+    "chat Run must send `tool: tool.name || tool.id` (MAIC tools have .name, not .id)"
+  );
+});
+
+test("Lesson 985 Bug 3: chat voice button uses camelCase timeoutMs (consistent with mc-voice-native.js)", () => {
+  // The standalone mc-voice-native.js patch uses { timeoutMs: 15000 }
+  // and works. The chat toolbar should match that convention.
+  assert.match(
+    jsSrc,
+    /tauriInvoke\(\s*['"]mc_voice_native_capture['"]\s*,\s*\{\s*timeoutMs\s*:/,
+    "voice button must pass timeoutMs (camelCase)"
+  );
+  assert.doesNotMatch(
+    jsSrc,
+    /tauriInvoke\(\s*['"]mc_voice_native_capture['"]\s*,[^)]*timeout_ms\s*:/,
+    "voice button must NOT pass snake_case timeout_ms"
+  );
+});
+
+test("Lesson 985 Bug 4: terminal Modules Run click uses (m.id || m.module_id) cache lookup (Lesson 980)", async () => {
+  // Bug: terminal Modules Run does nothing. Lesson 980 pinned the fix
+  // by introducing a `(m.id || m.module_id)` cache lookup and the
+  // _raw unwrap. Re-pin the relevant shape from src/modules-menu.js
+  // (which terminal.js imports).
+  const menuSrc = await readFile(
+    resolve(REPO_ROOT, "src/modules-menu.js"),
+    "utf8"
+  );
+  assert.match(
+    menuSrc,
+    /\(m\.id\s*\|\|\s*m\.module_id\)\s*===\s*moduleId/,
+    "modules-menu click handler must use (m.id || m.module_id) === moduleId cache lookup"
+  );
+  assert.match(
+    menuSrc,
+    /menu\._items/,
+    "modules-menu click handler must read cached items from menu._items"
+  );
+  assert.match(
+    menuSrc,
+    /cached\._raw/,
+    "modules-menu click handler must unwrap cached._raw to MAIC shape"
+  );
+});
