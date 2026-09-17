@@ -93,13 +93,6 @@ pub mod pairing_state;
 // resolution — those are still encapsulated in `build_pairing_state()`.
 pub mod pairing_init;
 pub mod pairing_commands;
-// Phase 3 (2026-09-16): MAIC workspace sync layer — replaces pairing for
-// the phone↔desktop message bus. Spec: memory/projects/workspace_architecture.md.
-// pairing_* stays in place (marked deprecated where touched) so David
-// has git history if he wants to revive it.
-pub mod workspace_sync;
-mod workspace_init;
-pub mod workspace_commands;
 // Phase 2.3: tiny_http listener for phone-side pairing (POST /pair/initiate, GET /pair/health).
 // Spawned from setup(); heartbeat thread reads bound_port() to advertise the endpoint to MAIC.
 // Spec: docs/specs/mobile-desktop-pairing.md.
@@ -4158,14 +4151,6 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         *state.modules.lock().unwrap() = discovered;
     }
 
-    // Phase 3 (2026-09-16): kick off the MAIC workspace sync loop.
-    // The loop polls MAIC for new notes assigned to this user, claims
-    // them, executes locally (stubbed), and writes results back. This
-    // is the new phone↔desktop message bus — replaces pairing.
-    if let Some(workspace) = app_handle.try_state::<std::sync::Arc<workspace_sync::WorkspaceClient>>() {
-        workspace.start();
-    }
-
     // 7. Phase 2.3 (rc55.19): spawn the phone-pairing HTTP server + 60s
     //    heartbeat ticker.
     //
@@ -8103,7 +8088,6 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState::default())
         .manage(pairing_init::build_pairing_state())
-        .manage(workspace_init::build_workspace_state())
         .invoke_handler(tauri::generate_handler![
             first_run_report,
             // Lesson TBD (2026-08-27): on-demand voice diagnostics probe.
@@ -8232,9 +8216,6 @@ pub fn run() {
             mc_register_desktop_self,
             mc_restore_pairing_identity,
             mc_get_pairing_status,
-            // Phase 3 workspace sync (2026-09-16).
-            workspace_commands::mc_workspace_status,
-            workspace_commands::mc_workspace_refresh_jwt,
             // Lesson 833 (NEW 2026-09-08, David): MC subagents /
             // workflows. Five Tauri commands surface the bundled
             // open-prose plugin from chat / Terminal tile / Workflow
