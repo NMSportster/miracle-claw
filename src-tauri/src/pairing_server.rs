@@ -1,3 +1,9 @@
+// DEPRECATION (2026-09-16): The mobile↔desktop pairing model has been
+// superseded by the MAIC per-user workspace model. See
+// memory/projects/workspace_architecture.md for the new design.
+// This module is preserved per David's instruction ("we may need it
+// later") and remains buildable. New work goes into workspace_*.
+//
 // Phase 2.3 — tiny_http listener for phone-side pairing requests.
 //
 // The phone reaches this desktop over LAN (preferred) or via the MAIC

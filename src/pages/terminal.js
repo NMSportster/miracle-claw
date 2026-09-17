@@ -36,9 +36,9 @@
 //     innerHTML is set + on next animation frame.
 //   - FitAddon.fit() must be called after mount AND after every resize
 //     AND after fullscreen toggle. We use a ResizeObserver for that.
-//   - For mc-openclaw (TUI), the backend sends \r as Enter (rc40); we
+//   - For mc-terminal (TUI), the backend sends \r as Enter (rc40); we
 //     preserve that. xterm's onData could feed input too, but for the
-//     mc-openclaw shell we drive input through the backend so the
+//     mc-terminal shell we drive input through the backend so the
 //     backend sees \r instead of \r\n.
 
 import { invoke } from "@tauri-apps/api/core";
@@ -51,7 +51,8 @@ import "@xterm/xterm/css/xterm.css";
 // the JS-side module runtime. The button starts greyed out
 // (data-module-voice-installed="false") and lights up when the
 // voice module installs.
-import { isModuleInstalled, invokeModule, ensureVoiceModel } from "../modules-runtime.js";
+import { isModuleInstalled, invokeModule, ensureVoiceModel, listInstalledModules } from "../modules-runtime.js";
+import { mountModulesMenu, closeModuleModal, getInstalledModulesMerged } from "../modules-menu.js";
 import { toast } from "../toast.js";
 // rc53.5 (feature/secrets-vault): mount the secrets page inside an
 // overlay when the toolbar button is clicked. Re-uses the existing
@@ -90,15 +91,15 @@ function detectOS() {
 function shellOptionsForOS(os) {
   if (os === "windows") {
     return [
-      { value: "mc-openclaw", label: "OpenClaw TUI (mc-openclaw)" },
+      { value: "mc-terminal", label: "Miracle Claw · TUI" },
       { value: "prose", label: "Workflow REPL (prose)" },
       { value: "cmd", label: "Command Prompt (cmd.exe)" },
-      { value: "pwsh", label: "PowerShell 7 (pwsh.exe)" },
+      { value: "pwsh", label: "PowerShell (powershell.exe)" },
       { value: "wsl", label: "WSL bash" },
     ];
   }
   return [
-    { value: "mc-openclaw", label: "OpenClaw TUI (mc-openclaw)" },
+    { value: "mc-terminal", label: "Miracle Claw · TUI" },
     { value: "prose", label: "Workflow REPL (prose)" },
     { value: "bash", label: "bash" },
     { value: "sh", label: "sh" },
@@ -145,10 +146,10 @@ export const terminalPage = {
     // Migration (v1.0.9-rc45): pre-rc45 the Terminal tile defaulted to
     // mc-openclaw, so installs that have used the app have it saved in
     // localStorage. After the split, "Terminal" is the local shell tile
-    // and mc-openclaw lives on its own dashboard button. If we see the
-    // old saved value here, fall back to the OS default so the user
-    // lands in cmd/bash — the AI shell is one click away on the
-    // dashboard.
+    // and mc-terminal (renamed from mc-openclaw in Week 4) lives on its
+    // own dashboard button. If we see the old saved value here, fall
+    // back to the OS default so the user lands in cmd/bash — the AI
+    // shell is one click away on the dashboard.
     const lastShell = safeLocalGet("mc.terminal.shell");
     let initialShell;
     if (ctxDefaultShell && allowedShells.has(ctxDefaultShell)) {
@@ -156,7 +157,7 @@ export const terminalPage = {
     } else if (
       lastShell &&
       allowedShells.has(lastShell) &&
-      lastShell !== "mc-openclaw"
+      lastShell !== "mc-terminal"
     ) {
       initialShell = lastShell;
     } else {
@@ -289,14 +290,18 @@ export const terminalPage = {
               id="terminal-fullscreen"
               title="Toggle larger terminal area"
               aria-label="Toggle larger terminal area"
-            ><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9V3h6"/><path d="M21 9V3h-6"/><path d="M3 15v6h6"/><path d="M21 15v6h-6"/></svg></button>
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9V3h6"/><path d="M21 9V3h-6"/><path d="M3 15v6h6"/><path d="M21 15v6h-6"/></svg>
+            </button>
             <button
               type="button"
               class="icon-link"
               id="terminal-back"
               title="Back to Dashboard"
               aria-label="Back to Dashboard"
-            ><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg></button>
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+            </button>
           </div>
         </header>
 
@@ -322,18 +327,25 @@ export const terminalPage = {
           <button type="button" id="terminal-attach-btn" class="icon-link"
                   title="Drop files to attach to your next chat message"
                   aria-label="Open attach zone">
-            📎 Attach
+            <span class="icon-link-glyph" aria-hidden="true">📎</span>
           </button>
           <button type="button" id="terminal-secrets-btn" class="icon-link"
                   title="Manage secrets vault (rc53.6 — Once / PerSession / Vault)"
                   aria-label="Open secrets vault">
-            🔑 Secrets
+            <span class="icon-link-glyph" aria-hidden="true">🔑</span>
           </button>
           <button type="button" id="terminal-voice-btn" class="icon-link"
                   title="Voice input (requires Voice for MiracleClaw module)"
                   aria-label="Voice input"
                   data-module-voice-installed="false">
-            🎙 Voice
+            <span class="icon-link-glyph" aria-hidden="true">🎙</span>
+          </button>
+          <button type="button" id="terminal-modules-btn" class="icon-link"
+                  title="Open installed modules"
+                  aria-label="Open installed modules"
+                  aria-haspopup="menu">
+            <span class="icon-link-glyph" aria-hidden="true">🧩</span>
+            <span class="toolbar-btn-count" id="terminal-modules-count" hidden>0</span>
           </button>
         </div>
 
@@ -820,7 +832,18 @@ export const terminalPage = {
     const secretsCloseBtn = document.getElementById("terminal-secrets-close");
 
     let secretsOpen = false;
-    function openSecretsOverlay() {
+    // Lesson 982 (2026-09-11 21:00 MDT, David): the previous close
+    // handler always called `bridge.closeOverlay()` whenever the
+    // bridge existed. But the bridge is on the main window regardless
+    // of HOW the overlay was opened — local toolbar click vs. chat
+    // bridge auto-open. When opened from the local toolbar, no
+    // `overlay_return_url` is stashed in Rust, so `mc_close_overlay`
+    // falls back to navigating main window to the dashboard. That
+    // sent "Back" / "✕" on a locally-opened secrets card back to the
+    // Dashboard instead of the Terminal. Track the opener with this
+    // flag; only call closeOverlay when it's true.
+    let secretsOpenedByBridge = false;
+    function openSecretsOverlay({ fromBridge = false } = {}) {
       // Pause terminal polling so the overlay doesn't render behind
       // a moving terminal. Resume on close.
       if (pollTimer) {
@@ -828,6 +851,7 @@ export const terminalPage = {
         pollTimer = null;
       }
       secretsOpen = true;
+      secretsOpenedByBridge = fromBridge;
       secretsOverlay.removeAttribute("hidden");
       // Mount the secrets page into the overlay body. onBack = close.
       secretsPage.mount(secretsBody, {
@@ -844,30 +868,48 @@ export const terminalPage = {
       if (!ended && sessionId && !pollTimer) {
         pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS);
       }
-      // rc53.11 (Lesson 247): if the user opened this overlay from the
-      // OpenClaw chat window (via the floating 🔑 button in mc-chat-
-      // toolbar), the close handler should also navigate them BACK to
-      // the chat URL — not leave them stranded on the dashboard. The
-      // Rust mc_close_overlay command captures the URL we came from
-      // (stashed by mc_open_overlay) and navigates back.
-      //
-      // Fall back to plain DOM close if the bridge isn't present
-      // (e.g. dev/test environments) — the overlay still hides
-      // locally, the user just stays on whatever page they were on.
-      try {
-        const bridge = window.__openclawHostBridge;
-        if (bridge && typeof bridge.closeOverlay === 'function') {
-          bridge.closeOverlay();
-          return;
-        }
-      } catch (_) { /* fall through */ }
+      // Lesson 982: only navigate via the bridge if the overlay was
+      // OPENED by the bridge. For local toolbar opens, the overlay
+      // is just a UI element — closing it should hide it in place
+      // and let the user stay on the Terminal page. The fallback
+      // path in Rust would otherwise navigate to the dashboard.
+      if (secretsOpenedByBridge) {
+        secretsOpenedByBridge = false;
+        try {
+          const bridge = window.__openclawHostBridge;
+          if (bridge && typeof bridge.closeOverlay === 'function') {
+            bridge.closeOverlay();
+            return;
+          }
+        } catch (_) { /* fall through */ }
+      }
     }
     secretsCloseBtn.addEventListener("click", closeSecretsOverlay);
     // Esc closes the overlay when it's open.
     secretsOverlay.addEventListener("keydown", (e) => {
       if (e.key === "Escape") closeSecretsOverlay();
     });
-    document.getElementById("terminal-secrets-btn").addEventListener("click", openSecretsOverlay);
+    document.getElementById("terminal-secrets-btn").addEventListener("click", () => {
+      // Lesson 982: local toolbar click is a local open. Don't tell
+      // the bridge about it, or close will send the user to the
+      // dashboard.
+      openSecretsOverlay({ fromBridge: false });
+    });
+    // Lesson 980: delegated listener for the secrets card's back
+    // button. Catches data-action="secrets-back" anywhere in the
+    // overlay (the secrets page re-renders its innerHTML on every
+    // mount, so the inline listener on #back-btn can be shadowed by
+    // event handlers in the terminal header that live behind the
+    // overlay's z-index 10000). Delegated, so it's resilient to
+    // re-renders.
+    secretsOverlay.addEventListener("click", (e) => {
+      const t = e.target.closest("[data-action='secrets-back']");
+      if (t) {
+        e.stopPropagation();
+        e.preventDefault();
+        closeSecretsOverlay();
+      }
+    });
 
     // Lesson 571: voice button click. The button stays greyed out
     // until the voice module installs (CSS uses
@@ -876,20 +918,22 @@ export const terminalPage = {
     // terminal input row. v0.1.0 uses alert() as the result sink;
     // Lesson 572 will replace with a toast or inline status.
     const voiceBtn = document.getElementById("terminal-voice-btn");
+    const voiceGlyph = voiceBtn.querySelector(".icon-link-glyph");
     voiceBtn.addEventListener("click", async () => {
       if (!isModuleInstalled("voice")) {
         toast("Voice module not installed. Install via Settings → Modules.", { kind: "warn" });
         return;
       }
       voiceBtn.disabled = true;
-      voiceBtn.textContent = "🎙 Listening…";
+      const orig = voiceGlyph.textContent;
+      voiceGlyph.textContent = "🎙…";
       try {
         // Lesson 581 (2026-08-25 16:25 MDT, David): ensure whisper
         // model is present before transcribing. If missing,
         // auto-download (~75MB) so the user gets a working mic
         // without having to dig into the binary's env vars.
         const ready = await ensureVoiceModel((status) => {
-          voiceBtn.textContent = status.startsWith("Downloading") ? "📥 Downloading…" : "🎙 Preparing…";
+          voiceGlyph.textContent = status.startsWith("Downloading") ? "📥…" : "🎙…";
         });
         if (!ready) {
           toast(
@@ -931,7 +975,7 @@ export const terminalPage = {
         }
       } finally {
         voiceBtn.disabled = false;
-        voiceBtn.textContent = "🎙 Voice";
+        voiceGlyph.textContent = orig;
       }
     });
 
@@ -989,13 +1033,19 @@ export const terminalPage = {
 
     let attachOpen = false;
     let attachZoneWired = false;
-    function openAttachOverlay() {
+    // Lesson 982: same opener-tracking flag pattern as secrets so
+    // a locally-opened attach overlay stays on Terminal when closed
+    // (instead of bouncing to Dashboard via mc_close_overlay's
+    // dashboard fallback).
+    let attachOpenedByBridge = false;
+    function openAttachOverlay({ fromBridge = false } = {}) {
       // Pause terminal polling while overlay is up (same as secrets).
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;
       }
       attachOpen = true;
+      attachOpenedByBridge = fromBridge;
       attachOverlay.removeAttribute("hidden");
       // Wire the zone lazily — wireAttachZone registers document-level
       // drag listeners, so we only want them live while the overlay
@@ -1014,23 +1064,42 @@ export const terminalPage = {
       if (!ended && sessionId && !pollTimer) {
         pollTimer = setInterval(pollOnce, POLL_INTERVAL_MS);
       }
-      // rc53.11 (Lesson 247): same close-and-return logic as secrets —
-      // if opened from the OpenClaw chat window, navigate back to the
-      // chat URL rather than stranding the user on the dashboard.
-      try {
-        const bridge = window.__openclawHostBridge;
-        if (bridge && typeof bridge.closeOverlay === 'function') {
-          bridge.closeOverlay();
-          return;
-        }
-      } catch (_) { /* fall through */ }
+      // Lesson 982: only navigate via the bridge if the overlay was
+      // OPENED by the bridge. See closeSecretsOverlay for the full
+      // explanation. The Rust fallback would otherwise navigate to
+      // the dashboard, which is wrong for local toolbar opens.
+      if (attachOpenedByBridge) {
+        attachOpenedByBridge = false;
+        try {
+          const bridge = window.__openclawHostBridge;
+          if (bridge && typeof bridge.closeOverlay === 'function') {
+            bridge.closeOverlay();
+            return;
+          }
+        } catch (_) { /* fall through */ }
+      }
     }
     attachCloseBtn.addEventListener("click", closeAttachOverlay);
     // Esc closes the overlay when it's open.
     attachOverlay.addEventListener("keydown", (e) => {
       if (e.key === "Escape") closeAttachOverlay();
     });
-    document.getElementById("terminal-attach-btn").addEventListener("click", openAttachOverlay);
+    document.getElementById("terminal-attach-btn").addEventListener("click", () => {
+      // Lesson 982: local toolbar click is a local open.
+      openAttachOverlay({ fromBridge: false });
+    });
+
+    // Lesson 969: inline Modules dropdown in the terminal toolbar.
+    // Mirrors the dashboard header so users have the same module
+    // picker on both surfaces. Result modal's Send-to-Chat action
+    // will route the content to the chat input (Lesson 574 chain).
+    const modulesBtn = document.getElementById("terminal-modules-btn");
+    if (modulesBtn) {
+      mountModulesMenu(modulesBtn, { surface: "terminal" });
+      updateTerminalModulesCount();
+      window.addEventListener("mc:module-installed", updateTerminalModulesCount);
+      window.addEventListener("mc:module-uninstalled", updateTerminalModulesCount);
+    }
 
     // rc53.9 (Lesson 243): auto-open one of the overlays on mount if
     // requested. Three sources, in priority order:
@@ -1077,8 +1146,12 @@ export const terminalPage = {
       // Defer one tick so listeners + DOM are fully settled (overlay
       // divs need to be appended first).
       setTimeout(() => {
-        if (desiredAutoOpen === "secrets") openSecretsOverlay();
-        else openAttachOverlay();
+        // Lesson 982: auto-open from URL hash is the bridge path —
+        // the chat toolbar invoked mc_open_overlay, which stashed
+        // the chat URL and navigated us here. Mark fromBridge=true
+        // so close returns to chat instead of dashboard.
+        if (desiredAutoOpen === "secrets") openSecretsOverlay({ fromBridge: true });
+        else openAttachOverlay({ fromBridge: true });
       }, 0);
     }
 
@@ -1088,12 +1161,16 @@ export const terminalPage = {
     // next tick to race the layout engine's paint.
     const fullscreenBtn = document.getElementById("terminal-fullscreen");
     const pageRoot = root.querySelector(".terminal-page");
+    const applyFullscreenState = (on) => {
+      pageRoot.classList.toggle("terminal-fullscreen-mode", on);
+      fullscreenBtn.classList.toggle("is-fullscreen", on);
+    };
     if (safeLocalGet("mc.terminal.fullscreen") === "1") {
-      pageRoot.classList.add("terminal-fullscreen-mode");
-      fullscreenBtn.textContent = "⛶";
+      applyFullscreenState(true);
     }
     fullscreenBtn.addEventListener("click", () => {
-      const on = pageRoot.classList.toggle("terminal-fullscreen-mode");
+      const on = !pageRoot.classList.contains("terminal-fullscreen-mode");
+      applyFullscreenState(on);
       safeLocalSet("mc.terminal.fullscreen", on ? "1" : "0");
       setTimeout(() => {
         try { fitAddon.fit(); } catch { /* ignore */ }
@@ -1198,5 +1275,45 @@ export const terminalPage = {
       delete root._terminalCleanup;
       c();
     }
+    // Lesson 969: tear down the modules dropdown + modal and detach
+    // the count-badge listeners.
+    closeModuleModal();
+    if (typeof window !== "undefined") {
+      window.removeEventListener("mc:module-installed", updateTerminalModulesCount);
+      window.removeEventListener("mc:module-uninstalled", updateTerminalModulesCount);
+    }
   },
 };
+
+// Lesson 969: count badge updater for the terminal Modules button.
+// Module-scoped so unmount() can detach the listeners.
+//
+// Lesson 976 (2026-09-11 18:05 MDT, David): was reading
+// `listInstalledModules()` which only counts LOCAL modules. For
+// MAIC-installed modules (FireCrawl, Marketing Suite, etc.) the
+// badge always showed "0" even though the dropdown showed them.
+// Use the shared `getInstalledModulesMerged()` helper so the badge
+// and dropdown always agree.
+let _terminalCountInflight = false;
+async function updateTerminalModulesCount() {
+  const count = document.getElementById("terminal-modules-count");
+  if (!count) return;
+  if (_terminalCountInflight) return; // dedupe overlapping triggers
+  _terminalCountInflight = true;
+  try {
+    const items = await getInstalledModulesMerged();
+    if (items.length === 0) {
+      count.hidden = true;
+    } else {
+      count.hidden = false;
+      count.textContent = String(items.length);
+    }
+  } catch (e) {
+    // If even the merged fetch fails, hide the badge rather than
+    // show a stale 0.
+    console.warn("[terminal] modules count update failed:", e);
+    count.hidden = true;
+  } finally {
+    _terminalCountInflight = false;
+  }
+}

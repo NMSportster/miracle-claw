@@ -1006,10 +1006,39 @@ code {
   outline-offset: 1px;
 }
 
+/* When the terminal is in fullscreen mode, swap the icon-link glyph
+   to an "exit fullscreen" indicator (arrows pointing inward). The
+   terminal.js handler toggles `.is-fullscreen` on the button when
+   the page-root has `.terminal-fullscreen-mode`. */
+.icon-link.is-fullscreen svg {
+  display: none;
+}
+.icon-link.is-fullscreen::after {
+  content: "⛶";
+  font-size: 18px;
+  line-height: 1;
+  color: var(--fg);
+}
+
+/* Position the count badge in the top-right of the icon-only modules
+   button. The toolbar-btn version had it inline next to the text;
+   for icon-link we use absolute positioning so the badge doesn't
+   push the 32x32 button wider. */
+.icon-link {
+  position: relative;
+}
+.icon-link .toolbar-btn-count {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  margin-left: 0;
+}
+
 /* Visible Ctrl+K chip in the dashboard header so users discover the
    command palette shortcut. Without this, the shortcut is invisible
    to anyone who didn't already know about it (rc52 feedback). */
-.icon-link.cmd-k-hint {
+.icon-link.cmd-k-hint,
+.toolbar-btn.cmd-k-hint {
   width: auto;
   height: 32px;
   padding: 0 10px;
@@ -1019,7 +1048,8 @@ code {
   color: var(--fg-muted);
   letter-spacing: 0.02em;
 }
-.icon-link.cmd-k-hint kbd {
+.icon-link.cmd-k-hint kbd,
+.toolbar-btn.cmd-k-hint kbd {
   font-family: inherit;
   font-size: inherit;
   /* Inline kbd (no extra chip styling) so the chip reads as one label */
@@ -1778,17 +1808,20 @@ code {
    same button gets the `.terminal-fullscreen-mic` selector via the
    `[data-module-voice-installed="true"]` style below; we use CSS to
    ensure the icon stays visible against the dark fullscreen bg. */
-.icon-link[data-module-voice-installed="false"] {
+.icon-link[data-module-voice-installed="false"],
+.toolbar-btn[data-module-voice-installed="false"] {
   opacity: 0.4;
   cursor: not-allowed;
   pointer-events: none;
 }
-.icon-link[data-module-voice-installed="false"]:hover {
+.icon-link[data-module-voice-installed="false"]:hover,
+.toolbar-btn[data-module-voice-installed="false"]:hover {
   /* Hover state suppressed while disabled — no transform, no color shift */
   background: transparent;
   border-color: var(--border);
 }
-.icon-link[data-module-voice-installed="true"] {
+.icon-link[data-module-voice-installed="true"],
+.toolbar-btn[data-module-voice-installed="true"] {
   opacity: 1;
   cursor: pointer;
   pointer-events: auto;
@@ -4516,10 +4549,25 @@ kbd {
   pointer-events: none;
 }
 
+/* Lesson 837 (2026-09-09, David): back-to-dashboard button anchored
+   to the top-left of the gradient hero. Absolute so it doesn't push
+   the title down — the gradient stays clean. Above the ::after
+   pseudo-element (which adds the bottom-center glow) so the button
+   stays clickable on every pixel of its 32x32 box. */
+.workflows-hero-back {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 2;
+}
+
 .workflows-hero-title {
   font-size: 28px;
   font-weight: 700;
   margin: 0 0 8px 0;
+  /* Leave room for the absolutely-positioned back button at the
+     top-left so the "Workflows" title doesn't slide under it. */
+  padding-left: 44px;
   letter-spacing: -0.01em;
   position: relative;
   z-index: 1;
@@ -5434,4 +5482,1245 @@ kbd {
 }
 .workflow-banner-status-killed .workflow-banner-cta {
   color: var(--fg-muted);
+}
+
+/* --- Phase 2.4 (Mobile pairing section) --------------------- */
+
+.pairing-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pairing-card-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pairing-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.pairing-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.pairing-meta-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pairing-meta-row code {
+  font-size: 12px;
+  word-break: break-all;
+  text-align: right;
+}
+
+.pairing-card-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.pairing-section-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.pairing-folder-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.pairing-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pairing-device-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.pairing-device-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.pairing-device-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.pairing-device-actions {
+  flex-shrink: 0;
+}
+
+.pairing-advanced {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.pairing-advanced > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  user-select: none;
+}
+
+.pairing-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 12px;
+}
+
+.pairing-advanced-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.pairing-advanced-note {
+  line-height: 1.5;
+}
+
+.pairing-qr-host {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+}
+
+.pairing-qr-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg);
+  border-radius: 6px;
+}
+
+.settings-error {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--error-bg);
+  border-radius: 6px;
+  background: rgba(220, 38, 38, 0.05);
+}
+
+.settings-button {
+  padding: 6px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.settings-button:hover:not(:disabled) {
+  background: var(--bg-card);
+  border-color: var(--fg-muted);
+}
+
+.settings-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings-button.primary {
+  background: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+  color: white;
+}
+
+.settings-button.primary:hover:not(:disabled) {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+.settings-button.danger {
+  background: transparent;
+  color: var(--error-fg);
+  border-color: var(--error-bg);
+}
+
+.settings-button.danger:hover:not(:disabled) {
+  background: var(--error-bg);
+  color: white;
+}
+
+.settings-button.small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+
+/* ============================================================================
+ * Marketplace page (src/pages/marketplace.js, rc56.x)
+ * Visual language reuses the .modules-card grid from src/pages/modules.js
+ * so the catalog hub and the live marketplace read as the same product.
+ * ============================================================================ */
+
+.mc-mkt-page {
+  padding: 24px 32px 64px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.mc-mkt-page .mc-page-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 24px;
+}
+
+.mc-mkt-page .mc-page-header h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.mc-mkt-page .mc-back-btn {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
+.mc-mkt-page .mc-back-btn:hover {
+  background: var(--bg-card);
+}
+
+.mc-mkt-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+@media (max-width: 768px) {
+  .mc-mkt-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mc-mkt-sidebar {
+  position: sticky;
+  top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-card);
+  padding: 16px;
+}
+
+.mc-mkt-sidebar-title {
+  margin: 0 0 12px 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+.mc-mkt-cats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mc-mkt-cat {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--fg);
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.mc-mkt-cat:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+}
+
+.mc-mkt-cat.active {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.06));
+  border-color: var(--border);
+  font-weight: 600;
+}
+
+.mc-mkt-count {
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg-page, rgba(0, 0, 0, 0.04));
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.mc-mkt-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.mc-mkt-sort-label {
+  font-size: 13px;
+  color: var(--fg-muted);
+  margin-right: 4px;
+}
+
+.mc-mkt-sort {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mc-mkt-sort:hover {
+  background: var(--bg-card);
+}
+
+.mc-mkt-sort.active {
+  background: var(--fg);
+  color: var(--bg-card);
+  border-color: var(--fg);
+}
+
+.mc-mkt-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.mc-mkt-card .mc-mkt-card-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+.mc-mkt-rating {
+  font-size: 14px;
+  letter-spacing: 1px;
+}
+
+.mc-mkt-dl {
+  font-size: 11px;
+}
+
+.mc-mkt-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0 0 0;
+}
+
+.mc-mkt-tag {
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg-page, rgba(0, 0, 0, 0.04));
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+.mc-mkt-btn {
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.mc-mkt-btn-install {
+  background: var(--accent, #2d6cdf);
+  color: #fff;
+  border-color: var(--accent, #2d6cdf);
+}
+
+.mc-mkt-btn-install:hover {
+  filter: brightness(0.92);
+}
+
+.mc-mkt-btn-installed {
+  background: transparent;
+  color: var(--fg-muted);
+  border-color: var(--border);
+  cursor: pointer;
+}
+
+.mc-mkt-btn-installed:hover {
+  border-color: var(--error, #c0392b);
+  color: var(--error, #c0392b);
+}
+
+.mc-mkt-empty {
+  text-align: center;
+  padding: 64px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+}
+
+.mc-mkt-empty-emoji {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.mc-mkt-empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.mc-mkt-loading {
+  padding: 24px;
+  text-align: center;
+}
+
+/* ============================================================================
+ * Launchpad dashboard (src/pages/dashboard_launchpad.js, rc56.0)
+ * The new landing page. Designed to read as a product card grid, not the
+ * classic dashboard's flat tile list. Each section is its own block so
+ * future section additions don't have to fight the cascade.
+ * ============================================================================ */
+
+.mc-launchpad {
+  min-height: 100vh;
+  background: var(--bg-page, #fafafa);
+  color: var(--fg);
+}
+
+/* topbar --------------------------------------------------------------- */
+
+.mc-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 32px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.mc-topbar-left .mc-brand {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.mc-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mc-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.mc-user:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+}
+
+.mc-user-name {
+  font-weight: 500;
+}
+
+.mc-user-caret {
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+.mc-iconbtn {
+  background: transparent;
+  border: 1px solid var(--border);
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 16px;
+  color: var(--fg);
+}
+
+.mc-iconbtn:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+}
+
+/* tier row ------------------------------------------------------------- */
+
+.mc-tier-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 32px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.mc-tier-badge {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.mc-tier-label {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-page, rgba(0, 0, 0, 0.06));
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mc-tier-badge[data-tier="pro"] .mc-tier-label,
+.mc-tier-badge[data-tier="pro_plus"] .mc-tier-label {
+  background: #fdf3d0;
+  color: #7a5a00;
+}
+
+.mc-tier-badge[data-tier="team"] .mc-tier-label,
+.mc-tier-badge[data-tier="enterprise"] .mc-tier-label {
+  background: #e3dffd;
+  color: #1d3a8a;
+}
+
+.mc-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-page, rgba(0, 0, 0, 0.06));
+  overflow: hidden;
+  min-width: 80px;
+}
+
+.mc-bar-fill {
+  height: 100%;
+  background: var(--accent, #2d6cdf);
+  transition: width 0.3s ease;
+}
+
+.mc-bar-empty {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.mc-tier-numbers {
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mc-link {
+  background: transparent;
+  border: none;
+  color: var(--accent, #2d6cdf);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 8px;
+}
+
+.mc-link:hover {
+  text-decoration: underline;
+}
+
+/* main container ------------------------------------------------------- */
+
+.mc-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px;
+}
+
+.mc-greeting {
+  font-size: 28px;
+  font-weight: 600;
+  margin: 0 0 24px 0;
+  color: var(--fg);
+}
+
+.mc-greeting em {
+  font-style: normal;
+  color: var(--accent, #2d6cdf);
+}
+
+.mc-loading {
+  padding: 64px 32px;
+  text-align: center;
+  color: var(--fg-muted);
+}
+
+/* launch tiles --------------------------------------------------------- */
+
+.mc-launch {
+  margin-bottom: 32px;
+}
+
+.mc-launch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.mc-launch-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 20px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  cursor: pointer;
+  text-align: left;
+  color: var(--fg);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+}
+
+.mc-launch-tile:hover {
+  border-color: var(--accent, #2d6cdf);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.06);
+  transform: translateY(-1px);
+}
+
+.mc-launch-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.mc-launch-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.mc-launch-sub {
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+/* your tools grid ------------------------------------------------------ */
+
+.mc-tools {
+  margin-bottom: 32px;
+}
+
+.mc-tools-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.mc-tools-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.mc-tools-count {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.mc-tools-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.mc-tool-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  cursor: pointer;
+  text-align: left;
+  color: var(--fg);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.mc-tool-tile:hover {
+  border-color: var(--accent, #2d6cdf);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.mc-tool-emoji {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.mc-tool-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mc-tool-desc {
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+
+.mc-tool-run {
+  margin-top: 8px;
+  background: var(--accent, #2d6cdf);
+  color: #fff;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mc-tool-run:disabled {
+  background: var(--bg-page, rgba(0, 0, 0, 0.06));
+  color: var(--fg-muted);
+  cursor: not-allowed;
+}
+
+.mc-tool-add {
+  border-style: dashed;
+  background: transparent;
+}
+
+.mc-tool-add:hover {
+  border-style: solid;
+}
+
+/* recent ------------------------------------------------------------- */
+
+.mc-tools-blurb {
+  margin: 0 0 12px 0;
+  font-size: 13px;
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+
+.mc-starter-tile {
+  /* Subtle "this is a suggestion, not a tool yet" affordance. */
+  border-style: dashed;
+  background: linear-gradient(180deg, var(--bg-card) 0%, transparent 100%);
+}
+
+.mc-recent h2 {
+  margin: 0 0 12px 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.mc-recent-empty {
+  font-size: 13px;
+  color: var(--fg-muted);
+  padding: 16px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  text-align: center;
+}
+
+.mc-recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mc-recent-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.mc-recent-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.mc-recent-status {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-page, rgba(0, 0, 0, 0.06));
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mc-recent-when {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* module form modal --------------------------------------------------- */
+
+.mc-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+
+.mc-modal-panel {
+  background: var(--bg-card);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 540px;
+  max-height: 90vh;
+  overflow: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  /* Lesson 968 (2026-09-11, David): the panel is a SIBLING of the
+   * .mc-modal-backdrop (not a child), so the backdrop's flex centering
+   * doesn't reach it. Without position: relative here the panel
+   * renders in normal document flow at the top of <body> and ends up
+   * hidden BEHIND the fixed-positioned backdrop — user sees only the
+   * gray overlay, clicks anywhere to close, never sees the form.
+   * The fix: lift the panel out of the flow and stack it above the
+   * backdrop via z-index. The backdrop's flex centering already
+   * positions us because both elements share the same parent, but
+   * only with the panel at position: fixed and a higher z-index.
+   * Kept `position: fixed` (not absolute) so the panel stays centered
+   * even if body has scrolled. */
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1001;
+}
+
+.mc-modal-header {
+  padding: 20px 24px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mc-modal-header h2 {
+  margin: 0 0 4px 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.mc-modal-form {
+  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+}
+
+.mc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mc-field label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.mc-field input,
+.mc-field textarea,
+.mc-field select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-page, #fff);
+  color: var(--fg);
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.mc-field input:focus,
+.mc-field textarea:focus,
+.mc-field select:focus {
+  outline: 2px solid var(--accent, #2d6cdf);
+  outline-offset: 1px;
+}
+
+.mc-modal-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 14px;
+}
+
+/* Lesson 976 (2026-09-11 18:05 MDT, David): info modal for modules
+   that have no runnable tools in their client_manifest. Shows the
+   module's description, version, and category, plus a hint that
+   points the user at the launchpad for the actual Run action. */
+.mc-modal-info {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 360px;
+  max-width: 480px;
+}
+.mc-modal-info-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--fg-muted, #aaa);
+}
+.mc-modal-info-label {
+  font-weight: 600;
+  color: var(--fg, #e5e5e5);
+  min-width: 80px;
+}
+.mc-modal-info-desc {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fg, #e5e5e5);
+  margin: 0;
+}
+.mc-modal-info-hint {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-muted, #aaa);
+  background: var(--bg-card, #1e1e24);
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0;
+}
+.mc-modal-info-hint strong {
+  color: var(--fg, #e5e5e5);
+}
+
+.mc-modal-result {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--bg-page, rgba(0, 0, 0, 0.04));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  white-space: pre-wrap;
+}
+
+/* Week 7.3: friendly error mapping. The result box gets a
+   red border when it contains an error headline (set by JS via
+   class), and the details/action children are inline rather
+   than pre-formatted. */
+.mc-modal-result-error {
+  border-color: var(--danger, #c0392b);
+  background: var(--bg-error, rgba(192, 57, 43, 0.06));
+  white-space: normal; /* allow headline + details to flow */
+}
+
+.mc-modal-result-detail {
+  margin-top: 8px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+}
+
+.mc-modal-result-detail summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  user-select: none;
+}
+
+.mc-modal-result-detail pre {
+  margin: 4px 0 0 0;
+  padding: 8px;
+  background: var(--bg-code, rgba(0, 0, 0, 0.04));
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mc-modal-action {
+  display: inline-block;
+  margin-top: 8px;
+  margin-right: 8px;
+  background: var(--accent, #0e7c66);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mc-modal-action:hover {
+  filter: brightness(1.1);
+}
+
+.mc-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 24px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.mc-primary {
+  background: var(--accent, #2d6cdf);
+  color: #fff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.mc-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* --- Toolbar button (inline icon + text) ---------------------------
+ * Lesson 969 (2026-09-11, David): the dashboard header and terminal
+ * toolbar were using bare .icon-link buttons with title= attributes
+ * for hover tooltips. Those native tooltips look out of place in a
+ * Tauri app and don't carry the meaning of the action. This class
+ * makes the button an inline icon+text chip — proper HTML, part of
+ * the page, no floating popups. Used by dashboard.js and terminal.js
+ * for Voice, Modules, Settings, Cmd+K, etc.
+ */
+.toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.toolbar-btn:hover {
+  background: var(--tile-hover);
+  border-color: var(--accent);
+}
+
+.toolbar-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.toolbar-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toolbar-btn-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.toolbar-btn-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent, #2d6cdf);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 2px;
+}
+
+/* --- Modules dropdown ------------------------------------------
+ * Inline popover anchored to a trigger button. Sibling in the DOM
+ * (so layout absorbs it) and absolutely positioned directly below
+ * the button. Closes on outside-click or Escape.
+ */
+.mc-modules-menu {
+  position: fixed;
+  z-index: 1100;
+  min-width: 240px;
+  max-width: 320px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-card, #1e1e24);
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mc-modules-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--fg, #e5e5e5);
+  text-align: left;
+  font-family: inherit;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.mc-modules-menu-item:hover,
+.mc-modules-menu-item:focus-visible {
+  background: var(--tile-hover, rgba(255, 255, 255, 0.05));
+  outline: none;
+}
+
+.mc-modules-menu-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+  width: 24px;
+  text-align: center;
+}
+
+.mc-modules-menu-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.mc-modules-menu-name {
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.mc-modules-menu-sub {
+  font-size: 11px;
+  color: var(--fg-muted, #888);
+  line-height: 1.2;
+}
+
+/* --- Module result actions -------------------------------------
+ * Three buttons below the form output: Send to Chat / Copy / Close.
+ * These bridge scrape-style tools (Firecrawl, Marketing Suite) into
+ * the agent chat. Click Send-to-Chat to push content into the
+ * dashboard chat input (or clipboard as fallback). Lesson 969.
+ */
+.mc-modal-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 24px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-card, transparent);
+  align-items: center;
+}
+
+.mc-modal-result-actions .toolbar-btn {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.mc-modal-result-actions .mc-primary.toolbar-btn {
+  background: var(--accent, #2d6cdf);
+  color: #fff;
+  border-color: var(--accent, #2d6cdf);
+}
+
+.mc-modal-result-actions .mc-primary.toolbar-btn:hover {
+  filter: brightness(1.1);
+}
+
+/* When the result section is visible, hide the form's default footer
+ * so the result-actions row replaces it visually. */
+.mc-modal-form:has(+ .mc-modal-result:not([hidden])) .mc-modal-footer {
+  display: none;
 }

@@ -138,6 +138,15 @@ async function mount(root, ctx = {}) {
   _state.activeWorkflowName = null;
   _state.lastSeq = 0;
   _state.pendingWorkflowHint = typeof ctx.workflowHint === "string" ? ctx.workflowHint : null;
+  // Lesson 866 (2026-09-09, David): workflows page had no back button,
+  // so users had to close the app to get back to the Dashboard. The
+  // ctx already includes onBackToDashboard (wired in main.js workflowsCtx),
+  // but workflows.js never read it. Read it here and render a top-left
+  // back button. Fall back to a no-op so the page still works in tests
+  // or stripped-down embed contexts.
+  _state.onBackToDashboard = typeof ctx.onBackToDashboard === "function"
+    ? ctx.onBackToDashboard
+    : () => {};
   stopPolling();
 
   root.innerHTML = "";
@@ -149,11 +158,26 @@ async function mount(root, ctx = {}) {
   try {
     examples = await invoke("prose_examples", {});
   } catch (e) {
-    wrap.appendChild(
-      el("div", { class: "workflows-error" }, [
-        "Could not load the workflow library. Try restarting MiracleClaw.",
+    // Lesson 836 (2026-09-09): keep the friendly user-facing message but
+    // surface the actual underlying error in a hidden details block so
+    // diagnose-the-thing-in-the-wild doesn't require an electron-debug
+    // round-trip. If the error is the well-known 'not allowed by ACL'
+    // pattern (Tauri 2 silent ACL rejection), call it out specifically
+    // so the user can self-diagnose: it's an ACL drift, not a crash.
+    const errText = String(e?.message ?? e);
+    const isAclError = /not allowed by ACL/i.test(errText);
+    const userMsg = isAclError
+      ? "MiracleClaw can't load the workflow library yet — this build is missing the openclaw-required permissions. Try reinstalling from your dashboard or contact support with the error below."
+      : "Could not load the workflow library. Try restarting MiracleClaw.";
+    const errBlock = el("div", { class: "workflows-error-detail" }, [
+      userMsg,
+      el("details", {}, [
+        el("summary", {}, ["Technical details"]),
+        el("pre", {}, [errText]),
       ]),
-    );
+    ]);
+    wrap.appendChild(el("div", { class: "workflows-error" }, [errBlock]));
+    console.error("[workflows] prose_examples failed:", e);
     return;
   }
   _state.examples = examples;
@@ -165,7 +189,24 @@ async function mount(root, ctx = {}) {
   // load so the count pill ("6 workflows · 6 specialists") has the
   // real numbers. The Recipes button is inline so users can reach
   // saved workflows without scrolling past the grid.
+  //
+  // Lesson 866 (2026-09-09, David): back button rendered as the first
+  // child of the hero so the gradient + title are unchanged. We use
+  // the established `.icon-link` class (32x32 with a border + arrow)
+  // so it matches the back button on Provider Keys, Secrets, Pricing,
+  // and Modules — every other top-level page.
   const header = el("div", { class: "workflows-hero" }, [
+    el(
+      "button",
+      {
+        class: "icon-link workflows-hero-back",
+        id: "workflows-back-btn",
+        title: "Back to dashboard",
+        "aria-label": "Back to dashboard",
+        onclick: () => _state.onBackToDashboard(),
+      },
+      ["←"],
+    ),
     el("h1", { class: "workflows-hero-title" }, ["Workflows"]),
     el("p", { class: "workflows-hero-subtitle" }, [
       "Pick a workflow, give it a goal, and watch your team work. ",

@@ -87,8 +87,19 @@ pub mod pairing_state;
 // Spec: docs/specs/mobile-desktop-pairing.md.
 // Phase 2.2: pairing_init sets up PairingCommands from the env (JWT + endpoint).
 // Spec: docs/specs/mobile-desktop-pairing.md.
-mod pairing_init;
+// Week 2.5 (miracle-claw-pair): make `pub` so the `miracle-claw-pair` bin can
+// call `build_pairing_state()` directly. The GUI still calls it from
+// `lib.rs::run`. Exposing the module doesn't leak the JWT or endpoint
+// resolution — those are still encapsulated in `build_pairing_state()`.
+pub mod pairing_init;
 pub mod pairing_commands;
+// Phase 3 (2026-09-16): MAIC workspace sync layer — replaces pairing for
+// the phone↔desktop message bus. Spec: memory/projects/workspace_architecture.md.
+// pairing_* stays in place (marked deprecated where touched) so David
+// has git history if he wants to revive it.
+pub mod workspace_sync;
+mod workspace_init;
+pub mod workspace_commands;
 // Phase 2.3: tiny_http listener for phone-side pairing (POST /pair/initiate, GET /pair/health).
 // Spawned from setup(); heartbeat thread reads bound_port() to advertise the endpoint to MAIC.
 // Spec: docs/specs/mobile-desktop-pairing.md.
@@ -96,9 +107,20 @@ pub mod pairing_server;
 // Phase 2.3: 60s heartbeat ticker + cleanup task. Reads PairingServerState.bound_port()
 // to advertise endpoint; spawns from setup(). Spec: docs/specs/mobile-desktop-pairing.md.
 pub mod pairing_heartbeat;
+// Phase 2.4: persistent desktop identity (instance_id + X25519 keypair + fingerprint).
+// On-disk at app_data_dir/pairing/identity.json. Loaded on app startup;
+// `mc_register_desktop_self(fingerprint)` generates a fresh identity if none exists.
+// Spec: docs/specs/mobile-desktop-pairing.md.
+pub mod pairing_identity;
 // v1.0.7: 7 local tool schemas (paid tier only). Marked `pub` so the
 // `miracle-claw-tools` binary can `use` them via `crate::tools::...`.
 pub mod tools;
+// Week 3 (2026-09-09): shared form_schema parser. Used by the
+// launchpad (JS renders), the mc-terminal TUI (Rust renders), and
+// the mclaw CLI (Rust validates). See form_schema.rs for the full
+// schema docs. `pub` so the `miracle-claw-terminal` and `mclaw`
+// `[[bin]]`s can `use miracle_claw_lib::form_schema`.
+pub mod form_schema;
 
 // v1.1.0-rc53.15: Optional, downloadable module framework (Lesson 570).
 // Voice is the first module — future modules (OCR, TTS, local search)
@@ -112,6 +134,13 @@ pub mod modules;
 // See prose_host.rs for the design + Lesson 832 for the user-facing
 // naming contract (".prose program" → Workflow, "agent" → Specialist).
 pub mod prose_host;
+
+// rc56.0 Bucket 2 migration: rename openclaw.json → chat.json on
+// first launch. See docs/mc-module-driven-surfaces-2026-09.md §6.2
+// and src-tauri/src/migration.rs for the algorithm. Called from
+// setup() before ensure_openclaw_json_minimal() so the new file path
+// is the active one for the rest of the launch.
+pub mod migration;
 
 // Lesson 833 (NEW 2026-09-08, David): Pre-VM model alias rewriter.
 // OpenProse uses Anthropic/OpenAI model names (sonnet, opus, gpt-4*)
@@ -333,7 +362,7 @@ fn resources_dir(_app: &tauri::AppHandle) -> PathBuf {
     let mut cursor = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from));
     while let Some(dir) = cursor {
         let candidate = dir.join("resources");
-        if candidate.join("openclaw.mjs").is_file() {
+        if candidate.join("miracle-claw-gateway.mjs").is_file() {
             return candidate;
         }
         cursor = dir.parent().map(PathBuf::from);
@@ -389,12 +418,74 @@ fn openclaw_extensions_dir() -> PathBuf {
     PathBuf::from("./.miracle-claw/extensions")
 }
 
-/// Returns the path to the user's openclaw.json.
+/// Returns the path to the user's chat config (rc56.0 Bucket 2 rename;
+/// was `openclaw.json` before Week 6 migration).
+///
+/// On rc55.x installs the file was named `openclaw.json`. The
+/// `migration::migrate_user_config` function called from `setup()`
+/// renames it to `chat.json` on first rc56.0 launch. This function
+/// always returns the NEW name; callers that need to read the
+/// pre-migration file should use `migration::active_config_path()`
+/// which falls back to the legacy path if migration hasn't run yet.
 fn openclaw_json_path() -> PathBuf {
     openclaw_extensions_dir()
         .parent()
-        .map(|p| p.join("openclaw.json"))
-        .unwrap_or_else(|| PathBuf::from("./openclaw.json"))
+        .map(|p| p.join("chat.json"))
+        .unwrap_or_else(|| PathBuf::from("./chat.json"))
+}
+
+/// Resolve the current MAIC API key from any of these sources in
+/// priority order:
+///
+///   1. `MAIC_API_KEY` env var (set by `maic_login` / `silent_relogin`
+///      during the same process lifetime).
+///   2. The literal `apiKey` string in the user's chat config (rc55.x
+///      wrote this on every successful login, so it survives process
+///      restarts even before the launcher spawns).
+///
+/// Lesson 964 (2026-09-10, David): the five module endpoints
+/// (`mc_list_marketplace_modules`, `mc_list_installed_modules`,
+/// `mc_install_module`, `mc_uninstall_module`, `mc_run_module`) and
+/// `mc_get_tier` / `mc_get_nudge` all read the JWT directly from
+/// `std::env::var(MAIC_API_KEY)`. On a returning-user launch, the env
+/// var is empty until `silent_relogin` runs, but the user is already
+/// past the login form because `first_run_report` reads the literal
+/// from chat.json. Result: marketplace load fails with "not logged in"
+/// even though the user is authenticated. The fix is to call this
+/// helper instead of reading the env var directly.
+///
+/// We do NOT fall back to the keychain (cached creds) here: those
+/// are *credentials* (email + password), not a JWT, and minting a JWT
+/// from them requires a network call to MAIC. If both the env var and
+/// the chat.json literal are missing, the user genuinely needs to
+/// log in again — the frontend will redirect to the login form.
+fn current_maic_jwt() -> Result<String, String> {
+    // 1. Env var (same-process state set by maic_login / silent_relogin).
+    if let Ok(k) = std::env::var(ENV_VAR_NAME) {
+        let trimmed = k.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    // 2. Literal apiKey in chat.json (persisted by maic_login on every
+    //    successful login, survives process restarts).
+    if let Ok(raw) = std::fs::read_to_string(openclaw_json_path()) {
+        if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(key) = cfg
+                .get("models")
+                .and_then(|m| m.get("providers"))
+                .and_then(|p| p.get("maic"))
+                .and_then(|e| e.get("apiKey"))
+                .and_then(|k| k.as_str())
+            {
+                let trimmed = key.trim();
+                if !trimmed.is_empty() {
+                    return Ok(trimmed.to_string());
+                }
+            }
+        }
+    }
+    Err("not logged in".to_string())
 }
 
 /// Returns the path to the bundled MAIC plugin source (a directory containing
@@ -515,7 +606,8 @@ fn check_openclaw_json() -> io::Result<()> {
     match fs::read_to_string(&path) {
         Ok(raw) if raw.trim().is_empty() => {
             eprintln!(
-                "[miracle-claw] WARNING: openclaw.json exists but is empty; gateway will use defaults"
+                "[miracle-claw] WARNING: {} exists but is empty; gateway will use defaults",
+                path.display()
             );
             Ok(())
         }
@@ -523,7 +615,8 @@ fn check_openclaw_json() -> io::Result<()> {
             Ok(_) => Ok(()),
             Err(e) => {
                 eprintln!(
-                    "[miracle-claw] WARNING: openclaw.json is not valid JSON: {} — gateway may fail",
+                    "[miracle-claw] WARNING: {} is not valid JSON: {} — gateway may fail",
+                    path.display(),
                     e
                 );
                 Ok(())
@@ -564,7 +657,20 @@ fn ensure_openclaw_json_minimal() -> io::Result<()> {
         // with the legacy flat `gateway.auth: "none"` shape, rewrite it.
         if let Ok(true) = migrate_legacy_mc_config(&path) {
             eprintln!(
-                "[miracle-claw] migrated legacy openclaw.json (gateway.auth: \"none\" → nested object) at {}",
+                "[miracle-claw] migrated legacy {} (gateway.auth: \"none\" → nested object)",
+                path.display()
+            );
+        }
+        // AP-833-U (2026-09-08, David): also retrofit `update.checkOnStart:
+        // false` + `update.auto.enabled: false` on existing installs so
+        // users on rc55.22 and earlier don't see "Update available: vX.Y.Z
+        // (running v2026.7.1-2)" notifications on their first rc55.23 launch.
+        // The check itself is gated on `cfg.update?.checkOnStart !== false`,
+        // so this is the real fix; `OPENCLAW_NO_AUTO_UPDATE=1` from
+        // launcher.rs is just defense-in-depth on the auto-install path.
+        if let Ok(true) = disable_update_check_for_existing_installs(&path) {
+            eprintln!(
+                "[miracle-claw] disabled openclaw auto-update in {} (rc55.23 first-run migration)",
                 path.display()
             );
         }
@@ -581,16 +687,78 @@ fn ensure_openclaw_json_minimal() -> io::Result<()> {
             "auth": {
                 "mode": "none"
             }
+        },
+        // AP-833-U (2026-09-08, David): disable openclaw's bundled startup
+        // update check + auto-install timer for fresh installs. See
+        // `disable_update_check_for_existing_installs` below for the
+        // reasoning — same flag set, just applied at file-create time
+        // instead of migration time.
+        "update": {
+            "checkOnStart": false,
+            "auto": {
+                "enabled": false
+            }
         }
     });
     let serialized = serde_json::to_string_pretty(&minimal)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize config: {e}")))?;
     fs::write(&path, serialized)?;
     eprintln!(
-        "[miracle-claw] wrote minimal openclaw.json to {} (first-run bootstrap)",
+        "[miracle-claw] wrote minimal config to {} (first-run bootstrap)",
         path.display()
     );
     Ok(())
+}
+
+/// AP-833-U (NEW 2026-09-08, David): inject
+/// `update.checkOnStart: false` + `update.auto.enabled: false` into an
+/// existing openclaw.json that lacks them. Idempotent — does NOT overwrite
+/// a `update` block the user explicitly set; we only create it when missing.
+///
+/// Why both flags:
+///   - `checkOnStart: false` is the REAL fix. The update check is gated on
+///     `params.cfg.update?.checkOnStart !== false` in update-startup-CQiVM-kJ.js,
+///     so setting this to false causes the orchestrator function to
+///     `return` before calling `setUpdateAvailableCache` (which is what
+///     fires the in-UI notification via `onUpdateAvailableChange`).
+///   - `auto.enabled: false` disables the hourly `scheduleGatewayUpdateCheck`
+///     timer that re-fires the registry fetch. Belt to the suspenders:
+///     checkOnStart already short-circuits, but if some future openclaw
+///     code path bypasses that gate, auto.enabled=false still kills the
+///     timer. The launcher ALSO sets `OPENCLAW_NO_AUTO_UPDATE=1` on the
+///     spawned node child for a third layer of defense.
+///
+/// Failure mode: best-effort migration. If the file is malformed or
+/// read-only, we silently return false and let setup() continue.
+fn disable_update_check_for_existing_installs(path: &Path) -> io::Result<bool> {
+    let raw = fs::read_to_string(path)?;
+    let mut parsed: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse: {e}")))?;
+
+    let obj = match parsed.as_object_mut() {
+        Some(o) => o,
+        None => return Ok(false),
+    };
+
+    // User already has an `update` block — respect their config. We don't
+    // want to clobber a `checkOnStart: true` they set on purpose. AP-833-B
+    // lesson: never overwrite a user's explicit value with our default.
+    if obj.contains_key("update") {
+        return Ok(false);
+    }
+
+    obj.insert(
+        "update".to_string(),
+        serde_json::json!({
+            "checkOnStart": false,
+            "auto": { "enabled": false }
+        }),
+    );
+
+    let serialized = serde_json::to_string_pretty(&parsed)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize: {e}")))?;
+    fs::write(path, serialized)?;
+    Ok(true)
 }
 
 /// Detect the legacy MC-shipped shape and rewrite it. Returns Ok(true) if
@@ -1715,13 +1883,22 @@ fn replace_secret_ref_with_literal() -> bool {
 // ---------------------------------------------------------------------------
 // Lesson 517 (NEW, 2026-08-20): tier-conditional default model + fallbacks.
 //
-// On login (or any time we fetch a fresh tier), we write
+// On login (or on app start, see Lesson 970), we write
 // `agents.defaults.model` into the user's openclaw.json so the chat panel
 // pre-selects the right model for the tier AND so openclaw's runtime
 // fallback walker has the chain it needs when the primary fails.
 //
-// Free  → primary = `milagro-dev`,       fallbacks = []                       (local only)
-// Paid  → primary = `milagro-oc-kimi`,   fallbacks = [MiniMax, GLM, local]   (cloud cascade)
+// Free  → primary = `maic/milagro-m1-t1`,     fallbacks = [t2, t3, nemotron-nano]
+// Paid  → primary = `maic/milagro-oc-glm`,   fallbacks = [MiniMax, kimi, t3]
+//
+// (Lesson 795 / rc55.12, 2026-08-30: Paid primary was switched from
+// `milagro-oc-kimi` → `milagro-oc-glm` because Kimi prefers openclaw
+// built-ins over plugin tools; GLM fires paid-tier tools reliably.)
+//
+// All entries are emitted with the `maic/` prefix (Lesson 521) so the
+// bundled openclaw gateway dispatches via the `maic` provider regardless
+// of catalog state — belt-and-suspenders against the bare-id
+// inference falling through to `defaultProvider = "openai"`.
 //
 // Idempotent: if the user's `agents.defaults.model` already matches the
 // tier-derived default, we don't rewrite it (preserves user choice of
@@ -3538,7 +3715,12 @@ fn maic_logout(
 
     // 5. If the v1.1.0 dashboard has spawned the OpenClaw child window,
     //    close it. (v1.0.x doesn't spawn a window; this is a no-op then.)
-    if let Some(w) = app_handle.get_webview_window("openclaw") {
+    //
+    //    rc56.0 Bucket 2 rename (Week 6): window label was "openclaw";
+    //    now "miracle-claw-chat". The lookup stays defensive — the
+    //    post-rc13 chat surface is the main webview navigated to
+    //    localhost:28789 (Lesson 491), so this is normally a no-op.
+    if let Some(w) = app_handle.get_webview_window("miracle-claw-chat") {
         let _ = w.close();
     }
 
@@ -3786,6 +3968,32 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     //
     //    We don't touch an existing user-edited config (skip if the file
     //    exists, even empty — that's the user's domain).
+    //
+    //    rc56.0 Bucket 2 migration (Lesson 897, derived from Lesson 195):
+    //    Before we ensure a minimal openclaw.json exists, check if the user
+    //    has the LEGACY openclaw.json from rc55.x and migrate it to
+    //    chat.json. This is a read-old → write-new → verify → delete-old
+    //    migration; on any failure we leave the old file in place and log
+    //    the rollback reason, so the next launch retries.
+    match migration::migrate_user_config() {
+        migration::MigrationOutcome::Migrated { from, to } => {
+            eprintln!(
+                "[miracle-claw] migrated user config {} → {} (rc56.0 Bucket 2)",
+                from.display(),
+                to.display()
+            );
+        }
+        migration::MigrationOutcome::NoOp { active } => {
+            eprintln!("[miracle-claw] user config: no migration needed ({})", active.display());
+        }
+        migration::MigrationOutcome::RolledBack { reason, from } => {
+            eprintln!(
+                "[miracle-claw] WARNING: user-config migration rolled back; will retry next launch. reason='{}' legacy={}",
+                reason,
+                from.display()
+            );
+        }
+    }
     ensure_openclaw_json_minimal()?;
 
     // 3. Wire MAIC as the agent provider (Lesson 431).
@@ -3802,11 +4010,40 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         maic_bootstrap.provider_configured, maic_bootstrap.endpoint, maic_bootstrap.api_key_source
     );
 
-    // 4. Sanity-check openclaw.json (read-only — do NOT mutate the user's
+    // 3a. Lesson 970 (2026-09-11): seed `agents.defaults.model` on app
+    //     start, not just on login. The bundled openclaw's gateway uses
+    //     `agents.defaults.model.primary` + `.fallbacks` as the
+    //     fallback chain — without it, the gateway falls through to
+    //     its hardcoded `openai/gpt-5.5` and reports
+    //     `missing-provider-auth` (no OpenAI key in the embedded
+    //     agent's auth store). Until the user logs in, the chain is
+    //     effectively empty.
+    //
+    //     We pass `Tier::Free` here (the conservative default).
+    //     `maic_login` re-runs this with the user's actual tier on
+    //     successful login, so a Free default is correct: paid users
+    //     will get their tier's chain overwritten on first login.
+    //
+    //     This function is idempotent (Lesson 517): if the user
+    //     already has `agents.defaults.model` set, we leave it alone
+    //     (or apply Lesson 824's bare-id prefix repair).
+    match ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free) {
+        Ok(true) => eprintln!(
+            "[miracle-claw] agents.defaults.model: seeded with Free default (maic/milagro-m1-t1 + fallbacks)"
+        ),
+        Ok(false) => eprintln!(
+            "[miracle-claw] agents.defaults.model: already configured, no change"
+        ),
+        Err(e) => eprintln!(
+            "[miracle-claw] agents.defaults.model seed error: {e} (chat will fall back to login flow)"
+        ),
+    }
+
+    // 4. Sanity-check the user config (read-only — do NOT mutate the user's
     //    config; openclaw 2026.7.1+ auto-discovers plugins from <stateDir>/extensions).
     match check_openclaw_json() {
-        Ok(()) => eprintln!("[miracle-claw] openclaw.json: ok"),
-        Err(e) => eprintln!("[miracle-claw] openclaw.json read error: {}", e),
+        Ok(()) => eprintln!("[miracle-claw] {}: ok", openclaw_json_path().display()),
+        Err(e) => eprintln!("[miracle-claw] {} read error: {}", openclaw_json_path().display(), e),
     }
 
     // 4a. Lesson 713 (2026-08-28, David): restore BYO provider keys
@@ -3921,6 +4158,14 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         *state.modules.lock().unwrap() = discovered;
     }
 
+    // Phase 3 (2026-09-16): kick off the MAIC workspace sync loop.
+    // The loop polls MAIC for new notes assigned to this user, claims
+    // them, executes locally (stubbed), and writes results back. This
+    // is the new phone↔desktop message bus — replaces pairing.
+    if let Some(workspace) = app_handle.try_state::<std::sync::Arc<workspace_sync::WorkspaceClient>>() {
+        workspace.start();
+    }
+
     // 7. Phase 2.3 (rc55.19): spawn the phone-pairing HTTP server + 60s
     //    heartbeat ticker.
     //
@@ -3943,6 +4188,21 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             .state::<Arc<PairingCommands>>()
             .inner()
             .clone();
+        // Phase 2.4 (NEW 2026-09-08, Home Claw): if this desktop has been
+        // registered before, rehydrate the saved identity (instance_id +
+        // X25519 keypair) so the next heartbeat advertises the same
+        // identity to MAIC. If no saved identity exists (fresh install),
+        // this is a no-op — the user gets one when they click "Register
+        // this desktop" in Settings.
+        if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
+            if let Err(e) = pairing_commands::restore_identity(&cmds, &app_data_dir) {
+                eprintln!(
+                    "[miracle-claw] could not restore pairing identity: {e} — pairing will require re-register"
+                );
+            }
+        }
+
+
         let bind_addr: std::net::SocketAddr =
             std::env::var("MC_PAIRING_BIND")
                 .ok()
@@ -4003,12 +4263,40 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 /// a best-effort fallback for the race case where `openclaw_back_to_dashboard`
 /// runs before the first page-load event.
 fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    use tauri::{image::Image, WebviewUrl, WebviewWindowBuilder};
 
     // Embed the bridge script at compile time so it ships in the binary.
     // The script lives in `src-tauri/src/openclaw-host-bridge.js` and is
     // referenced via `include_str!` so cargo recompiles when it changes.
     let bridge_js = include_str!("openclaw-host-bridge.js");
+
+    // Lesson 834 (NEW 2026-09-08 17:56 MDT, David): MC's main webview
+    // window needs the lobster / MC logo as its icon so it integrates
+    // cleanly with the OS Start Menu, pinned taskbar, and window switcher.
+    // Without this, Windows shows a generic Tauri/blank icon and the
+    // user can't visually tell which window is "MiracleClaw" in the
+    // taskbar when several webview windows are open.
+    //
+    // We resolve from `BaseDirectory::Resource` because Tauri's bundler
+    // copies icons listed in `bundle.icon[]` into the Resources directory
+    // at install time. Both `.ico` (Windows app icon) and `.png` (fallback
+    // for *nix and high-DPI Windows taskbar previews) ship in the same
+    // place. Resolution is best-effort — if no icon is found we leave the
+    // window with Tauri's default; we never block app launch on a
+    // missing icon.
+    let resolved_icon: Option<tauri::image::Image<'static>> = {
+        let resolver = app_handle.path();
+        let mut resolved: Option<tauri::image::Image<'static>> = None;
+        for candidate in ["icons/icon.png", "icons/icon.ico", "icon.png", "icon.ico"] {
+            if let Ok(p) = resolver.resolve(candidate, tauri::path::BaseDirectory::Resource) {
+                if let Ok(img) = Image::from_path(&p) {
+                    resolved = Some(img);
+                    break;
+                }
+            }
+        }
+        resolved
+    };
 
     // Lesson 537 (rc31, David 10:45 MDT): capture the resolved dashboard
     // URL on the FIRST `on_page_load` event, NOT immediately after
@@ -4028,7 +4316,7 @@ fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
     // the same instant they opened the chat window). Most builds will
     // overwrite the fallback with the on_page_load value.
     let app_handle_for_load = app_handle.clone();
-    let window = WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app_handle,
         "main",
         WebviewUrl::App("index.html".into()),
@@ -4040,8 +4328,9 @@ fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
     .center()
     .visible(true)
     .decorations(true)
-    .initialization_script(bridge_js)
-    .on_page_load(move |_webview, payload| {
+    .initialization_script(bridge_js);
+    let window = builder
+        .on_page_load(move |_webview, payload| {
         // Lesson 538 (rc32): `on_page_load` fires for EVERY page-load,
         // not just the first one. That includes when the user navigates
         // from the dashboard INTO the chat (URL becomes
@@ -4129,6 +4418,26 @@ fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
     })
     .build()
     .map_err(|e| format!("WebviewWindowBuilder::build() failed for main window: {e}"))?;
+
+    // Lesson 834 (NEW 2026-09-08 17:56 MDT, David): set the window icon
+    // AFTER build via `WebviewWindow::set_icon(&self, ...)` because the
+    // builder's `icon(self, ...)` consumes self and we couldn't keep the
+    // settings on Err. set_icon is best-effort: a missing/corrupt icon
+    // never blocks app launch — we just log and let Tauri's default
+    // icon stay in place. Mirrors the Resources-dir lookup above; if
+    // both runs reach here without finding an icon, the user sees
+    // Tauri 2's bundled icon (a plain square).
+    if let Some(img) = resolved_icon {
+        if let Err(e) = window.set_icon(img) {
+            eprintln!(
+                "[miracle-claw] Lesson 834: window.set_icon failed: {e} — window will keep Tauri default"
+            );
+        }
+    } else {
+        eprintln!(
+            "[miracle-claw] Lesson 834: no Resources-dir icon resolved — window keeps Tauri default"
+        );
+    }
 
     // Best-effort immediate capture: if on_page_load already fired
     // synchronously (some Tauri versions do this on Linux/macOS), this
@@ -4253,12 +4562,12 @@ fn log_to_file(msg: &str) {
     }
 }
 
-/// v1.0.9 (Lesson 462): kill any orphaned openclaw.mjs / node.exe holding
+/// v1.0.9 (Lesson 462): kill any orphaned miracle-claw-gateway.mjs / node.exe holding
 /// port 28789 BEFORE we try to spawn a fresh launcher.
 ///
 /// Why this exists: the launcher sidecar pattern is `launcher → node
-/// openclaw.mjs → launcher exits`. The launcher wrapper exits with code 0
-/// on shutdown, but the openclaw.mjs child process keeps running. On
+/// miracle-claw-gateway.mjs → launcher exits`. The launcher wrapper exits with code 0
+/// on shutdown, but the miracle-claw-gateway.mjs child process keeps running. On
 /// Windows, when MC restarts or tries to respawn the launcher, the new
 /// child process sees port 28789 bound by the orphan and bails with
 /// "port already in use" / "gateway already running". The new launcher
@@ -4338,7 +4647,7 @@ fn kill_orphan_holding_port(port: u16) -> Result<(), String> {
         );
 
         for pid in &orphan_pids {
-            // /F = force, /T = also kill child processes (the node openclaw.mjs
+            // /F = force, /T = also kill child processes (the node miracle-claw-gateway.mjs
             // child if the launcher wrapper is what's still bound — unlikely
             // on Windows but defensive).
             let kill = Command::new("taskkill")
@@ -5475,7 +5784,7 @@ pub(crate) fn maic_base_url() -> String {
 // to render the tier badge.
 #[tauri::command]
 fn mc_get_tier() -> Result<crate::auth::tier::TierInfo, String> {
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     crate::auth::tier::fetch_tier_cached(&jwt, &maic_base)
 }
@@ -5484,7 +5793,7 @@ fn mc_get_tier() -> Result<crate::auth::tier::TierInfo, String> {
 // render the token usage indicator and the nudge modal.
 #[tauri::command]
 fn mc_get_nudge() -> Result<crate::auth::nudge::NudgeDecision, String> {
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     let tier = crate::auth::tier::current_tier();
     let quota = crate::auth::nudge::fetch_quota_cached(&jwt, &maic_base)?;
@@ -5504,7 +5813,7 @@ fn mc_get_nudge() -> Result<crate::auth::nudge::NudgeDecision, String> {
 // can never disagree about the current token count.
 #[tauri::command]
 fn mc_get_quota() -> Result<crate::auth::nudge::QuotaResponse, String> {
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     crate::auth::nudge::fetch_quota_cached(&jwt, &maic_base)
 }
@@ -5556,7 +5865,7 @@ fn mc_list_plans() -> Result<Vec<serde_json::Value>, String> {
 //      macOS/Linux).
 #[tauri::command]
 fn mc_open_checkout_url(plan_code: String) -> Result<(), String> {
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     let base = crate::auth::tier::normalize_api_base(&maic_base);
     let url = format!("{}/v1/billing/checkout", base);
@@ -5634,6 +5943,296 @@ fn mc_open_checkout_url(plan_code: String) -> Result<(), String> {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Module-driven surfaces (rc56.0, spec: docs/mc-module-driven-surfaces-2026-09.md §3.4)
+// 5 commands that proxy MAIC module endpoints to the Tauri app.
+//   await invoke("mc_list_categories")
+//   await invoke("mc_list_marketplace_modules", { category, sort })
+//   await invoke("mc_list_installed_modules")
+//   await invoke("mc_install_module", { moduleId })
+//   await invoke("mc_uninstall_module", { moduleId })
+
+// GET /v1/categories — public, no JWT.
+#[tauri::command]
+fn mc_list_categories() -> Result<serde_json::Value, String> {
+    let maic_base = resolve_maic_base_url();
+    let url = format!(
+        "{}/v1/categories",
+        crate::auth::tier::normalize_api_base(&maic_base)
+    );
+    let resp = ureq::get(&url)
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| format!("/v1/categories: {e}"))?;
+    let body: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse /v1/categories: {e}"))?;
+    Ok(body)
+}
+
+// GET /v1/marketplace/modules — authed. Optional category + sort.
+#[tauri::command]
+fn mc_list_marketplace_modules(
+    category: Option<String>,
+    sort: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let jwt = current_maic_jwt()?;
+    let maic_base = resolve_maic_base_url();
+    let base = crate::auth::tier::normalize_api_base(&maic_base);
+
+    let mut url = format!("{}/v1/marketplace/modules", base);
+    let mut query_parts: Vec<String> = Vec::new();
+    if let Some(cat) = category.as_ref().filter(|s| !s.is_empty()) {
+        query_parts.push(format!("category={}", urlencode(cat)));
+    }
+    if let Some(s) = sort.as_ref().filter(|s| !s.is_empty()) {
+        let allowed = ["top_rated", "recent", "alphabetical"];
+        if !allowed.contains(&s.as_str()) {
+            return Err(format!("invalid sort: {s}"));
+        }
+        query_parts.push(format!("sort={}", s));
+    }
+    if !query_parts.is_empty() {
+        url = format!("{}?{}", url, query_parts.join("&"));
+    }
+
+    let resp = ureq::get(&url)
+        .set("Authorization", &format!("Bearer {jwt}"))
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| format!("/v1/marketplace/modules: {e}"))?;
+    let body: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse /v1/marketplace/modules: {e}"))?;
+    Ok(body)
+}
+
+// GET /v1/modules/installed — authed.
+#[tauri::command]
+fn mc_list_installed_modules() -> Result<serde_json::Value, String> {
+    let jwt = current_maic_jwt()?;
+    let maic_base = resolve_maic_base_url();
+    let url = format!(
+        "{}/v1/modules/installed",
+        crate::auth::tier::normalize_api_base(&maic_base)
+    );
+    let resp = ureq::get(&url)
+        .set("Authorization", &format!("Bearer {jwt}"))
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| format!("/v1/modules/installed: {e}"))?;
+    let body: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse /v1/modules/installed: {e}"))?;
+    Ok(body)
+}
+
+// POST /v1/modules/install — authed. Returns { success, client_manifest }.
+#[tauri::command]
+fn mc_install_module(module_id: String) -> Result<serde_json::Value, String> {
+    if module_id.is_empty() {
+        return Err("module_id is required".to_string());
+    }
+    let jwt = current_maic_jwt()?;
+    let maic_base = resolve_maic_base_url();
+    let url = format!(
+        "{}/v1/modules/install",
+        crate::auth::tier::normalize_api_base(&maic_base)
+    );
+    let body = serde_json::json!({ "module_id": module_id });
+    let resp = ureq::post(&url)
+        .set("Authorization", &format!("Bearer {jwt}"))
+        .set("Content-Type", "application/json")
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(15))
+        .send_json(&body)
+        .map_err(|e| format!("/v1/modules/install: {}", map_ureq_http_error(e)))?;
+    let parsed: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse /v1/modules/install: {e}"))?;
+    Ok(parsed)
+}
+
+// POST /v1/modules/uninstall — authed. Returns { success }.
+#[tauri::command]
+fn mc_uninstall_module(module_id: String) -> Result<serde_json::Value, String> {
+    if module_id.is_empty() {
+        return Err("module_id is required".to_string());
+    }
+    let jwt = current_maic_jwt()?;
+    let maic_base = resolve_maic_base_url();
+    let url = format!(
+        "{}/v1/modules/uninstall",
+        crate::auth::tier::normalize_api_base(&maic_base)
+    );
+    let body = serde_json::json!({ "module_id": module_id });
+    let resp = ureq::post(&url)
+        .set("Authorization", &format!("Bearer {jwt}"))
+        .set("Content-Type", "application/json")
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(15))
+        .send_json(&body)
+        .map_err(|e| format!("/v1/modules/uninstall: {}", map_ureq_http_error(e)))?;
+    let parsed: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse /v1/modules/uninstall: {e}"))?;
+    Ok(parsed)
+}
+
+// Week 3 (2026-09-09 21:50): POST /v1/modules/{id}/run — authed.
+// Dispatches a tool invocation on a first-party module. Used by:
+//   - the Tauri launchpad's "Run" button (replaces the TODO
+//     placeholder in src/pages/dashboard_launchpad.js)
+//   - the mc-terminal TUI (Weeks 3-4)
+//   - the mclaw CLI (Week 5)
+// Returns the full RunResponse: { outputs, duration_ms, run_id }.
+#[tauri::command]
+fn mc_run_module(
+    module_id: String,
+    tool: String,
+    inputs: serde_json::Value,
+    surface: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if module_id.is_empty() {
+        return Err("module_id is required".to_string());
+    }
+    if tool.is_empty() {
+        return Err("tool is required".to_string());
+    }
+    let jwt = current_maic_jwt()?;
+    let maic_base = resolve_maic_base_url();
+    let url = format!(
+        "{}/v1/modules/{}/run",
+        crate::auth::tier::normalize_api_base(&maic_base),
+        // module_id is from the trusted caller (Rust side), but the
+        // MAIC route validates it as a Path param so we don't need
+        // extra escaping here. Still, percent-encode any path-illegal
+        // chars just in case.
+        urlencode(&module_id),
+    );
+    let body = serde_json::json!({
+        "tool": tool,
+        "inputs": inputs,
+        "surface": surface.unwrap_or_else(|| "tauri".to_string()),
+    });
+    let resp = ureq::post(&url)
+        .set("Authorization", &format!("Bearer {jwt}"))
+        .set("Content-Type", "application/json")
+        .set("Accept", "application/json")
+        // 60s: matches MAIC's internal httpx timeout. Module tools
+        // can take 10-30s for LLM dispatch; 60s gives headroom.
+        .timeout(std::time::Duration::from_secs(60))
+        .send_json(&body)
+        .map_err(|e| format!("/v1/modules/{}/run: {}", module_id, map_ureq_http_error(e)))?;
+    let parsed: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse /v1/modules/{}/run: {e}", module_id))?;
+    Ok(parsed)
+}
+
+// Small URL-encode helper for the category query param.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+// Week 7.3 (2026-09-10, David): MAIC error surfacing.
+//
+// The ureq-based handlers used to bubble a bare error like
+// "/v1/modules/firecrawl/run POST: <ureq error string>". ureq's
+// `Error::Status(code, response)` Display impl truncates the
+// response body, so callers only saw "HTTP status 422" with no
+// detail. The JS-side then rendered a generic toast like
+// "Error: HTTP error: 422" which is useless for debugging.
+//
+// `map_ureq_http_error` pulls the HTTP status code and the full
+// response body out of a ureq error so the JS caller can see
+// e.g. "HTTP 401: {\"detail\":\"Session expired or revoked\"}".
+// The body is truncated to 512 chars to avoid blowing up logs.
+//
+// Returns the original error if it's not a Status variant (network
+// failures, timeouts, etc.), so we don't lose information.
+fn map_ureq_http_error(e: ureq::Error) -> String {
+    match e {
+        ureq::Error::Status(status, response) => {
+            let body = response
+                .into_string()
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            let body_trimmed = if body.len() > 512 {
+                format!("{}…", &body[..512])
+            } else {
+                body
+            };
+            format!("HTTP {}: {}", status, body_trimmed)
+        }
+        other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod mcp_http_error_tests {
+    use super::*;
+    use ureq::Error;
+
+    #[test]
+    fn status_401_includes_detail() {
+        // Build a fake 401 response with a JSON body, then verify
+        // the helper surfaces both the status and the body.
+        let resp = ureq::Response::new(401, "Unauthorized",
+            r#"{"detail":"Session expired or revoked"}"#).unwrap();
+        let err = Error::Status(401, resp);
+        let mapped = map_ureq_http_error(err);
+        assert!(mapped.contains("HTTP 401"), "status code: {}", mapped);
+        assert!(mapped.contains("Session expired or revoked"), "body: {}", mapped);
+    }
+
+    #[test]
+    fn status_422_includes_detail() {
+        let resp = ureq::Response::new(422, "Unprocessable Entity",
+            r#"{"detail":"url: required field missing"}"#).unwrap();
+        let err = Error::Status(422, resp);
+        let mapped = map_ureq_http_error(err);
+        assert!(mapped.contains("HTTP 422"));
+        assert!(mapped.contains("url: required field missing"));
+    }
+
+    #[test]
+    fn status_500_truncates_huge_body() {
+        let huge = "x".repeat(2048);
+        let resp = ureq::Response::new(500, "Internal Server Error", &huge).unwrap();
+        let err = Error::Status(500, resp);
+        let mapped = map_ureq_http_error(err);
+        assert!(mapped.contains("HTTP 500"));
+        // 512 chars of body + "…" suffix should appear; full 2048
+        // should NOT (Lesson 198: this is the regression check).
+        assert!(!mapped.contains(&"x".repeat(600)), "must truncate");
+        assert!(mapped.contains('…') || mapped.contains("…"), "ellipsis marker");
+    }
+
+    #[test]
+    fn transport_error_returns_display() {
+        // We can't easily construct a real Transport error in a
+        // unit test, so just verify the fall-through path doesn't
+        // panic on an empty/unknown variant. Build a Status
+        // variant with an empty body and verify it still works.
+        let resp = ureq::Response::new(503, "Service Unavailable", "").unwrap();
+        let err = Error::Status(503, resp);
+        let mapped = map_ureq_http_error(err);
+        assert!(mapped.contains("HTTP 503"));
+    }
+}
+
 // Returns the list of tool names the current tier can use. Used by the
 // dashboard to render "what you have access to" + the upgrade CTA.
 #[tauri::command]
@@ -5660,7 +6259,7 @@ fn tools_for_tier(_tier: crate::auth::tier::Tier) -> Vec<crate::tools::LocalTool
 // when the user clicks the tier badge.
 #[tauri::command]
 fn mc_refresh_tier() -> Result<crate::auth::tier::TierInfo, String> {
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     crate::auth::tier::invalidate_tier_cache();
     let info = crate::auth::tier::fetch_tier_fresh(&jwt, &maic_base)?;
@@ -5905,7 +6504,7 @@ fn validate_workspace_md(path: &Path) -> Result<PathBuf, String> {
 /// sees the SAME tier the dashboard just rendered.
 #[tauri::command]
 fn mc_get_user_info() -> Result<UserInfo, String> {
-    let jwt = std::env::var(ENV_VAR_NAME).map_err(|_| "not logged in".to_string())?;
+    let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     let info = crate::auth::tier::fetch_tier_cached(&jwt, &maic_base)?;
     Ok(UserInfo {
@@ -6193,10 +6792,17 @@ fn resolve_shell_cmd(shell: &str) -> Result<(&'static str, Vec<&'static str>), S
     if cfg!(windows) {
         match shell {
             "cmd" => Ok(("cmd.exe", vec![])),
-            "pwsh" => Ok(("pwsh.exe", vec!["-NoLogo"])),
+            // Lesson 965 (2026-09-10, David): use `powershell.exe` (the
+            // built-in Windows PowerShell 5.1) instead of `pwsh.exe` (the
+            // optional PowerShell 7 Core). Most Windows installs only
+            // have 5.1, and the installer doesn't add pwsh to PATH. If
+            // the user later installs PowerShell 7 they'll get a fresh
+            // `pwsh.exe` in System32; they can update the picker to
+            // point at it then.
+            "pwsh" => Ok(("powershell.exe", vec!["-NoLogo"])),
             "wsl" => Ok(("wsl.exe", vec!["--distribution", "Ubuntu", "bash"])),
             // Lesson 220 + 223: spawn the OpenClaw TUI. The bundled
-            // resources invoke `node <resources>/openclaw.mjs tui --local`
+            // resources invoke `node <resources>/miracle-claw-gateway.mjs tui --local`
             // (the actual wiring is in mc_terminal_start). With `--local`
             // the TUI runs an embedded agent runtime instead of trying to
             // reach a remote Gateway at ws://127.0.0.1:18789, which is
@@ -6204,9 +6810,9 @@ fn resolve_shell_cmd(shell: &str) -> Result<(&'static str, Vec<&'static str>), S
             // causes the TUI to exit immediately with code 0. The shell
             // label here is just a key — `resolve_shell_cmd` returns a
             // marker we re-interpret in mc_terminal_start.
-            "mc-openclaw" => Ok(("__MC_OPENCLAW__", vec!["tui", "--local"])),
+            "mc-terminal" => Ok(("__MC_TERMINAL__", vec!["tui", "--local"])),
             _ => Err(format!(
-                "unknown shell on Windows: '{}' (supported: cmd, pwsh, wsl, mc-openclaw)",
+                "unknown shell on Windows: '{}' (supported: cmd, pwsh, wsl, mc-terminal)",
                 shell
             )),
         }
@@ -6217,9 +6823,9 @@ fn resolve_shell_cmd(shell: &str) -> Result<(&'static str, Vec<&'static str>), S
             "zsh" => Ok(("zsh", vec!["-i"])),
             // Lesson 220 + 223: --local avoids the TUI exiting at
             // startup because there's no remote Gateway listening.
-            "mc-openclaw" => Ok(("__MC_OPENCLAW__", vec!["tui", "--local"])),
+            "mc-terminal" => Ok(("__MC_TERMINAL__", vec!["tui", "--local"])),
             _ => Err(format!(
-                "unknown shell on *nix: '{}' (supported: bash, sh, zsh, mc-openclaw)",
+                "unknown shell on *nix: '{}' (supported: bash, sh, zsh, mc-terminal)",
                 shell
             )),
         }
@@ -6249,7 +6855,7 @@ fn which_first(cmd: &str) -> String {
                     return with_exe.to_string_lossy().into_owned();
                 }
                 // Then try .cmd (npm bin shims like openclaw.cmd).
-                // Needed for `mc-openclaw` which resolves to npm's
+                // Needed for `mc-terminal` which resolves to npm's
                 // openclaw.cmd on Windows. Lesson 220.
                 let with_cmd = candidate.with_extension("cmd");
                 if with_cmd.exists() {
@@ -6325,7 +6931,7 @@ fn spawn_shell(
     // std::process::Command is additive — it does NOT clear, it adds or
     // overrides named keys. So MAIC_API_KEY (which maic_login sets on the
     // parent process as the user's JWT) is still inherited; we only
-    // override the two OPENCLAW_ keys specifically for mc-openclaw.
+    // override the two OPENCLAW_ keys specifically for mc-terminal.
     if let Some(env) = extra_env {
         for (k, v) in env {
             command.env(k, v);
@@ -6398,20 +7004,20 @@ fn mc_terminal_start(
 ) -> Result<String, String> {
     let (cmd, args) = resolve_shell_cmd(&shell)?;
 
-    // Lesson 221: for `mc-openclaw`, use the BUNDLED node.exe +
-    // openclaw.mjs shipped in the installer resources, not the
+    // Lesson 221: for `mc-terminal`, use the BUNDLED node.exe +
+    // miracle-claw-gateway.mjs shipped in the installer resources, not the
     // user's system PATH. Most end users don't have `openclaw`
     // installed globally, and we ship a self-contained CLI here
     // so the Terminal tile Just Works. resolve_shell_cmd returns
-    // a `__MC_OPENCLAW__` marker for this shell so we can detect
+    // a `__MC_TERMINAL__` marker for this shell so we can detect
     // it without an additional string compare.
-    let (cmd_path, real_args): (String, Vec<String>) = if cmd == "__MC_OPENCLAW__" {
+    let (cmd_path, real_args): (String, Vec<String>) = if cmd == "__MC_TERMINAL__" {
         let resources = resources_dir(&app_handle);
         #[cfg(windows)]
         let node = resources.join("node.exe");
         #[cfg(not(windows))]
         let node = resources.join("node");
-        let mjs = resources.join("openclaw.mjs");
+        let mjs = resources.join("miracle-claw-gateway.mjs");
         if !node.exists() {
             return Err(format!(
                 "bundled node not found at {} (expected from installer resources)",
@@ -6420,7 +7026,7 @@ fn mc_terminal_start(
         }
         if !mjs.exists() {
             return Err(format!(
-                "bundled openclaw.mjs not found at {} (reinstall MiracleClaw)",
+                "bundled miracle-claw-gateway.mjs not found at {} (reinstall MiracleClaw)",
                 mjs.display()
             ));
         }
@@ -6436,7 +7042,7 @@ fn mc_terminal_start(
 
     let mut extra_env: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    if shell == "mc-openclaw" {
+    if shell == "mc-terminal" {
         let cfg_path = openclaw_json_path();
         // The state dir is the parent of the extensions dir, so the TUI
         // also finds the bundled MAIC plugin automatically (instead of
@@ -6564,7 +7170,7 @@ fn mc_terminal_poll(
 /// enter. For interactive shells we append `\r\n` so the shell sees a
 /// complete line; the frontend doesn't have to know about line endings.
 ///
-/// Lesson 223: `mc-openclaw` uses Ink (terminal UI) which expects `\r`
+/// Lesson 223: `mc-terminal` uses Ink (terminal UI) which expects `\r`
 /// as the Enter key (PTY-style), not just `\n`. So for that shell kind
 /// we emit `\r` rather than `\n`. For real shells (cmd, pwsh, bash) we
 /// keep `\r\n` which works universally on Windows + *nix.
@@ -6583,7 +7189,7 @@ fn mc_terminal_write(
     // right line terminator (\r for Ink TUI vs \r\n for real shells)
     // without needing to introspect again. The handle here is an
     // Arc<TerminalHandle> so we can hold the &Arc across .child.lock().
-    let is_tui = handle.shell == "mc-openclaw";
+    let is_tui = handle.shell == "mc-terminal";
 
     let mut child_lock = handle.child.lock().unwrap();
     let child = child_lock
@@ -6598,7 +7204,7 @@ fn mc_terminal_write(
 
     let mut to_send = input;
     if !to_send.ends_with('\n') && !to_send.ends_with('\r') {
-        // Use \r for Ink TUI (mc-openclaw), \r\n for everything else.
+        // Use \r for Ink TUI (mc-terminal), \r\n for everything else.
         // \r\n works for both cmd and bash; \r alone is the canonical
         // Enter key Ink / readline uses in a PTY context.
         if is_tui {
@@ -7497,6 +8103,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState::default())
         .manage(pairing_init::build_pairing_state())
+        .manage(workspace_init::build_workspace_state())
         .invoke_handler(tauri::generate_handler![
             first_run_report,
             // Lesson TBD (2026-08-27): on-demand voice diagnostics probe.
@@ -7536,6 +8143,13 @@ pub fn run() {
             mc_get_quota,
             mc_list_plans,
             mc_open_checkout_url,
+            // rc56.0: module-driven surfaces (spec docs/mc-module-driven-surfaces-2026-09.md)
+            mc_list_categories,
+            mc_list_marketplace_modules,
+            mc_list_installed_modules,
+            mc_install_module,
+            mc_uninstall_module,
+            mc_run_module,
             // v1.0.9-rc35: Settings page
             mc_get_user_info,
             mc_list_memory_files,
@@ -7615,7 +8229,12 @@ pub fn run() {
             mc_paired_devices,
             mc_revoke_device,
             mc_set_drop_folder,
+            mc_register_desktop_self,
+            mc_restore_pairing_identity,
             mc_get_pairing_status,
+            // Phase 3 workspace sync (2026-09-16).
+            workspace_commands::mc_workspace_status,
+            workspace_commands::mc_workspace_refresh_jwt,
             // Lesson 833 (NEW 2026-09-08, David): MC subagents /
             // workflows. Five Tauri commands surface the bundled
             // open-prose plugin from chat / Terminal tile / Workflow
@@ -7691,6 +8310,32 @@ fn mc_register_desktop(
 }
 
 #[tauri::command]
+fn mc_register_desktop_self(
+    app: tauri::AppHandle,
+    cmds: tauri::State<'_, pairing_commands::PairingCommands>,
+    frontend_fingerprint: String,
+) -> Result<pairing_commands::DesktopRegistration, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app_data_dir: {e}"))?;
+    pairing_commands::register_desktop_self(&cmds, &app_data_dir, frontend_fingerprint)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn mc_restore_pairing_identity(
+    app: tauri::AppHandle,
+    cmds: tauri::State<'_, pairing_commands::PairingCommands>,
+) -> Result<Option<String>, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app_data_dir: {e}"))?;
+    pairing_commands::restore_identity(&cmds, &app_data_dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn mc_unregister_desktop(
     cmds: tauri::State<'_, pairing_commands::PairingCommands>,
 ) -> Result<(), String> {
@@ -7717,7 +8362,7 @@ fn mc_paired_devices(
 #[tauri::command]
 fn mc_revoke_device(
     cmds: tauri::State<'_, pairing_commands::PairingCommands>,
-    device_id: i64,
+    device_id: uuid::Uuid,
 ) -> Result<(), String> {
     pairing_commands::revoke_device(&cmds, device_id).map_err(|e| e.to_string())
 }
@@ -8089,7 +8734,7 @@ mod tests {
         let raw = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return serde_json::json!({}),
-            Err(e) => panic!("read openclaw.json: {e}"),
+            Err(e) => panic!("read chat config: {e}"),
         };
         serde_json::from_str(&raw).expect("parse openclaw.json")
     }
@@ -9236,9 +9881,9 @@ mod tests {
     fn fresh_openclaw_with_model(primary: Option<&str>, fallbacks: Option<Vec<&str>>) -> EnvGuard {
         let g = fresh_env();
         let path = if cfg!(windows) {
-            g._temp.path().join("MiracleClaw").join("openclaw.json")
+            g._temp.path().join("MiracleClaw").join("chat.json")
         } else {
-            g._temp.path().join(".miracle-claw").join("openclaw.json")
+            g._temp.path().join(".miracle-claw").join("chat.json")
         };
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut cfg = serde_json::json!({
@@ -9276,9 +9921,9 @@ mod tests {
     ) -> EnvGuard {
         let g = fresh_env();
         let path = if cfg!(windows) {
-            g._temp.path().join("MiracleClaw").join("openclaw.json")
+            g._temp.path().join("MiracleClaw").join("chat.json")
         } else {
-            g._temp.path().join(".miracle-claw").join("openclaw.json")
+            g._temp.path().join(".miracle-claw").join("chat.json")
         };
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut cfg = serde_json::json!({
@@ -9463,14 +10108,79 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Lesson 970 (2026-09-11): regression test for the missing-agents.defaults
+    // bug found in production. When a user has `models.providers.maic` but
+    // NO `agents.defaults.model` block (e.g. the bundled openclaw's hardcoded
+    // `?? openai/gpt-5.5` fallback fires because no primary is set), the next
+    // call to `ensure_agents_default_model_for_tier(Tier::Free)` MUST seed
+    // the full chain so the gateway's fallback walker has something to walk.
+    //
+    // Without this fix, a never-logged-in user with a fresh AppData install
+    // gets `missing-provider-auth` on first chat because the bundled openclaw
+    // falls through to `defaultProvider = "openai"` and the embedded agent
+    // has no OpenAI key.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn lesson_970_free_seeds_chain_when_agents_defaults_model_missing() {
+        let _env = lock_env();
+        // David's exact failure shape: has `models.providers.maic` (from
+        // ensure_maic_provider_config on first install), but the migration
+        // carried an old openclaw.json with no `agents.defaults.model`.
+        let _g = fresh_openclaw_with_model(None, None);
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
+            .expect("writer must succeed even when agents.defaults is absent");
+        assert!(
+            wrote,
+            "must write because no agents.defaults.model exists (Lesson 970)"
+        );
+
+        let path = openclaw_json_path();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary").unwrap(),
+            "maic/milagro-m1-t1",
+            "Free primary must be maic-prefixed (Lesson 521)"
+        );
+        let fallbacks: Vec<String> = cfg
+            .pointer("/agents/defaults/model/fallbacks")
+            .expect("Free must have fallbacks inside model (Lesson 829)")
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            fallbacks,
+            vec![
+                "maic/milagro-m1-t2",
+                "maic/milagro-m1-t3",
+                "maic/chat-nemotron-nano"
+            ],
+            "Free chain must be local 7B → local 14B → cloud nano"
+        );
+        // Lesson 521: the prefix is what prevents `inferUniqueProviderFromCatalog`
+        // from falling through to `defaultProvider = "openai"`.
+        let raw_primary = cfg
+            .pointer("/agents/defaults/model/primary")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert!(
+            raw_primary.starts_with("maic/"),
+            "primary MUST be maic/-prefixed to bypass bare-id inference (Lesson 521)"
+        );
+    }
+
     #[test]
     fn lesson_517_free_clears_stale_paid_fallbacks_on_downgrade() {
-        let _env = lock_env();
         // User paid → had Kimi+fallbacks. Downgraded to Free. Next login
         // must rewrite the chain to Free's m1-t chain so the dropdown
         // shows the local models + cheap cloud fallback. We model this
         // by starting with empty primary + paid fallbacks (OBJECT form,
         // Lesson 829), then calling the writer with Free.
+        let _env = lock_env();
         let _g = fresh_openclaw_with_model(Some(""), Some(vec!["maic/milagro-oc-minimax", "maic/milagro-dev"]));
         let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
             .expect("writer should succeed");
@@ -9519,9 +10229,9 @@ mod tests {
     ) -> EnvGuard {
         let g = fresh_env();
         let path = if cfg!(windows) {
-            g._temp.path().join("MiracleClaw").join("openclaw.json")
+            g._temp.path().join("MiracleClaw").join("chat.json")
         } else {
-            g._temp.path().join(".miracle-claw").join("openclaw.json")
+            g._temp.path().join(".miracle-claw").join("chat.json")
         };
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let cfg = serde_json::json!({
@@ -9720,7 +10430,7 @@ mod tests {
         // rc18 upgrade (which only had `milagro-dev` seeded) gets the full
         // 17-id surface on the next ensure_maic_provider_config() run.
         //
-        // We simulate the rc18 state by populating openclaw.json with a
+        // We simulate the rc18 state by populating chat.json with a
         // complete (literal-key + baseUrl) provider entry whose models[]
         // has only the original `milagro-dev` entry — then re-run
         // ensure_maic_provider_config() and check the merge landed.
@@ -9728,9 +10438,9 @@ mod tests {
         let _env = lock_env();
         let g = fresh_env();
         let path = if cfg!(windows) {
-            g._temp.path().join("MiracleClaw").join("openclaw.json")
+            g._temp.path().join("MiracleClaw").join("chat.json")
         } else {
-            g._temp.path().join(".miracle-claw").join("openclaw.json")
+            g._temp.path().join(".miracle-claw").join("chat.json")
         };
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let cfg = serde_json::json!({
@@ -10272,10 +10982,10 @@ mod tests {
             assert!(resolve_shell_cmd("cmd").is_ok());
             assert!(resolve_shell_cmd("pwsh").is_ok());
             assert!(resolve_shell_cmd("wsl").is_ok());
-            // Lesson 220: mc-openclaw is the new default. It maps to
+            // Lesson 220: mc-terminal is the new default. It maps to
             // `openclaw tui` and resolves to npm's openclaw.cmd on
             // Windows via the .cmd extension in which_first.
-            let mc = resolve_shell_cmd("mc-openclaw").expect("mc-openclaw must resolve");
+            let mc = resolve_shell_cmd("mc-terminal").expect("mc-terminal must resolve");
             assert_eq!(mc.0, "openclaw");
             assert_eq!(mc.1, vec!["tui"]);
             assert!(resolve_shell_cmd("bash").is_err());
@@ -10283,11 +10993,11 @@ mod tests {
             assert!(resolve_shell_cmd("bash").is_ok());
             assert!(resolve_shell_cmd("sh").is_ok());
             assert!(resolve_shell_cmd("zsh").is_ok());
-            let mc = resolve_shell_cmd("mc-openclaw").expect("mc-openclaw must resolve on *nix too");
+            let mc = resolve_shell_cmd("mc-terminal").expect("mc-terminal must resolve on *nix too");
             // Lesson 221 + 223: sentinel marker; mc_terminal_start
-            // expands it to bundled openclaw.mjs. The full tuple is
-            // validated by `mc_openclaw_maps_to_openclaw_tui_local`.
-            assert_eq!(mc.0, "__MC_OPENCLAW__");
+            // expands it to bundled miracle-claw-gateway.mjs. The full tuple is
+            // validated by `mc_terminal_maps_to_openclaw_tui_local`.
+            assert_eq!(mc.0, "__MC_TERMINAL__");
             assert_eq!(mc.1, vec!["tui", "--local"]);
             assert!(resolve_shell_cmd("pwsh").is_err());
         }
@@ -10300,17 +11010,17 @@ mod tests {
         assert!(res.unwrap_err().contains("unknown shell"));
     }
 
-    /// Lesson 221: mc-openclaw maps to `openclaw tui --local`. The bundled
+    /// Lesson 221: mc-terminal maps to `openclaw tui --local`. The bundled
     /// resources dir swap happens in mc_terminal_start (this just
     /// verifies the (cmd, args) tuple is what we expect so a future
     /// refactor doesn't silently break the spawn contract).
     #[test]
-    fn mc_openclaw_maps_to_openclaw_tui_local() {
-        let res = resolve_shell_cmd("mc-openclaw")
-            .expect("mc-openclaw must resolve on both Windows and *nix");
+    fn mc_terminal_maps_to_openclaw_tui_local() {
+        let res = resolve_shell_cmd("mc-terminal")
+            .expect("mc-terminal must resolve on both Windows and *nix");
         // We use a sentinel so mc_terminal_start can detect the bundled
         // openclaw path without string-comparing the shell name twice.
-        assert_eq!(res.0, "__MC_OPENCLAW__");
+        assert_eq!(res.0, "__MC_TERMINAL__");
         // Lesson 223: --local avoids the TUI exiting at startup because
         // there's no remote Gateway listening on ws://127.0.0.1:18789
         // (we use the in-process embedded agent instead).
@@ -10334,7 +11044,7 @@ mod tests {
     fn which_first_resolves_cmd_shims() {
         // Lesson 220: npm installs `openclaw` as `openclaw.cmd` on
         // Windows. which_first must resolve the .cmd shim so that
-        // spawning `openclaw` (via the mc-openclaw shell kind)
+        // spawning `openclaw` (via the mc-terminal shell kind)
         // actually finds the CLI. We synthesize a temp dir with a
         // fake.cmd to test the lookup logic in isolation from PATH.
         use std::env;
@@ -10553,5 +11263,285 @@ mod tests {
         // The above is the locked-in v0 behavior. If we want to
         // accept lowercase, remove this assertion and update the
         // docstring.
+    }
+
+    // =====================================================================
+    // AP-833-U (NEW 2026-09-08, David): openclaw auto-update suppression.
+    //
+    // rc55.23 disables the bundled openclaw's startup update check so
+    // users don't see "Update available: vX.Y.Z (running v2026.7.1-2)"
+    // notifications in the embedded UI. The fix has three layers:
+    //
+    //   1. `ensure_openclaw_json_minimal` writes
+    //      `update.checkOnStart = false` + `update.auto.enabled = false`
+    //      on first install (fresh-install path).
+    //   2. `disable_update_check_for_existing_installs` retrofits the
+    //      same block onto existing openclaw.json files (migration path).
+    //   3. `launcher.rs:build_node_command` sets
+    //      `OPENCLAW_NO_AUTO_UPDATE=1` on the spawned node child.
+    //
+    // These tests cover layer 1 + 2 (layer 3 is verified manually + by
+    // grep on the binary strings in the rc55.23 build).
+    // =====================================================================
+
+    fn read_openclaw_json() -> serde_json::Value {
+        let raw = std::fs::read_to_string(openclaw_json_path()).expect("chat config must exist after bootstrap");
+        serde_json::from_str(&raw).expect("parse chat config")
+    }
+
+    #[test]
+    fn fresh_install_writes_update_check_disabled_block() {
+        // AP-833-U: A clean install (no existing openclaw.json) must
+        // pre-write the update block so openclaw's startup check
+        // short-circuits on `checkOnStart !== false`.
+        let _lock = lock_env();
+        let _g = fresh_env();
+
+        ensure_openclaw_json_minimal().expect("ok");
+
+        let cfg = read_openclaw_json();
+        let update = cfg
+            .get("update")
+            .expect("fresh install must write `update` block")
+            .as_object()
+            .expect("`update` must be an object");
+        assert_eq!(
+            update
+                .get("checkOnStart")
+                .and_then(|v| v.as_bool()),
+            Some(false),
+            "fresh install: update.checkOnStart must be false (AP-833-U)"
+        );
+        let auto = update
+            .get("auto")
+            .expect("update.auto must exist")
+            .as_object()
+            .expect("update.auto must be an object");
+        assert_eq!(
+            auto.get("enabled").and_then(|v| v.as_bool()),
+            Some(false),
+            "fresh install: update.auto.enabled must be false (AP-833-U)"
+        );
+
+        // Sanity: gateway block must still be there (don't regress the
+        // existing minimal-config contract).
+        let mode = cfg["gateway"]["auth"]["mode"].as_str();
+        assert_eq!(
+            mode,
+            Some("none"),
+            "fresh install: gateway.auth.mode must remain \"none\""
+        );
+    }
+
+    #[test]
+    fn migration_retrofits_update_block_when_missing() {
+        // AP-833-U: existing openclaw.json from rc55.22 and earlier has
+        // no `update` block. On the user's next launch (rc55.23),
+        // `disable_update_check_for_existing_installs` must inject the
+        // block so the bundled openclaw's startup check short-circuits.
+        let _lock = lock_env();
+        let _g = fresh_env();
+
+        // Pre-seed an rc55.22-era config: complete maic provider entry,
+        // NO `update` block.
+        let path = openclaw_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let pre = serde_json::json!({
+            "$schema": "https://openclaw.dev/schema/v1/openclaw.config.schema.json",
+            "gateway": { "mode": "local", "bind": "loopback", "auth": { "mode": "none" } },
+            "models": { "providers": { "maic": { "api": "openai-completions", "apiKey": "***", "baseUrl": "https://maicserver.com/v1" } } },
+            "plugins": { "entries": { "maic": { "enabled": true } } }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&pre).unwrap()).unwrap();
+
+        // Run bootstrap — this is what setup() calls on every launch.
+        ensure_openclaw_json_minimal().expect("ok");
+
+        let cfg = read_openclaw_json();
+        let update = cfg
+            .get("update")
+            .expect("migration must inject `update` block on existing install (AP-833-U)")
+            .as_object()
+            .expect("`update` must be an object");
+        assert_eq!(
+            update.get("checkOnStart").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            update["auto"]["enabled"].as_bool(),
+            Some(false),
+            "migration: update.auto.enabled must be false"
+        );
+
+        // User's existing config must be preserved.
+        assert_eq!(
+            cfg["gateway"]["auth"]["mode"].as_str(),
+            Some("none"),
+            "migration must NOT clobber user's gateway.auth.mode"
+        );
+        assert_eq!(
+            cfg["models"]["providers"]["maic"]["apiKey"].as_str(),
+            Some("***"),
+            "migration must NOT clobber user's maic apiKey"
+        );
+        assert_eq!(
+            cfg["plugins"]["entries"]["maic"]["enabled"].as_bool(),
+            Some(true),
+            "migration must NOT clobber user's plugin enabled flag"
+        );
+    }
+
+    #[test]
+    fn migration_is_idempotent_when_update_block_already_present() {
+        // AP-833-B lesson: respect the user's explicit config. If they
+        // already have an `update` block (maybe they want auto-updates
+        // for testing, or the dev runner set it), we must NOT overwrite
+        // it on the next launch.
+        let _lock = lock_env();
+        let _g = fresh_env();
+
+        let path = openclaw_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let user_value = serde_json::json!({
+            "gateway": { "mode": "local", "bind": "loopback", "auth": { "mode": "none" } },
+            "update": {
+                "checkOnStart": true,  // user explicitly opted in
+                "auto": { "enabled": true, "intervalHours": 12 }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&user_value).unwrap()).unwrap();
+
+        ensure_openclaw_json_minimal().expect("ok");
+
+        let cfg = read_openclaw_json();
+        let update = cfg["update"].as_object().expect("`update` block must still exist");
+        assert_eq!(
+            update.get("checkOnStart").and_then(|v| v.as_bool()),
+            Some(true),
+            "user's explicit checkOnStart=true must NOT be overwritten (AP-833-B)"
+        );
+        assert_eq!(
+            update["auto"]["enabled"].as_bool(),
+            Some(true),
+            "user's explicit auto.enabled=true must NOT be overwritten (AP-833-B)"
+        );
+        assert_eq!(
+            update["auto"]["intervalHours"].as_u64(),
+            Some(12),
+            "user's custom auto.intervalHours must be preserved (AP-833-B)"
+        );
+    }
+
+    #[test]
+    fn migration_handles_legacy_auth_plus_update_in_one_pass() {
+        // Lesson 535 + AP-833-U: when an old rc55.22-era config has BOTH
+        // the legacy `gateway.auth: \"none\"` flat-string bug AND no
+        // `update` block, both migrations must run on the same launch.
+        // (Order shouldn't matter; both are idempotent and don't touch
+        // each other's keys.)
+        let _lock = lock_env();
+        let _g = fresh_env();
+
+        let path = openclaw_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let pre = serde_json::json!({
+            "gateway": { "mode": "local", "bind": "loopback", "auth": "none" }
+            // No `update` block.
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&pre).unwrap()).unwrap();
+
+        ensure_openclaw_json_minimal().expect("ok");
+
+        let cfg = read_openclaw_json();
+        // Legacy auth migration ran.
+        assert_eq!(
+            cfg["gateway"]["auth"]["mode"].as_str(),
+            Some("none"),
+            "legacy auth migration must run alongside update migration"
+        );
+        // Update migration ran.
+        assert_eq!(
+            cfg["update"]["checkOnStart"].as_bool(),
+            Some(false),
+            "update migration must run alongside legacy auth migration (AP-833-U)"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Lesson 964 (2026-09-10, David): current_maic_jwt() must read the
+    // JWT from BOTH the env var AND the literal apiKey in chat.json.
+    //
+    // The five module endpoints (mc_list_marketplace_modules,
+    // mc_list_installed_modules, mc_install_module, mc_uninstall_module,
+    // mc_run_module) and the auth/tier/nudge endpoints used to call
+    // `std::env::var(MAIC_API_KEY)` directly. On a returning-user
+    // launch, the env var is empty until silent_relogin runs, but the
+    // user is already past the login form because first_run_report
+    // reads the literal from chat.json. Result: marketplace load fails
+    // with "not logged in" even though the user is authenticated.
+    //
+    // The fix is `current_maic_jwt()` which checks env var first, then
+    // the chat.json literal. These tests pin the priority order.
+    // ─────────────────────────────────────────────────────────────────
+    /// Write a chat.json with a literal apiKey, assuming the caller
+    /// has already called `fresh_env()` (and therefore holds an
+    /// EnvGuard with a fresh HOME). Caller is responsible for the
+    /// env lock and the EnvGuard.
+    fn write_chat_json_with_literal(literal: &str) {
+        let path = openclaw_json_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let cfg = serde_json::json!({
+            "models": {
+                "providers": {
+                    "maic": {
+                        "apiKey": literal,
+                        "baseUrl": "https://maicserver.com/v1"
+                    }
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn current_maic_jwt_prefers_env_var_over_chat_json() {
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var(ENV_VAR_NAME, "from-env-abc");
+        write_chat_json_with_literal("from-chat-json-xyz");
+        // Env var wins when both are set.
+        let jwt = current_maic_jwt().expect("env var should win");
+        assert_eq!(jwt, "from-env-abc");
+    }
+
+    #[test]
+    fn current_maic_jwt_falls_back_to_chat_json_literal() {
+        let _lock = lock_env();
+        let _g = fresh_env();
+        // env::remove_var already done by fresh_env().
+        write_chat_json_with_literal("persisted-jwt-789");
+        // No env var, but chat.json has a literal — should return it.
+        let jwt = current_maic_jwt().expect("chat.json literal should win");
+        assert_eq!(jwt, "persisted-jwt-789");
+    }
+
+    #[test]
+    fn current_maic_jwt_errors_when_neither_source_has_a_key() {
+        let _lock = lock_env();
+        let _g = fresh_env();
+        // No env var, no chat.json. The user is genuinely not logged in.
+        // The frontend uses this error to redirect to the login form.
+        let err = current_maic_jwt().expect_err("should error when nothing is set");
+        assert_eq!(err, "not logged in");
+    }
+
+    #[test]
+    fn current_maic_jwt_skips_empty_env_var_and_reads_chat_json() {
+        let _lock = lock_env();
+        let _g = fresh_env();
+        env::set_var(ENV_VAR_NAME, "   "); // whitespace-only, must be skipped
+        write_chat_json_with_literal("persisted-jwt-after-empty-env");
+        let jwt = current_maic_jwt().expect("chat.json should win over empty env");
+        assert_eq!(jwt, "persisted-jwt-after-empty-env");
     }
 }

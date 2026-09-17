@@ -6,7 +6,7 @@
 //   to expose Node.js directly to the permission allowlist (that's a shell
 //   escape into the user's machine). So we ship this small Rust binary as the
 //   sidecar; it owns the lookup of the bundled Node + openclaw bundle and
-//   execs `node openclaw.mjs gateway ...`. Tauri's allowlist locks the
+//   execs `node miracle-claw-gateway.mjs gateway ...`. Tauri's allowlist locks the
 //   exact invocation pattern of THIS binary — see src-tauri/capabilities/main.json
 //   for `cmd: "miracle-claw-launcher"` with the `--gateway-port` arg validator.
 //
@@ -15,7 +15,7 @@
 //   <resources>/
 //     node.exe                      (Tauri resource, Windows)
 //     node/                         (Tauri resource, *nix)
-//     openclaw.mjs                  (Tauri resource — points at node_modules/ + dist/)
+//     miracle-claw-gateway.mjs                  (Tauri resource — points at node_modules/ + dist/)
 //     package.json
 //     node_modules/
 //     dist/
@@ -67,7 +67,7 @@ enum LauncherError {
     /// bad input — but we re-validate here as defense-in-depth).
     InvalidPort,
     MissingPort,
-    /// Bundle is broken: missing openclaw.mjs, missing node executable, etc.
+    /// Bundle is broken: missing miracle-claw-gateway.mjs, missing node executable, etc.
     MissingBundleResource(&'static str),
     /// node openclaw exited with non-zero status. Carries the exit code.
     NodeNonZero(i32),
@@ -176,13 +176,13 @@ fn locate_resources() -> Result<PathBuf, LauncherError> {
 
     if let Ok(exe) = env::current_exe() {
         if let Some(dir) = exe.parent() {
-            if dir.join("openclaw.mjs").is_file() {
+            if dir.join("miracle-claw-gateway.mjs").is_file() {
                 return Ok(dir.to_path_buf());
             }
             // Common install layout: sidecar lives under bin/, resources next to it.
             if let Some(up) = dir.parent() {
                 let res = up.join("resources");
-                if res.is_dir() && res.join("openclaw.mjs").is_file() {
+                if res.is_dir() && res.join("miracle-claw-gateway.mjs").is_file() {
                     return Ok(res);
                 }
             }
@@ -191,7 +191,7 @@ fn locate_resources() -> Result<PathBuf, LauncherError> {
         let mut cursor = exe.parent();
         while let Some(dir) = cursor {
             let candidate = dir.join("resources");
-            if candidate.join("openclaw.mjs").is_file() {
+            if candidate.join("miracle-claw-gateway.mjs").is_file() {
                 return Ok(candidate);
             }
             cursor = dir.parent();
@@ -199,7 +199,7 @@ fn locate_resources() -> Result<PathBuf, LauncherError> {
     }
 
     Err(LauncherError::MissingBundleResource(
-        "could not locate resources directory (looked for openclaw.mjs)",
+        "could not locate resources directory (looked for miracle-claw-gateway.mjs)",
     ))
 }
 
@@ -261,11 +261,11 @@ fn which_in_path(name: &str) -> std::io::Result<Option<PathBuf>> {
 }
 
 fn build_node_command(args: &Args, node_bin: &Path, resources: &Path) -> Command {
-    let openclaw_mjs = resources.join("openclaw.mjs");
+    let miracle_claw_gateway = resources.join("miracle-claw-gateway.mjs");
     let node_path = resources.join("node_modules");
 
     let mut cmd = Command::new(node_bin);
-    cmd.arg(&openclaw_mjs)
+    cmd.arg(&miracle_claw_gateway)
         .arg("gateway")
         .arg("--port")
         .arg(args.gateway_port.to_string())
@@ -281,10 +281,33 @@ fn build_node_command(args: &Args, node_bin: &Path, resources: &Path) -> Command
         // disk full). The user's config still wins when it exists.
         .arg("--allow-unconfigured")
         .env("OPENCLAW_STATE_DIR", default_openclaw_state_dir())
+        // Lesson 973 (2026-09-11): the bundled openclaw gateway reads its
+        // config from `openclaw.json` by default. MC writes to `chat.json`
+        // in the same state dir. Without this env var, the gateway ignores
+        // the `agents.defaults.model` block we seeded in lib.rs setup()
+        // and falls through to its hardcoded `openai/gpt-5.5` default,
+        // which has no key in the embedded agent's auth store → 401
+        // `missing-provider-auth` on every chat turn. Setting
+        // `OPENCLAW_CONFIG_PATH` to the same `chat.json` lib.rs writes
+        // makes the gateway pick up the seeded `maic/` provider chain.
+        .env("OPENCLAW_CONFIG_PATH", default_openclaw_config_path())
         .env("NODE_PATH", &node_path)
+        // AP-833-U (2026-09-08, David): bundled openclaw (v2026.7.1-2)
+        // has a startup update check that hits registry.npmjs.org/openclaw
+        // on every gateway boot and surfaces an "Update available: vX.Y.Z
+        // (running v2026.7.1-2)" notification in the embedded UI. MC owns
+        // its own release cadence via the installer; an out-of-band openclaw
+        // upgrade would replace node_modules/ with a set we haven't tested
+        // against and could break the MAIC plugin handshake / chat history
+        // format. This env var disables openclaw's auto-install path. The
+        // REAL fix is `update.checkOnStart: false` in openclaw.json (see
+        // `disable_update_check_for_existing_installs` in lib.rs) — this
+        // is belt to that suspenders in case the user later resets their
+        // config or the openclaw.json is missing the block for some reason.
+        .env("OPENCLAW_NO_AUTO_UPDATE", "1")
         // Run from resources dir so the bundled `node` symlink (Linux dev)
         // resolves and openclaw's relative imports (skills/, dist/) find their
-        // siblings. Absolute paths we pass (openclaw.mjs) would still work
+        // siblings. Absolute paths we pass (miracle-claw-gateway.mjs) would still work
         // without this, but openclaw resolves some paths relative to cwd.
         .current_dir(resources)
         .stdin(Stdio::null())
@@ -317,12 +340,49 @@ fn default_openclaw_state_dir() -> OsString {
     OsString::from("miracle-claw")
 }
 
+/// Lesson 973 (2026-09-11 12:55 MDT, David): point the bundled openclaw
+/// gateway at `chat.json` inside MC's state dir, NOT the default
+/// `<stateDir>/openclaw.json`.
+///
+/// **Why this exists**: lib.rs's `openclaw_json_path()` returns
+/// `<stateDir>/chat.json` and writes `agents.defaults.model` + provider
+/// seed lists there. The bundled openclaw's `resolveConfigPath` (in
+/// `dist/paths-*.js`) defaults to `<stateDir>/openclaw.json` whenever
+/// `OPENCLAW_CONFIG_PATH` is unset. That mismatch meant the gateway was
+/// booting with NO config (relied on `--allow-unconfigured` to survive),
+/// which is why `chat.json`'s carefully-seeded `agents.defaults.model`
+/// block was ignored and the gateway fell through to its hardcoded
+/// `?? openai/gpt-5.5` default → `missing-provider-auth` 401 on every
+/// chat turn.
+///
+/// The TUI launch path in lib.rs (mc_terminal_start) already sets
+/// `OPENCLAW_CONFIG_PATH=<stateDir>/chat.json` for its own shell. The
+/// GUI launch path (this file) was missing the same env var — the
+/// launcher only set `OPENCLAW_STATE_DIR`, which is what made the
+/// bundled gateway look one directory up the wrong file.
+///
+/// We mirror the TUI's path here so both shells hit the same config.
+fn default_openclaw_config_path() -> OsString {
+    let state_dir = default_openclaw_state_dir();
+    let mut buf = OsString::with_capacity(state_dir.len() + 16);
+    buf.push(state_dir);
+    #[cfg(windows)]
+    {
+        buf.push("\\chat.json");
+    }
+    #[cfg(not(windows))]
+    {
+        buf.push("/chat.json");
+    }
+    buf
+}
+
 fn run(args: Args) -> Result<(), LauncherError> {
     let resources = locate_resources()?;
     let node_bin = locate_node_executable(&resources)?;
 
-    if !resources.join("openclaw.mjs").is_file() {
-        return Err(LauncherError::MissingBundleResource("openclaw.mjs"));
+    if !resources.join("miracle-claw-gateway.mjs").is_file() {
+        return Err(LauncherError::MissingBundleResource("miracle-claw-gateway.mjs"));
     }
     if !resources.join("package.json").is_file() {
         return Err(LauncherError::MissingBundleResource(
@@ -410,4 +470,56 @@ fn main() -> std::process::ExitCode {
     }
 
     std::process::ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lesson 973 (2026-09-11 12:55 MDT, David): `default_openclaw_config_path`
+    /// MUST return a path inside the same state dir as
+    /// `default_openclaw_state_dir`, with the basename `chat.json` (NOT
+    /// `openclaw.json`). The bundled openclaw gateway reads whichever file
+    /// this env var points at; if it points at a non-existent file the
+    /// gateway boots with no config and falls through to the hardcoded
+    /// `openai/gpt-5.5` default → 401 `missing-provider-auth` on first chat.
+    ///
+    /// This test pins two invariants:
+    /// 1. The directory portion of `default_openclaw_config_path()` matches
+    ///    `default_openclaw_state_dir()` — both must agree on where MC's
+    ///    state lives, otherwise we'd point the gateway at a dir the
+    ///    `setup()` writer never touched.
+    /// 2. The basename is `chat.json` — the file lib.rs's
+    ///    `openclaw_json_path()` actually writes to. If we ever rename the
+    ///    file, this test fails before the regression ships.
+    #[test]
+    fn lesson_973_config_path_lives_in_state_dir_and_ends_in_chat_json() {
+        let state_dir = default_openclaw_state_dir();
+        let config_path = default_openclaw_config_path();
+
+        let state_str = state_dir.to_string_lossy();
+        let config_str = config_path.to_string_lossy();
+
+        // The config path MUST start with the state dir — otherwise the
+        // gateway is looking somewhere other than where MC writes.
+        assert!(
+            config_str.starts_with(state_str.as_ref()),
+            "config path {} must live inside state dir {}",
+            config_str,
+            state_str
+        );
+
+        // The basename MUST be `chat.json` so we agree with
+        // `openclaw_json_path()` in lib.rs.
+        #[cfg(windows)]
+        let suffix = "\\chat.json";
+        #[cfg(not(windows))]
+        let suffix = "/chat.json";
+        assert!(
+            config_str.ends_with(suffix),
+            "config path {} must end with {} (lib.rs writes to chat.json, NOT openclaw.json)",
+            config_str,
+            suffix
+        );
+    }
 }

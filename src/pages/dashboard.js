@@ -22,7 +22,8 @@ import { openPalette as openCmdKPalette } from "../cmd_k_palette.js";
 // Lesson 571 (2026-08-25 00:37 MDT, David): MC Module Framework —
 // dashboard FAB calls the voice module via the JS-side runtime.
 // Button starts greyed out (data-module-voice-installed="false").
-import { isModuleInstalled, invokeModule, ensureVoiceModel } from "../modules-runtime.js";
+import { isModuleInstalled, invokeModule, ensureVoiceModel, listInstalledModules } from "../modules-runtime.js";
+import { mountModulesMenu, closeModuleModal, getInstalledModulesMerged } from "../modules-menu.js";
 import { toast } from "../toast.js";
 
 function escapeHtml(s) {
@@ -360,7 +361,7 @@ export const dashboardPage = {
     // fixing the voiceStatus variable-name typo.
     (async () => {
       try {
-        await this._doMount(root, ctx, { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules, onOpenProviderKeys, onOpenTasks });
+        await this._doMount(root, ctx, { onNeedsLogin, onOpenSettings, onOpenTerminal, onOpenOpenClawTerminal, onOpenFiles, onOpenNotebook, onOpenExtras, onOpenPricing, onOpenModules, onOpenProviderKeys, onOpenTasks, onOpenWorkflows });
       } catch (err) {
         console.error("[dashboard.mount] failed:", err);
         try {
@@ -443,24 +444,42 @@ export const dashboardPage = {
                 type="button"
                 class="icon-link"
                 id="mc-voice-fab"
-                title="Voice input (requires Voice for MiracleClaw module)"
-                aria-label="Voice input"
                 data-module-voice-installed="false"
-              >🎙</button>
+                title="Voice input"
+                aria-label="Voice input"
+              >
+                <span class="icon-link-glyph" aria-hidden="true">🎙</span>
+              </button>
+              <button
+                type="button"
+                class="icon-link"
+                id="mc-modules-btn"
+                title="Open installed modules"
+                aria-label="Open installed modules"
+                aria-haspopup="menu"
+              >
+                <span class="icon-link-glyph" aria-hidden="true">🧩</span>
+                <span class="toolbar-btn-count" id="mc-modules-count" hidden>0</span>
+              </button>
               <button
                 type="button"
                 class="icon-link cmd-k-hint"
                 id="cmd-k-open"
                 title="Command palette (Ctrl+K)"
                 aria-label="Open command palette"
-              ><kbd>Ctrl</kbd>+<kbd>K</kbd></button>
+              >
+                <span class="icon-link-glyph" aria-hidden="true">⌘</span>
+                <span class="cmd-k-shortcut"><kbd>Ctrl</kbd>+<kbd>K</kbd></span>
+              </button>
               <button
                 type="button"
                 class="icon-link"
                 id="settings-link"
                 title="Open Settings"
                 aria-label="Open Settings"
-              >⚙</button>
+              >
+                <span class="icon-link-glyph" aria-hidden="true">⚙</span>
+              </button>
               <div class="tier-badge" id="tier-badge" data-tier="${escapeHtml(
                 tier?.tier || "free"
               )}" title="Click to refresh tier from MAIC">
@@ -521,7 +540,7 @@ export const dashboardPage = {
             <button class="tile tile-primary" id="openclaw-windows-tile" type="button">
               <div class="tile-icon">🦞</div>
               <div class="tile-body">
-                <div class="tile-title">OpenClaw · Windows</div>
+                <div class="tile-title">Miracle Claw · Windows</div>
                 <div class="tile-description">
                   Your MAIC chat workspace in a desktop window. Talk to any
                   MAIC model, run code, search the web, work with files.
@@ -534,7 +553,7 @@ export const dashboardPage = {
             <button class="tile tile-primary" id="openclaw-terminal-tile" type="button">
               <div class="tile-icon">⌨️</div>
               <div class="tile-body">
-                <div class="tile-title">OpenClaw · Terminal</div>
+                <div class="tile-title">Miracle Claw · Terminal</div>
                 <div class="tile-description">
                   The same MAIC workspace, but in your terminal. Great for
                   SSH sessions, remote boxes, and keyboard-first workflows.
@@ -770,6 +789,19 @@ export const dashboardPage = {
         cmdKBtn.addEventListener("click", () => openCmdKPalette());
       }
 
+      // Lesson 969 (2026-09-11, David): inline Modules dropdown in the
+      // header. Lists all installed modules, opens the same form/result
+      // modal as the launchpad, and bridges scrape results into chat
+      // via the shared modules-menu helper. Lives as a sibling of the
+      // trigger button so layout absorbs it (Lesson 968 sibling lesson).
+      const modulesMenuBtn = document.getElementById("mc-modules-btn");
+      if (modulesMenuBtn) {
+        mountModulesMenu(modulesMenuBtn, { surface: "dashboard" });
+        updateModulesCount();
+        window.addEventListener("mc:module-installed", updateModulesCount);
+        window.addEventListener("mc:module-uninstalled", updateModulesCount);
+      }
+
       // Lesson TBD (2026-08-27): voice-setup banner dismiss + open.
       // Dismiss is sticky via localStorage so it doesn't nag returning
       // users. Open routes to Settings → Voice section.
@@ -794,21 +826,22 @@ export const dashboardPage = {
       // buttons, and surfaces v0.1.8 diagnostics so we can debug
       // "No Speech Detected" failures (Lesson 592).
       const voiceFab = document.getElementById("mc-voice-fab");
+      const voiceGlyph = voiceFab.querySelector(".icon-link-glyph");
       const runVoiceFab = async () => {
         if (!isModuleInstalled("voice")) {
           toast("Voice module not installed. Install via Settings → Modules.", { kind: "warn" });
           return;
         }
         voiceFab.disabled = true;
-        const orig = voiceFab.textContent;
-        voiceFab.textContent = "🎙…";
+        const orig = voiceGlyph.textContent;
+        voiceGlyph.textContent = "🎙…";
         try {
           // Lesson 581 (2026-08-25 16:25 MDT, David): ensure whisper
           // model is present before transcribing. If missing,
           // auto-download (~75MB) so the user gets a working mic
           // without having to dig into the binary's env vars.
           const ready = await ensureVoiceModel((status) => {
-            voiceFab.textContent = status.startsWith("Downloading") ? "📥…" : "🎙…";
+            voiceGlyph.textContent = status.startsWith("Downloading") ? "📥…" : "🎙…";
           });
           if (!ready) {
             toast(
@@ -847,7 +880,7 @@ export const dashboardPage = {
           }
         } finally {
           voiceFab.disabled = false;
-          voiceFab.textContent = orig;
+          voiceGlyph.textContent = orig;
         }
       };
       if (voiceFab) {
@@ -858,7 +891,7 @@ export const dashboardPage = {
       // Chat" pushes the file path into the dashboard chat input.
       // Same lookup chain as voice — #dashboard-chat-input first,
       // textarea[name='message'] as the generic fallback. If neither
-      // exists (Terminal page drives mc-openclaw via clipboard), stage
+      // exists (Terminal page drives mc-terminal via clipboard), stage
       // the path to the clipboard instead — same bridge the existing
       // attach-zone uses for files dropped into the chat-input-less
       // OpenClaw window.
@@ -968,8 +1001,48 @@ export const dashboardPage = {
     // rc53.29: also tear down the voice preview modal (uses .voice-
     // modal-overlay, not .modal-overlay — keeps its own scoped class).
     closeVoiceResultModal();
+    // Lesson 969: tear down any module modals + the open dropdown, and
+    // drop the count-badge listeners.
+    closeModuleModal();
+    if (typeof window !== "undefined") {
+      window.removeEventListener("mc:module-installed", updateModulesCount);
+      window.removeEventListener("mc:module-uninstalled", updateModulesCount);
+    }
   },
 };
+
+// --- helpers below are not part of the page API ---
+
+// Lesson 969: count badge updater for the inline Modules button.
+// Module-scoped so unmount() can detach the listeners.
+//
+// Lesson 976 (2026-09-11 18:05 MDT, David): was reading
+// `listInstalledModules()` which only counts LOCAL modules. For
+// MAIC-installed modules (FireCrawl, Marketing Suite, etc.) the
+// badge always showed "0" even though the dropdown showed them.
+// Use the shared `getInstalledModulesMerged()` helper so the badge
+// and dropdown always agree.
+let _modulesCountInflight = false;
+async function updateModulesCount() {
+  const count = document.getElementById("mc-modules-count");
+  if (!count) return;
+  if (_modulesCountInflight) return; // dedupe overlapping triggers
+  _modulesCountInflight = true;
+  try {
+    const items = await getInstalledModulesMerged();
+    if (items.length === 0) {
+      count.hidden = true;
+    } else {
+      count.hidden = false;
+      count.textContent = String(items.length);
+    }
+  } catch (e) {
+    console.warn("[dashboard] modules count update failed:", e);
+    count.hidden = true;
+  } finally {
+    _modulesCountInflight = false;
+  }
+}
 
 // --- helpers below are not part of the page API ---
 

@@ -1,0 +1,19 @@
+<!-- MC-PATCH: mc-toolbar-loader-rc56.8 -->
+<!-- MC-PATCH: mc-back-button-rc53.4 -->
+<!-- Lesson 978 (rc56.8): MiracleClaw chat toolbar (Attach / Secrets / Voice
+     / Modules). Loaded as a single self-contained IIFE that gates on
+     `window.location.host === '127.0.0.1:28789'` so it only mounts when the
+     openclaw chat page is hosted by MC's Tauri webview. The script
+     injects its own CSS via `<link>` and creates its own floating panel +
+     dropdowns + modals, all class-prefixed `mc-oc-` so they cannot collide
+     with the openclaw host page. See depot/openclaw-patches/dist/control-ui/
+     mc-toolbar.{js,css} for the implementation.
+
+     The mc-back-button patch (Lesson 502/511) was previously appended
+     directly to index.html; we moved it here so all control-ui additions
+     share the same idempotent insertion path (Lesson 511) and so the
+     bundle-runtime.sh re-extract pipeline wipes them all together. The
+     markers below let the patcher skip if either piece is already present. -->
+<script defer src="./mc-back-button.js"></script>
+<script defer src="./mc-toolbar.js"></script>
+<link rel="stylesheet" href="./mc-toolbar.css" />

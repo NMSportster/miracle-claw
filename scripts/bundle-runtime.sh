@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # bundle-runtime.sh — populate src-tauri/resources/ with the Node runtime +
-# openclaw gateway + MAIC plugin source so the Tauri installer is self-contained.
+# miracle-claw-gateway (formerly openclaw) + MAIC plugin source so the Tauri
+# installer is self-contained.
 #
 # Idempotent: re-running downloads nothing if the SHA256 of each vendored
 # artifact matches. Use --force to bypass the cache.
 #
 # Layout produced under src-tauri/resources/:
-#   openclaw.mjs              (openclaw launcher entry)
+#   miracle-claw-gateway.mjs  (chat gateway entry; rc56.0 Bucket 2 rename from openclaw.mjs)
 #   package.json              (openclaw metadata)
 #   node_modules/             (NOT vendored — see comment below)
 #   dist/                     (openclaw's prebuilt ESM dist/)
@@ -185,10 +186,28 @@ tar -xzf "$OPENCLAW_TARBALL" -C "$TMP_OC"
 mv "$TMP_OC"/package/* "$RESOURCES_DIR"/
 rmdir "$TMP_OC/package"
 rmdir "$TMP_OC"
+# Bucket 2 (rc56.0): rename openclaw.mjs → miracle-claw-gateway.mjs so the
+# bundled runtime file matches the tauri.conf.json resource path.
+if [[ -f "$RESOURCES_DIR/openclaw.mjs" ]]; then
+    mv "$RESOURCES_DIR/openclaw.mjs" "$RESOURCES_DIR/miracle-claw-gateway.mjs"
+fi
+# Patch the wrapper script's "openclaw" wrapperBasename (Lesson 952 follow-on:
+# openclaw 2026.7.1-2 hardcodes "openclaw" / "openclaw.mjs" in its bundled
+# dist/*.js; rename so the runtime can locate itself).
+find "$RESOURCES_DIR/dist" -name "*.js" -exec sed -i \
+    -e 's/wrapperBasename: "openclaw.mjs"/wrapperBasename: "miracle-claw-gateway.mjs"/g' \
+    -e 's/"\.\/openclaw\.mjs"/".\/miracle-claw-gateway.mjs"/g' \
+    -e 's|\.\/openclaw\.mjs|./miracle-claw-gateway.mjs|g' \
+    -e 's|"openclaw\.mjs"|"miracle-claw-gateway.mjs"|g' \
+    -e "s|'openclaw\.mjs'|'miracle-claw-gateway.mjs'|g" \
+    {} + 2>/dev/null || true
 # Trim noise the launcher doesn't need (build stamps, lockfiles, etc.).
+# pnpm-workspace.yaml is REQUIRED to be kept (Lesson 952: pnpm 11 walks up the
+# tree to find a workspace; if we delete it, pnpm finds the Tauri app's
+# pnpm-lock.yaml at the project root and silently 'Already up to date'-skips
+# the install, leaving node_modules empty).
 rm -f "$RESOURCES_DIR/.buildstamp" \
-      "$RESOURCES_DIR/.runtime-postbuildstamp" \
-      "$RESOURCES_DIR/pnpm-workspace.yaml" 2>/dev/null || true
+      "$RESOURCES_DIR/.runtime-postbuildstamp" 2>/dev/null || true
 
 # 4a.5. Run a production install so openclaw's ESM imports resolve.
 # openclaw's lockfile is pnpm-based (npm-shrinkwrap + pnpm-lock), and its

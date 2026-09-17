@@ -1,0 +1,74 @@
+[package]
+name = "mclaw"
+version = "0.2.0-rc56.0-week5"
+edition = "2021"
+description = "Miracle Claw CLI - ask MAIC from any shell, cron, or CI"
+license = "MIT"
+
+[lib]
+name = "mclaw"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mclaw"
+path = "src/main.rs"
+
+[dependencies]
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# CLI parsing
+clap = { version = "4", features = ["derive"] }
+
+# Interactive prompts (mc login)
+dialoguer = "0.11"
+
+# Cross-platform config dir (~/.config/mc on Linux, ~/Library/Application Support/mc on Mac, %APPDATA%\mclaw on Windows)
+dirs = "5"
+
+# TOML config file parsing/serialization
+toml = "0.8"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Time formatting for output
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+
+# JWT keychain storage — uses the OS native credential store
+# (Keychain on macOS, Credential Manager on Windows, Secret Service on Linux)
+# Keyring 4.x is async-first (the v3 sync API is deprecated).
+# Default features include apple-native, windows-native, and zbus-secret-service (Linux).
+keyring = "4"
+
+# REPL (readline + history)
+rustyline = { version = "14", default-features = false, features = ["with-file-history"] }
+
+# Pretty table output for `mclaw models`, `mclaw usage`
+comfy-table = "7"
+
+# Logging to stderr (stdout is for the user's data, don't pollute it)
+env_logger = "0.11"
+log = "0.4"
+
+[dev-dependencies]
+# Mock HTTP server for tests
+wiremock = "0.6"
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"
+predicates = "3"
+
+[profile.release]
+opt-level = "z"     # optimize for size (target ~5 MB)
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

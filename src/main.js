@@ -23,6 +23,17 @@ import { register, mount as mountPage, setAuthState } from "./page_registry.js";
 import { initModuleRuntime, isModuleInstalled, invokeModule, reapplyAllUiHooks } from "./modules-runtime.js";
 import { loginPage } from "./pages/login.js";
 import { dashboardPage } from "./pages/dashboard.js";
+// rc56.0: launchpad replaces the old dashboard at the "dashboard" route.
+// The old page is still importable for shared helpers (wireAttachZone,
+// iconFor, formatBytes) used by terminal.js and other pages — but the
+// post-login landing now mounts the launchpad. Back buttons in
+// settings/terminal/files/etc. that say onBackToDashboard -> navigate("dashboard")
+// all land on the launchpad, which is the new home.
+import { dashboardLaunchpadPage } from "./pages/dashboard_launchpad.js";
+// Keep the import for shared helpers (wireAttachZone, iconFor, formatBytes).
+// The page itself (dashboardPage) is no longer registered as a route —
+// its UI was the old tile catalog that the launchpad supersedes.
+import "./pages/dashboard.js";
 import { settingsPage } from "./pages/settings.js";
 import { terminalPage } from "./pages/terminal.js";
 import { filesPage } from "./pages/files.js";
@@ -50,6 +61,11 @@ import { pricingPage } from "./pages/pricing.js";
 // every MC module with status pills (Available / Installed / Coming
 // Soon) and routes users to install/hook flows.
 import { modulesPage } from "./pages/modules.js";
+// rc56.x (feature/marketplace): live MAIC-driven catalog wired to the
+// launchpad's "Add a tool" tile. Distinct from `modules.js` (which is
+// the static discovery hub). Backend: 5 mc_* commands in
+// src-tauri/src/lib.rs around line 5660.
+import { marketplacePage } from "./pages/marketplace.js";
 // Lesson 725 (2026-08-28 21:30 MDT, David): MC Tasks feature (Miracle
 // Bot persistent memory). Paid-tier-gated; free users see an upgrade
 // CTA in place of the editor. Self-registers on import (matches the
@@ -71,8 +87,11 @@ const root = document.getElementById("root");
 // New pages just call register(...) here. main.js doesn't change again
 // until we add a router with deep links.
 
+// rc56.0: launchpad is the new home. Keep "dashboard-launchpad" registered
+// as an alias so any deep links / hash routes targeting it still resolve.
 register("login", loginPage);
-register("dashboard", dashboardPage);
+register("dashboard", dashboardLaunchpadPage);
+register("dashboard-launchpad", dashboardLaunchpadPage);
 register("settings", settingsPage);
 register("terminal", terminalPage);
 register("files", filesPage);
@@ -94,6 +113,7 @@ register("pricing", pricingPage);
 // src/pages/modules.js — Settings → Modules (Lesson 572) is the
 // install manager; this is the discovery surface.
 register("modules", modulesPage);
+register("marketplace", marketplacePage);
 // Lesson 725 (2026-08-28 21:30 MDT, David): MC Tasks (Miracle Bot
 // persistent memory). Paid-tier-gated. Self-registers on import via
 // `register("tasks", ...)` at the bottom of pages/tasks.js, so we
@@ -117,7 +137,14 @@ installNavigation({
   mount: mountPage,
   builders: new Map([
     [
+      // rc56.0: launchpad is the new home. The page's own back-to-home
+      // handler is a no-op (it's already home), but the ctx still
+      // exposes onNeedsLogin so an expired JWT bounces correctly.
       "dashboard",
+      () => pageCtx(),
+    ],
+    [
+      "dashboard-launchpad",
       () => pageCtx(),
     ],
     [
@@ -147,6 +174,13 @@ installNavigation({
     [
       "modules",
       () => modulesCtx(),
+    ],
+    [
+      "marketplace",
+      () => ({
+        onBackToDashboard: () => navigate("dashboard"),
+        onNeedsLogin: mountLogin,
+      }),
     ],
     [
       "provider-keys",
@@ -298,6 +332,8 @@ function pageCtx() {
     // so the in-app catalog hub renders the 15 modules with status
     // pills + install/open CTAs.
     onOpenModules: () => navigate("modules"),
+    // rc56.x: launchpad "Add a tool" tile routes here (live catalog).
+    onOpenMarketplace: () => navigate("marketplace"),
     // Lesson 713 (2026-08-28, David): dashboard's "Provider Keys"
     // tile routes here so the BYO provider keys page renders the
     // 13 supported providers with vault-encrypted storage.
@@ -318,10 +354,10 @@ function pageCtx() {
     // PATH.
     onOpenTerminalWithCommand: (command, shell) =>
       navigate("terminal", { defaultShell: shell, initialCommand: command }),
-    // Open the Terminal page with the OpenClaw TUI (mc-openclaw) pre-selected.
+    // Open the Terminal page with the Miracle Claw TUI (mc-terminal) pre-selected.
     // Used by the "OpenClaw · Terminal" tile on the dashboard.
     onOpenOpenClawTerminal: () =>
-      navigate("terminal", { defaultShell: "mc-openclaw" }),
+      navigate("terminal", { defaultShell: "mc-terminal" }),
   };
 }
 
@@ -443,6 +479,66 @@ function showFatal(msg) {
     </div>
   `;
 }
+
+// Lesson 836 (2026-09-09): shared error helper for catch blocks.
+//
+// Why this exists: every page used to do its own try/catch around
+// `await invoke(...)` and most swallowed the underlying error with a
+// generic "Try restarting MiracleClaw" message. That hid ACL drift
+// (Lesson 755, 836), network outages, JSON parse errors, and
+// permission rejections behind identical-looking text. The user
+// couldn't tell whether to restart, reinstall, or report a bug.
+//
+// logError(e, ctx) centralizes the "log to console + return a
+// user-friendly string" pattern. Pages should call:
+//
+//   try { ... } catch (e) { logError(e, { page: "workflows", op: "prose_examples" }); }
+//
+// to get:
+//   - console.error with structured context (page, op, plus anything
+//     in ctx.extra)
+//   - a normalized error string (handles e.message, e, or string inputs)
+//   - no swallowed failures
+//
+// For user-facing render (with a <details> block for triage), use
+// `formatErrorForUser(e, ctx)` which returns { userMsg, technicalMsg }.
+function logError(e, ctx = {}) {
+  const errText = String(e?.message ?? e);
+  const tag = `[${ctx.page ?? "?"}.${ctx.op ?? "?"}]`;
+  if (e?.stack) {
+    console.error(tag, errText, "\n", e.stack, ctx.extra ? { extra: ctx.extra } : "");
+  } else {
+    console.error(tag, errText, ctx.extra ? { extra: ctx.extra } : "");
+  }
+  return errText;
+}
+
+function formatErrorForUser(e, ctx = {}) {
+  const technical = logError(e, ctx);
+  const isAclError = /not allowed by ACL/i.test(technical);
+  let userMsg;
+  if (isAclError) {
+    userMsg =
+      "MiracleClaw can't run this action yet — this build is missing the required permissions. " +
+      "Try reinstalling from your dashboard, or contact support with the error below.";
+  } else if (/network|fetch|timeout/i.test(technical)) {
+    userMsg =
+      "Network error. Check your connection and try again. " +
+      "If the problem persists, see the technical details below.";
+  } else {
+    userMsg =
+      "Something went wrong. Try the action again, or restart MiracleClaw if it keeps happening.";
+  }
+  return { userMsg, technical };
+}
+
+// Expose error helpers globally. Pages import via `window.MC.logError`
+// (window.MC is set up in main.js's top-level init; it's also where
+// any other page-shared utility belongs). Lesson 836.
+window.MC = Object.assign(window.MC ?? {}, {
+  logError,
+  formatErrorForUser,
+});
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({

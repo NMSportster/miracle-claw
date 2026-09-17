@@ -29,7 +29,16 @@ src-tauri/resources/*
 dist-installers/
 
 # OpenClaw + Node sources vendored here during bundle prep; regenerated before each build
-depot/
+# Use /* so the negation below can re-include subdirs (Lesson 978:
+# depot/openclaw-patches/ is the source of truth for our edits to
+# vendored openclaw files and IS tracked).
+depot/*
+# Lesson 978: depot/openclaw-patches/ is the source of truth for our
+# edits to vendored openclaw files (MC-PATCH markers + content).
+# These ARE tracked; bundle-runtime.sh blows them away on every
+# `--force` extract so this dir is the only durable home.
+!depot/openclaw-patches/
+!depot/openclaw-patches/**
 
 # maic-plugin install stamp
 depot/**/.miracle-claw-installed-sha256
@@ -79,3 +88,12 @@ brand/lockup-horizontal.svg
 .build-linux.lock
 dist.OLD.root-owned/
 dist.root-owned-bak/
+
+# mclaw headless companion binary
+mclaw/target/
+mclaw/dist/
+
+# Old dist backups (Lesson: trash old build artifacts)
+dist.old.*/
+dist.root-owned-bak-*/
+dist.root-owned-bak-rc*/

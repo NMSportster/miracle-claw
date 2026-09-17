@@ -21,6 +21,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "../toast.js";
+import { mountPairingSection, refresh as refreshPairing } from "./paired_devices.js";
 
 // ============================================================================
 // Helpers (used only by this page)
@@ -103,6 +104,7 @@ export const settingsPage = {
     // ~3-5 seconds on first call. Cache result so navigating away and back
     // doesn't re-run unless user clicks "Re-check".
     loadVoiceDiagnostics(this, root, ctx);
+    mountPairingSection(ctx);
   },
 
   unmount() {
@@ -110,6 +112,11 @@ export const settingsPage = {
     document.querySelectorAll(".modal-overlay").forEach((el) => el.remove());
     // Drop the cached memory-file content if a textarea was being edited.
     pendingWrite = null;
+    // Phase 2.4 (mobile pairing): paired_devices.js owns a 5s polling timer
+    // that auto-stops when the slot DOM is gone, but call refresh one last
+    // time is unnecessary; just clear the slot to be tidy.
+    const pairingSlot = document.getElementById("mobile-pairing-slot");
+    if (pairingSlot) pairingSlot.innerHTML = "";
   },
 };
 
@@ -479,6 +486,17 @@ function renderSkeleton() {
       </section>
 
       <section class="settings-section">
+        <h2>Mobile pairing</h2>
+        <p class="muted small">
+          Connect your phone to this desktop. Once paired, the Miracle Claw mobile
+          app can run chat, view sessions, invoke modules, and drop files into a
+          folder you choose here. Pairing happens automatically when both devices
+          are signed into the same MAIC account.
+        </p>
+        <div id="mobile-pairing-slot" class="loading-slot">Loading…</div>
+      </section>
+
+      <section class="settings-section">
         <h2>Voice (Windows)</h2>
         <p class="muted small">
           MC's voice input uses Windows Speech Recognition on Windows 11 24H2+ for
@@ -599,6 +617,12 @@ function renderAbout() {
       <div class="account-row">
         <div class="account-label">MAIC provider</div>
         <div class="account-value mono">${escapeHtml(window.location.origin === "null" ? "—" : "https://maicserver.com")}</div>
+      </div>
+      <div class="account-row">
+        <div class="account-label">Updates</div>
+        <div class="account-value">
+          Miracle Claw ships its own OpenClaw runtime. Updates arrive via the app installer &mdash; not through in-app notifications.
+        </div>
       </div>
       <div class="account-actions">
         <button type="button" id="open-folder-btn" class="link-button">
