@@ -4,31 +4,31 @@
 // OpenClaw chat UI when hosted inside MiracleClaw's Tauri webview
 // (http://127.0.0.1:28789/):
 //
-//   📎 Attach    — drop files, copy paths to clipboard
-//   🔑 Secrets   — list local tool names + secret names (no values)
-//   🎙 Voice     — invoke mc_voice_native_capture (SAPI 5)
-//   🧩 Modules   — dropdown of installed modules, "Run" calls
+//   [attach] Attach    -- drop files, copy paths to clipboard
+//   [key] Secrets   -- list local tool names + secret names (no values)
+//   [mic] Voice     -- invoke mc_voice_native_capture (SAPI 5)
+//   [modules] Modules   -- dropdown of installed modules, "Run" calls
 //                  mc_run_module and sends the result into the chat input
 //
-// This file is *deliberately* self-contained — the openclaw dist has its
+// This file is *deliberately* self-contained -- the openclaw dist has its
 // own JS world and can't import from MC's source tree (`src/`). We
 // duplicate the minimum we need: a Tauri-invoke helper, an event bus,
 // a toast helper, and the modules menu. State that we *do* share with
 // MC's `modules-runtime.js` (the `installed` Map) is not shared
-// directly — both sides read from the same Tauri command
+// directly -- both sides read from the same Tauri command
 // `mc_list_installed_modules` so they agree.
 //
-// Detection (Lesson 511 — IPC-independent):
+// Detection (Lesson 511 -- IPC-independent):
 //   We gate on `window.location.host === '127.0.0.1:28789'`. No Tauri
 //   globals required for the gate; the gate just tells us "we're on the
 //   OpenClaw chat page hosted by MC". Actual Tauri calls inside the
-//   button handlers will fail loudly if MC's webview isn't wired —
+//   button handlers will fail loudly if MC's webview isn't wired --
 //   which is the right behavior, since the user wouldn't be seeing
 //   this UI in that case anyway.
 //
 // Click strategy:
 //   We attach CAPTURE-phase click listeners on our own buttons. We do
-//   NOT touch the openclaw app's own button handlers — we live in our
+//   NOT touch the openclaw app's own button handlers -- we live in our
 //   own floating panel and never touch the React tree.
 //
 // Idempotency:
@@ -56,7 +56,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Tauri invoke — supports the three surfaces Tauri 2.x exposes
+  // Tauri invoke -- supports the three surfaces Tauri 2.x exposes
   // (mirrors mc-voice-native.js + mc-back-button.js).
   // ---------------------------------------------------------------------------
 
@@ -76,7 +76,7 @@
       return t1.invoke(cmd, args);
     }
     return Promise.reject(new Error(
-      'Tauri IPC not available — mc-toolbar must run inside MC Tauri webview'
+      'Tauri IPC not available -- mc-toolbar must run inside MC Tauri webview'
     ));
   }
 
@@ -107,7 +107,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Dropdown open/close (Lesson 968 — sibling of trigger, viewport-aware
+  // Dropdown open/close (Lesson 968 -- sibling of trigger, viewport-aware
   // positioning from Lesson 976)
   // ---------------------------------------------------------------------------
 
@@ -170,7 +170,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Modules: list (Lesson 975 — query mc_list_installed_modules) + run
+  // Modules: list (Lesson 975 -- query mc_list_installed_modules) + run
   // ---------------------------------------------------------------------------
 
   var _modulesCountInflight = false;
@@ -178,7 +178,7 @@
   async function fetchInstalledModulesMerged() {
     // Lesson 975: read remote (MAIC) install list. The Tauri command
     // is the same one the rest of MC uses. If it fails, return [] and
-    // the dropdown will show "No modules installed" — same graceful
+    // the dropdown will show "No modules installed" -- same graceful
     // fallback the terminal toolbar uses.
     try {
       var resp = await tauriInvoke('mc_list_installed_modules');
@@ -202,7 +202,7 @@
       name: cm.name || m.name || m.module_id || m.id || '(unknown)',
       version: cm.version || m.version || '',
       hooks: cm.ui_hooks || m.hooks || {},
-      icon: m.icon || cm.icon || '🧩',
+      icon: m.icon || cm.icon || '[modules]',
       tools: cm.tools || m.tools || [],
       _raw: m,
     };
@@ -237,7 +237,7 @@
       return;
     }
     var body = dropdown.querySelector('.mc-oc-dropdown-body');
-    body.innerHTML = '<div class="mc-oc-dropdown-empty">Loading…</div>';
+    body.innerHTML = '<div class="mc-oc-dropdown-empty">Loading...</div>';
     openDropdownFor(document.getElementById('mc-oc-modules-btn'), dropdown);
 
     var list = await fetchInstalledModulesMerged();
@@ -263,15 +263,15 @@
       metaEl.className = 'mc-oc-dropdown-item-meta';
       var toolCount = m.tools.length;
       var toolLabel = toolCount === 0
-        ? 'no tools — open in launchpad'
+        ? 'no tools -- open in launchpad'
         : toolCount === 1 ? '1 tool'
         : toolCount + ' tools';
-      metaEl.textContent = 'v' + (m.version || '?') + ' · ' + toolLabel;
+      metaEl.textContent = 'v' + (m.version || '?') + ' ? ' + toolLabel;
       bodyEl.appendChild(nameEl);
       bodyEl.appendChild(metaEl);
       var runBtn = document.createElement('span');
       runBtn.className = 'mc-oc-dropdown-item-run';
-      runBtn.textContent = toolCount > 0 ? 'Run ▸' : 'Info ▸';
+      runBtn.textContent = toolCount > 0 ? 'Run ?' : 'Info ?';
       runBtn.setAttribute('role', 'button');
       item.appendChild(iconEl);
       item.appendChild(bodyEl);
@@ -307,7 +307,7 @@
       showRunForm(m, tool);
     } else {
       showModuleModal(
-        m.name + ' — pick a tool',
+        m.name + ' -- pick a tool',
         'Choose a tool to run.',
         m.tools.map(function (t) { return { label: t.name || t.id, value: t.id }; }),
         function (picked) { showRunForm(m, picked); }
@@ -383,7 +383,7 @@
     //      placeholder selectors), so users saw no feedback at all.
     // Fix: render the SAME form-schema fields the Launchpad /
     // modules-menu use, and on Run show the result in a result area
-    // with Send-to-Chat / Copy / Close buttons — same UX as the
+    // with Send-to-Chat / Copy / Close buttons -- same UX as the
     // Launchpad so users get a consistent experience.
     var backdrop = document.createElement('div');
     backdrop.className = 'mc-oc-modal-backdrop';
@@ -393,7 +393,7 @@
     panel.setAttribute('aria-modal', 'true');
     var h = document.createElement('h2');
     h.className = 'mc-oc-modal-title';
-    h.textContent = 'Run ' + m.name + ' · ' + (tool.name || tool.id);
+    h.textContent = 'Run ' + m.name + ' ? ' + (tool.name || tool.id);
     panel.appendChild(h);
     var sub = document.createElement('p');
     sub.className = 'mc-oc-modal-subtitle';
@@ -407,7 +407,7 @@
     form.setAttribute('data-tool', tool.name || tool.id);
 
     // Render form_schema fields if we have them. Otherwise show a
-    // JSON textarea (rare — most modules publish a schema).
+    // JSON textarea (rare -- most modules publish a schema).
     var schema = tool.form_schema || (tool.inputs && tool.inputs.form_schema) || null;
     var renderedFields = false;
     if (schema && typeof schema === 'object' && schema.type === 'object' && schema.properties) {
@@ -433,7 +433,7 @@
           var t = prop.type || 'string';
           if (Array.isArray(prop.enum) && prop.enum.length > 0) {
             inputEl = document.createElement('select');
-            inputEl.innerHTML = '<option value="">— select —</option>' +
+            inputEl.innerHTML = '<option value="">-- select --</option>' +
               prop.enum.map(function (v) { return '<option value="' + escapeHtml(v) + '">' + escapeHtml(v) + '</option>'; }).join('');
           } else if (t === 'number' || t === 'integer') {
             inputEl = document.createElement('input');
@@ -519,7 +519,7 @@
     form.addEventListener('submit', async function (ev) {
       ev.preventDefault();
       run.disabled = true;
-      run.textContent = 'Running…';
+      run.textContent = 'Running...';
       // Collect inputs from the rendered fields OR from the JSON textarea.
       var inputs = {};
       if (renderedFields) {
@@ -550,7 +550,7 @@
         }
       }
       result.hidden = false;
-      result.textContent = 'Running…';
+      result.textContent = 'Running...';
       try {
         var resp = await tauriInvoke('mc_run_module', {
           moduleId: m.id,
@@ -583,7 +583,7 @@
         var sendChat = document.createElement('button');
         sendChat.type = 'button';
         sendChat.className = 'mc-oc-modal-button is-primary';
-        sendChat.textContent = '📤 Send to Chat';
+        sendChat.textContent = '? Send to Chat';
         sendChat.addEventListener('click', async function () {
           var ok = await pasteIntoChatInput(outText);
           if (ok) showToast('Result sent to chat input', 'success');
@@ -591,7 +591,7 @@
         var copy = document.createElement('button');
         copy.type = 'button';
         copy.className = 'mc-oc-modal-button';
-        copy.textContent = '📋 Copy';
+        copy.textContent = '[clipboard] Copy';
         copy.addEventListener('click', async function () {
           try {
             if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -603,7 +603,7 @@
         var close = document.createElement('button');
         close.type = 'button';
         close.className = 'mc-oc-modal-button';
-        close.textContent = '✕ Close';
+        close.textContent = '? Close';
         close.addEventListener('click', function () { document.body.removeChild(backdrop); });
         resultActions.appendChild(sendChat);
         resultActions.appendChild(copy);
@@ -612,7 +612,7 @@
 
         run.textContent = 'Run again';
         run.disabled = false;
-        // After the first run, clicking Run should submit again —
+        // After the first run, clicking Run should submit again --
         // the form is already wired, so simply toggle the actions
         // row off via a new hidden input flag.
         run.addEventListener('click', function () { form.requestSubmit(); });
@@ -645,8 +645,8 @@
     // composer doesn't expose a `placeholder` attr matching the
     // legacy selectors (chat.composer.placeholder is a translated
     // i18n string with no fixed English substring). Use a broader
-    // chain: textarea → [contenteditable] → contenteditable
-    // descendants → input[type='text'] (rare).
+    // chain: textarea -> [contenteditable] -> contenteditable
+    // descendants -> input[type='text'] (rare).
     var selectors = [
       'textarea',
       'textarea[placeholder*="essage" i]',
@@ -683,7 +683,7 @@
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(text);
-        showToast('Copied to clipboard — paste into chat (Ctrl+V)', 'info');
+        showToast('Copied to clipboard -- paste into chat (Ctrl+V)', 'info');
         return true;
       } else {
         showToast('Could not locate chat input; result in console', 'error');
@@ -697,25 +697,75 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Voice: invoke mc_voice_native_capture (proven path from mc-voice-native.js)
+  // Voice: invoke mc_voice_transcribe via mc_module_call dispatcher
+  // (Lesson 1001, rc57.1) -- uses whisper.cpp sidecar instead of
+  // broken SAPI 5 native capture.
   // ---------------------------------------------------------------------------
+
+  async function callVoiceModule(command, params) {
+    return tauriInvoke('mc_module_call', { command: command, params: params || {} });
+  }
+
+  // Auto-download whisper model on first use (~75MB, once).
+  var _voiceReadyCache = null;
+  async function ensureVoiceReady() {
+    if (_voiceReadyCache === true) return true;
+    if (_voiceReadyCache === false) return false;
+    try {
+      var status = await callVoiceModule('mc_voice_check', {});
+      if (status && status.model_loaded) {
+        _voiceReadyCache = true;
+        return true;
+      }
+      showToast('Downloading whisper model (~75 MB, first time)...', 'info', 30000);
+      await callVoiceModule('mc_voice_download_model', {});
+      var status2 = await callVoiceModule('mc_voice_check', {});
+      if (status2 && status2.model_loaded) {
+        _voiceReadyCache = true;
+        return true;
+      }
+    } catch (e) {
+      _voiceReadyCache = false;
+      throw e;
+    }
+    _voiceReadyCache = false;
+    return false;
+  }
 
   async function onVoiceClick(btn) {
     if (btn.getAttribute('data-state') === 'listening') return;
     setVoiceState(btn, 'listening');
     try {
-      var text = await tauriInvoke('mc_voice_native_capture', { timeoutMs: 15000 });
+      var ready = await ensureVoiceReady();
+      if (!ready) {
+        setVoiceState(btn, 'idle');
+        showToast('Voice module not ready (download may have failed)', 'error');
+        return;
+      }
+      var result = await callVoiceModule('mc_voice_transcribe', {
+        seconds: 15,
+        vad_enabled: true,
+        silence_ms: 1500,
+      });
       setVoiceState(btn, 'idle');
-      if (text && String(text).trim()) {
-        // Paste into chat input if we can find it.
+      var text = (result && typeof result.text === 'string') ? result.text.trim() : '';
+      if (text) {
         await pasteIntoChatInput(String(text));
-        showToast('Voice captured — pasted into chat input', 'success');
+        var durMs = (result && typeof result.duration_ms === 'number') ? result.duration_ms : 0;
+        var txMs = (result && typeof result.transcribe_ms === 'number') ? result.transcribe_ms : 0;
+        showToast('Voice captured in ' + (durMs + txMs) + ' ms', 'success');
       } else {
         showToast('No speech detected', 'info');
       }
     } catch (e) {
       setVoiceState(btn, 'idle');
-      showToast('Voice capture failed: ' + (e && e.message ? e.message : e), 'error');
+      _voiceReadyCache = null;
+      var msg = (e && e.message) ? e.message : String(e);
+      if (/NotInstalled|sidecar not found|module 'voice'/i.test(msg)) {
+        showToast('Voice module not installed. Open Settings -> Modules to install it.', 'error', 6000);
+      } else {
+        showToast('Voice capture failed: ' + msg, 'error', 5000);
+      }
     }
   }
 
@@ -738,7 +788,7 @@
     panel.setAttribute('aria-modal', 'true');
     var h = document.createElement('h2');
     h.className = 'mc-oc-modal-title';
-    h.textContent = '📎 Attach files';
+    h.textContent = '[attach] Attach files';
     panel.appendChild(h);
     var sub = document.createElement('p');
     sub.className = 'mc-oc-modal-subtitle';
@@ -809,7 +859,7 @@
       var joined = paths.join('\n');
       try {
         await navigator.clipboard.writeText(joined);
-        showToast('Copied ' + paths.length + ' path(s) — paste into chat (Ctrl+V)', 'success');
+        showToast('Copied ' + paths.length + ' path(s) -- paste into chat (Ctrl+V)', 'success');
         document.body.removeChild(backdrop);
         _attached = [];
       } catch (e) {
@@ -872,7 +922,7 @@
     panel.setAttribute('aria-modal', 'true');
     var h = document.createElement('h2');
     h.className = 'mc-oc-modal-title';
-    h.textContent = '🔑 Secrets & local tools';
+    h.textContent = '[key] Secrets & local tools';
     panel.appendChild(h);
     var sub = document.createElement('p');
     sub.className = 'mc-oc-modal-subtitle';
@@ -887,7 +937,7 @@
     var loading = document.createElement('div');
     loading.style.color = 'rgba(255,255,255,0.55)';
     loading.style.fontStyle = 'italic';
-    loading.textContent = 'Loading…';
+    loading.textContent = 'Loading...';
     section.appendChild(loading);
     panel.appendChild(section);
 
@@ -964,7 +1014,7 @@
     bar.setAttribute('role', 'toolbar');
     bar.setAttribute('aria-label', 'MiracleClaw chat tools');
 
-    var attachBtn = makeButton('mc-oc-attach-btn', '📎', 'Attach files to next chat message', 'Attach files');
+    var attachBtn = makeButton('mc-oc-attach-btn', '[attach]', 'Attach files to next chat message', 'Attach files');
     attachBtn.addEventListener('click', function (ev) {
       ev.preventDefault();
       ev.stopPropagation();
@@ -973,7 +1023,7 @@
     });
     bar.appendChild(attachBtn);
 
-    var secretsBtn = makeButton('mc-oc-secrets-btn', '🔑', 'Add usernames, passwords, API keys to the MC secrets vault', 'Secrets');
+    var secretsBtn = makeButton('mc-oc-secrets-btn', '[key]', 'Add usernames, passwords, API keys to the MC secrets vault', 'Secrets');
     secretsBtn.addEventListener('click', function (ev) {
       ev.preventDefault();
       ev.stopPropagation();
@@ -992,7 +1042,7 @@
       //   "Failed to open Secrets: invalid args 'overlayKey' for
       //    command 'mc_open_overlay': command mc_open_overlay
       //    missing required key overlayKey"
-      // — the conversion landed on a key Tauri could not match to
+      // -- the conversion landed on a key Tauri could not match to
       // the Rust signature `fn mc_open_overlay(overlay_key: String,
       // ...)`. The fix: send camelCase `overlayKey`, matching the
       // rest of the toolbar (mc_run_module uses moduleId/tool/
@@ -1006,7 +1056,7 @@
     });
     bar.appendChild(secretsBtn);
 
-    var voiceBtn = makeButton('mc-oc-voice-btn', '🎙', 'Voice input (Windows SAPI)', 'Voice input');
+    var voiceBtn = makeButton('mc-oc-voice-btn', '[mic]', 'Voice input (Windows SAPI)', 'Voice input');
     voiceBtn.classList.add('mc-oc-voice-btn');
     voiceBtn.setAttribute('data-state', 'idle');
     voiceBtn.removeAttribute('aria-haspopup');
@@ -1018,7 +1068,7 @@
     });
     bar.appendChild(voiceBtn);
 
-    var modulesBtn = makeButton('mc-oc-modules-btn', '🧩', 'Installed modules', 'Open modules menu');
+    var modulesBtn = makeButton('mc-oc-modules-btn', '[modules]', 'Installed modules', 'Open modules menu');
     modulesBtn.addEventListener('click', function (ev) {
       ev.preventDefault();
       ev.stopPropagation();

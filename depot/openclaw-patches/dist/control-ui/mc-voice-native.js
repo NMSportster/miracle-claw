@@ -1,49 +1,35 @@
-// MiracleClaw native voice input patch (Lesson 706, rc54.3)
+// MiracleClaw voice input patch (Lesson 1001, rc57.1)
 //
-// Injected into control-ui/index.html by scripts/patch-openclaw-dist.sh.
-// Intercepts the OpenClaw voice input button (CSS class
-// `chat-send-btn--voice`) and replaces the slow Realtime Talk cloud
-// STT path with native Windows SAPI 5 via the Rust
-// `mc_voice_native_capture` Tauri command.
+// Replaces the Lesson 706 SAPI 5 path with the cross-platform
+// whisper.cpp sidecar (`miracle-claw-voice` module). Works on every
+// Windows install regardless of SAPI 5 health, and is the same code
+// path as the dashboard [mic] FAB and Terminal voice button (Lesson 581/592).
 //
-// Detection strategy (mirrors mc-back-button.js — Lesson 511):
-// We gate on `window.location.host === '127.0.0.1:28789'` directly.
-// That's a stable, IPC-free signal that we're on the OpenClaw chat
-// page hosted by MC. We don't need `__openclawHostBridge` to be set
-// up — this patch must work even if the bridge injection failed.
+// Flow:
+//   1. User clicks `.chat-send-btn--voice` (OpenClaw's native voice button).
+//   2. We intercept with a CAPTURE-phase listener and stop the original
+//      slow Realtime Talk cloud STT handler from running.
+//   3. `mc_voice_check` -> if model_loaded=false, auto-download via
+//      `mc_voice_download_model` (~75MB first-time). Show progress pill.
+//   4. `mc_voice_transcribe` (via `mc_module_call`) -> cpal captures
+//      audio + webrtc-vad auto-stops on silence + whisper.cpp
+//      returns transcript.
+//   5. Paste transcript into the React composer (textarea prototype setter
+//      + dispatched input event so React notices).
 //
-// Click strategy (mirrors mc-back-button.js):
-// We attach a CAPTURE-phase click listener to the document so we
-// fire BEFORE React's synthetic event system. We then call
-// `event.stopImmediatePropagation()` and `event.preventDefault()` so
-// the original toggleRealtimeTalk code path NEVER runs. This is
-// critical: if we let React's handler run, it spawns a getUserMedia
-// session that races against our SAPI 5 capture and the user hears
-// two audio streams at once.
+// Why dispatch through `mc_module_call` and not `mc_voice_transcribe`
+// directly? Because the sidecar is a module command -- same pattern as
+// `mc_module_call` for mc-toolbar's Modules Run modal. The dispatcher
+// resolves `command` to its module's binary + action. If the voice
+// module is uninstalled, dispatch returns a friendly error pointing
+// at Settings -> Modules.
 //
-// Tauri IPC:
-//   window.__TAURI_INTERNALS__.invoke('mc_voice_native_capture',
-//                                     { timeoutMs: 15000 })
-// We accept whichever Tauri API surface is exposed in this build:
-//   - window.__TAURI__.core.invoke (Tauri 2.x preferred)
-//   - window.__TAURI_INTERNALS__.invoke (Tauri 2.x internals)
-//   - window.__TAURI__.invoke (legacy)
+// Detection, click-strategy, and Tauri-invoke resolution mirror
+// mc-back-button.js (Lesson 511) and mc-voice-native.js v1 (Lesson 706).
 //
-// Output placement:
-// We write the transcribed text into the React-controlled composer
-// input via a `composer__draft` custom event the OpenClaw bundle
-// already listens for, OR — if that event isn't honored — we set the
-// value on the textarea/textarea[contenteditable] and dispatch an
-// `input` event so React notices the change.
-//
-// Privacy:
-// No audio ever leaves the device. SAPI 5 is fully offline, runs in
-// the user's own PowerShell process, and only returns the final
-// transcript string.
-//
-// Idempotent:
-// `data-mc-voice-native-patched` attribute on <html> prevents
-// double-injection if the patch script runs twice (defense in depth).
+// Privacy: no audio leaves the device. whisper.cpp runs entirely
+// on-CPU in the sidecar binary.
+
 (function () {
   // ---- Gate: only run on the OpenClaw chat page hosted by MC ----
   try {
@@ -55,7 +41,6 @@
   }
 
   // ---- Tauri invoke resolver ----
-  // Try the modern Tauri 2.x paths first, then the legacy global.
   function resolveInvoke() {
     try {
       var internals = window.__TAURI_INTERNALS__;
@@ -74,12 +59,14 @@
     return null;
   }
 
+  // ---- Sidecar dispatcher ----
+  // mc_module_call routes Tauri-style module commands to their sidecar.
+  // Returns the sidecar's `result` field (already unwrapped from {ok,result}).
+  function callModule(command, params) {
+    return invoke('mc_module_call', { command: command, params: params || {} });
+  }
+
   // ---- Composer text setter ----
-  // OpenClaw's composer is a Lit/React hybrid. We try, in order:
-  //   1. Direct value set on a textarea + dispatch input event
-  //   2. Direct textContent set on a contenteditable + dispatch input event
-  //   3. Click on a known "draft" event target (rare; React components
-  //      listening for composer__draft custom events)
   function setComposerText(text) {
     var candidates = document.querySelectorAll(
       'textarea[data-composer-input], textarea.composer__input, textarea[placeholder*="Message" i], [contenteditable="true"][data-composer-input]'
@@ -87,9 +74,6 @@
     for (var i = 0; i < candidates.length; i++) {
       var el = candidates[i];
       try {
-        // React tracks the previous value on a hidden property; setting
-        // `.value` directly bypasses that. We use the prototype's setter
-        // to make React's onChange fire.
         var proto = el.tagName === 'TEXTAREA'
           ? window.HTMLTextAreaElement.prototype
           : window.HTMLDivElement.prototype;
@@ -104,7 +88,6 @@
         el.focus();
         return true;
       } catch (e) {
-        // Try the next candidate.
         continue;
       }
     }
@@ -112,8 +95,6 @@
   }
 
   // ---- Visual feedback overlay ----
-  // Show a transient "Listening…" pill so users know the click
-  // registered, mirroring the OpenClaw voice-active state.
   function showOverlay(label, kind) {
     var id = 'mc-voice-native-overlay';
     var existing = document.getElementById(id);
@@ -147,36 +128,99 @@
     return pill;
   }
 
+  function updateOverlay(pill, label, kind) {
+    var id = 'mc-voice-native-overlay';
+    var existing = pill || document.getElementById(id);
+    if (!existing) return showOverlay(label, kind);
+    existing.textContent = label;
+    var color = kind === 'error' ? 'rgba(160, 30, 30, 0.95)' :
+                 kind === 'success' ? 'rgba(20, 100, 60, 0.95)' :
+                 'rgba(20, 20, 24, 0.85)';
+    existing.style.background = color;
+    return existing;
+  }
+
+  function clearOverlay(pill) {
+    if (pill && pill.parentNode) pill.remove();
+    var fallback = document.getElementById('mc-voice-native-overlay');
+    if (fallback) fallback.remove();
+  }
+
+  // ---- Auto-download whisper model on first use ----
+  // Cached after first successful check so we don't spam the dispatcher.
+  var voiceReadyCache = null; // null = not yet, true = ready, false = not installed/error
+
+  async function ensureVoiceReady(pill) {
+    if (voiceReadyCache === true) return true;
+    if (voiceReadyCache === false) return false;
+
+    // Check current state.
+    try {
+      var status = await callModule('mc_voice_check', {});
+      if (status && status.model_loaded) {
+        voiceReadyCache = true;
+        return true;
+      }
+      // Model not loaded -- kick off download.
+      updateOverlay(pill, 'v Downloading whisper model (~75 MB, first time only)...', 'pending');
+      await callModule('mc_voice_download_model', {});
+      // Re-check.
+      var status2 = await callModule('mc_voice_check', {});
+      if (status2 && status2.model_loaded) {
+        voiceReadyCache = true;
+        return true;
+      }
+    } catch (e) {
+      // mc_voice_* not installed (returns NotInstalled error), or download
+      // failed. Surface the message and bail.
+      voiceReadyCache = false;
+      throw e;
+    }
+    voiceReadyCache = false;
+    return false;
+  }
+
   // ---- Main handler ----
   var invoke = resolveInvoke();
   if (!invoke) {
-    // No Tauri — this patch is a no-op. The original OpenClaw voice
-    // button keeps working (cloud Realtime Talk fallback).
     if (window.console && window.console.warn) {
       window.console.warn('[mc-voice-native] Tauri invoke not found; patch is no-op.');
     }
     return;
   }
 
-  // Capture-phase listener fires BEFORE React's bubble-phase handler,
-  // so we can stop the original toggleRealtimeTalk from running.
   document.addEventListener('click', async function (event) {
     var target = event.target;
     if (!target || !target.closest) return;
     var btn = target.closest('.chat-send-btn--voice, .chat-send-btn--stop');
     if (!btn) return;
 
-    // Block the original click handler entirely.
     event.preventDefault();
     event.stopImmediatePropagation();
 
-    var pill = showOverlay('🎙 Listening… (SAPI 5)', 'pending');
+    var pill = showOverlay('[mic] Listening... (whisper.cpp)', 'pending');
 
     try {
-      var result = await invoke('mc_voice_native_capture', { timeoutMs: 15000 });
+      // Step 1: ensure voice module is ready (auto-download model if needed).
+      var ready = await ensureVoiceReady(pill);
+      if (!ready) {
+        // ensureVoiceReady threw, message already on pill. Return without
+        // transcribing.
+        return;
+      }
+      updateOverlay(pill, '[mic] Listening... speak now', 'pending');
+
+      // Step 2: transcribe (15s max capture, auto-stop on VAD silence).
+      var result = await callModule('mc_voice_transcribe', {
+        seconds: 15,
+        vad_enabled: true,
+        silence_ms: 1500,
+      });
+      // Sidecar result shape: {text, duration_ms, transcribe_ms, rms, ...}
+      // Dispatcher returns the inner `result.value` directly (already unwrapped).
       var text = (result && typeof result.text === 'string') ? result.text.trim() : '';
 
-      pill.remove();
+      clearOverlay(pill);
       if (!text) {
         showOverlay('No speech detected', 'error');
         setTimeout(function () {
@@ -187,35 +231,48 @@
       }
 
       var placed = setComposerText(text);
+      // Show diagnostics in the success pill: capture duration + transcribe
+      // duration + whisper-recognized text preview. Confidence isn't surfaced
+      // by whisper.cpp; rms (0..1) is a proxy for "how loud/clear".
+      var durMs = (result && typeof result.duration_ms === 'number') ? result.duration_ms : 0;
+      var txMs = (result && typeof result.transcribe_ms === 'number') ? result.transcribe_ms : 0;
+      var msg = '[OK] Transcribed in ' + (durMs + txMs) + ' ms';
       if (placed) {
-        showOverlay('✓ Transcribed (' + Math.round((result.confidence || 0) * 100) + '% confidence)', 'success');
+        showOverlay(msg + ': ' + text.slice(0, 60) + (text.length > 60 ? '...' : ''), 'success');
       } else {
         // Couldn't find the composer; surface the text so user can copy it.
-        showOverlay('📋 ' + text.slice(0, 80) + (text.length > 80 ? '…' : ''), 'success');
+        showOverlay('[clipboard] ' + text.slice(0, 80) + (text.length > 80 ? '...' : ''), 'success');
       }
       setTimeout(function () {
         var p = document.getElementById('mc-voice-native-overlay');
         if (p) p.remove();
-      }, 3000);
+      }, 4000);
     } catch (e) {
-      pill.remove();
+      // Voice module not installed, or transcribe/download failed. Reset
+      // the cache so we re-check on next click.
+      voiceReadyCache = null;
+      clearOverlay(pill);
       var msg = (e && e.message) ? e.message : String(e);
-      // Lesson 709 (rc54.4.1): 60 chars truncates useful .NET exception
-      // messages mid-sentence ("RecognizeAsync failed: We..."). Bump to
-      // 200 chars so users see the full underlying cause. The overlay
-      // wraps text with word-break so longer messages still render OK.
-      showOverlay('Voice error: ' + msg.slice(0, 200), 'error');
+      // mc_module_call returns errors like "sidecar not found at ..." or
+      // "module 'voice' sidecar not found" -- surface a friendly hint.
+      var friendly;
+      if (/NotInstalled|sidecar not found|module 'voice'/i.test(msg)) {
+        friendly = 'Voice module not installed. Open Settings -> Modules to install the Voice for MiracleClaw module.';
+      } else {
+        friendly = msg.slice(0, 200);
+      }
+      showOverlay('Voice error: ' + friendly, 'error');
       if (window.console && window.console.error) {
         window.console.error('[mc-voice-native] capture failed:', e);
       }
       setTimeout(function () {
         var p = document.getElementById('mc-voice-native-overlay');
         if (p) p.remove();
-      }, 5000);
+      }, 6000);
     }
   }, true);
 
   if (window.console && window.console.info) {
-    window.console.info('[mc-voice-native] patched — voice button will use Windows SAPI 5 instead of cloud Realtime Talk.');
+    window.console.info('[mc-voice-native] patched (rc57.1) -- voice button will use whisper.cpp sidecar via mc_module_call. Auto-downloads the model (~75MB) on first use.');
   }
 })();
