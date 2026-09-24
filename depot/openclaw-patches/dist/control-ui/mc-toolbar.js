@@ -4,10 +4,10 @@
 // OpenClaw chat UI when hosted inside MiracleClaw's Tauri webview
 // (http://127.0.0.1:28789/):
 //
-//   [attach] Attach    -- drop files, copy paths to clipboard
-//   [key] Secrets   -- list local tool names + secret names (no values)
-//   [mic] Voice     -- invoke mc_voice_native_capture (SAPI 5)
-//   [modules] Modules   -- dropdown of installed modules, "Run" calls
+//   📎 Attach    -- drop files, copy paths to clipboard
+//   🔑 Secrets   -- list local tool names + secret names (no values)
+//   🎙 Voice     -- invoke mc_voice_native_capture (whisper.cpp sidecar, Lesson 1001)
+//   🧩 Modules   -- dropdown of installed modules, "Run" calls
 //                  mc_run_module and sends the result into the chat input
 //
 // This file is *deliberately* self-contained -- the openclaw dist has its
@@ -202,7 +202,7 @@
       name: cm.name || m.name || m.module_id || m.id || '(unknown)',
       version: cm.version || m.version || '',
       hooks: cm.ui_hooks || m.hooks || {},
-      icon: m.icon || cm.icon || '[modules]',
+      icon: m.icon || cm.icon || '🧩',
       tools: cm.tools || m.tools || [],
       _raw: m,
     };
@@ -788,7 +788,7 @@
     panel.setAttribute('aria-modal', 'true');
     var h = document.createElement('h2');
     h.className = 'mc-oc-modal-title';
-    h.textContent = '[attach] Attach files';
+    h.textContent = '📎 Attach files';
     panel.appendChild(h);
     var sub = document.createElement('p');
     sub.className = 'mc-oc-modal-subtitle';
@@ -922,7 +922,7 @@
     panel.setAttribute('aria-modal', 'true');
     var h = document.createElement('h2');
     h.className = 'mc-oc-modal-title';
-    h.textContent = '[key] Secrets & local tools';
+    h.textContent = '🔑 Secrets & local tools';
     panel.appendChild(h);
     var sub = document.createElement('p');
     sub.className = 'mc-oc-modal-subtitle';
@@ -1014,7 +1014,7 @@
     bar.setAttribute('role', 'toolbar');
     bar.setAttribute('aria-label', 'MiracleClaw chat tools');
 
-    var attachBtn = makeButton('mc-oc-attach-btn', '[attach]', 'Attach files to next chat message', 'Attach files');
+    var attachBtn = makeButton('mc-oc-attach-btn', '📎', 'Attach files to next chat message', 'Attach files');
     attachBtn.addEventListener('click', function (ev) {
       ev.preventDefault();
       ev.stopPropagation();
@@ -1023,7 +1023,7 @@
     });
     bar.appendChild(attachBtn);
 
-    var secretsBtn = makeButton('mc-oc-secrets-btn', '[key]', 'Add usernames, passwords, API keys to the MC secrets vault', 'Secrets');
+    var secretsBtn = makeButton('mc-oc-secrets-btn', '🔑', 'Add usernames, passwords, API keys to the MC secrets vault', 'Secrets');
     secretsBtn.addEventListener('click', function (ev) {
       ev.preventDefault();
       ev.stopPropagation();
@@ -1056,7 +1056,7 @@
     });
     bar.appendChild(secretsBtn);
 
-    var voiceBtn = makeButton('mc-oc-voice-btn', '[mic]', 'Voice input (Windows SAPI)', 'Voice input');
+    var voiceBtn = makeButton('mc-oc-voice-btn', '🎙', 'Voice input (Windows SAPI)', 'Voice input');
     voiceBtn.classList.add('mc-oc-voice-btn');
     voiceBtn.setAttribute('data-state', 'idle');
     voiceBtn.removeAttribute('aria-haspopup');
@@ -1068,7 +1068,7 @@
     });
     bar.appendChild(voiceBtn);
 
-    var modulesBtn = makeButton('mc-oc-modules-btn', '[modules]', 'Installed modules', 'Open modules menu');
+    var modulesBtn = makeButton('mc-oc-modules-btn', '🧩', 'Installed modules', 'Open modules menu');
     modulesBtn.addEventListener('click', function (ev) {
       ev.preventDefault();
       ev.stopPropagation();
