@@ -203,7 +203,7 @@
       version: cm.version || m.version || '',
       hooks: cm.ui_hooks || m.hooks || {},
       icon: m.icon || cm.icon || '🧩',
-      tools: cm.tools || m.tools || [],
+      tools: cm.tools || m.tools || cm._raw_tools || [],
       _raw: m,
     };
   }
@@ -309,7 +309,7 @@
       showModuleModal(
         m.name + ' -- pick a tool',
         'Choose a tool to run.',
-        m.tools.map(function (t) { return { label: t.name || t.id, value: t.id }; }),
+        m.tools.map(function (t) { return { label: t.name || t.id, value: t.id || t.name }; }),
         function (picked) { showRunForm(m, picked); }
       );
     }
