@@ -3379,7 +3379,12 @@ struct MaicLoginInfo {
 }
 
 #[tauri::command]
-fn maic_login(email: String, password: String, remember: bool) -> Result<MaicLoginInfo, String> {
+fn maic_login(
+    email: String,
+    password: String,
+    remember: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<MaicLoginInfo, String> {
     let endpoint = std::env::var("MAIC_API_URL")
         .ok()
         .map(|s| s.trim().to_string())
@@ -3635,6 +3640,27 @@ fn maic_login(email: String, password: String, remember: bool) -> Result<MaicLog
         }
     }
 
+    // Lesson 1013 (2026-09-23, David): kill the launcher sidecar if it's
+    // running. The openclaw gateway caches the MAIC JWT in memory at
+    // startup (it reads OPENCLAW_CONFIG_PATH=$APPDATA/MiracleClaw/chat.json
+    // once and parses apiKey from there). When we just minted a fresh JWT
+    // via /v1/users/login, the cached one in the gateway is now stale and
+    // any chat completion routed through the gateway will 401. Killing the
+    // launcher here forces the next start_gateway_after_login() call to
+    // spawn a fresh gateway that re-reads chat.json with the new JWT.
+    //
+    // Idempotent: if the launcher is already dead (e.g. user logged out
+    // and `maic_logout` killed it), `state.launcher_child` is None and
+    // this is a no-op. The next user action that needs the gateway
+    // (clicking the OpenClaw tile, which calls start_gateway_after_login)
+    // will then spawn a fresh process with the new JWT baked in.
+    if let Some(child) = state.launcher_child.lock().unwrap().take() {
+        eprintln!(
+            "[miracle-claw] maic_login: killing launcher sidecar so gateway re-reads new JWT"
+        );
+        let _ = child.kill();
+    }
+
     Ok(MaicLoginInfo {
         token,
         email: resolved_email,
@@ -3748,7 +3774,9 @@ fn maic_logout(
 // ----------------------------------------------------------------------------
 
 #[tauri::command]
-fn silent_relogin() -> Result<Option<MaicLoginInfo>, String> {
+fn silent_relogin(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<MaicLoginInfo>, String> {
     // Determine the endpoint we'd be logging into: same resolution logic
     // as maic_login so a MAIC_API_URL override is honored.
     let endpoint = std::env::var("MAIC_API_URL")
@@ -3833,6 +3861,21 @@ fn silent_relogin() -> Result<Option<MaicLoginInfo>, String> {
         "[miracle-claw] silent_relogin: success — user={}, tier={}",
         resolved_email, tier
     );
+
+    // Lesson 1013 (2026-09-23, David): kill the launcher sidecar so the
+    // gateway picks up the new JWT on next respawn. Same reasoning as
+    // maic_login — the gateway caches apiKey at startup, and the new JWT
+    // we just minted is not in its memory yet. silent_relogin is invoked
+    // AFTER the OpenClaw child window has hit a 401 from the gateway,
+    // so the webview is already pointed at localhost:28789 and the user
+    // will see a brief "connecting" spinner while the gateway respawns
+    // (~3-5s). Better than 401 forever.
+    if let Some(child) = state.launcher_child.lock().unwrap().take() {
+        eprintln!(
+            "[miracle-claw] silent_relogin: killing launcher sidecar so gateway re-reads new JWT"
+        );
+        let _ = child.kill();
+    }
 
     Ok(Some(MaicLoginInfo {
         token,
@@ -5028,6 +5071,55 @@ fn start_gateway_after_login(
         result.as_ref().map(|_| "Ok").map_err(|e| e.as_str())
     ));
     result
+}
+
+// Tauri command: mc_refresh_gateway (Lesson 1013, 2026-09-23, David).
+//
+// Force-kills the openclaw launcher sidecar and spawns a fresh one. This
+// is the dedicated escape hatch for "gateway has stale JWT in memory and
+// is returning 401". Unlike start_gateway_after_login, this command does
+// NOT skip the kill+respawn when the gateway is already serving HTTP —
+// we always kill, so the new process re-reads OPENCLAW_CONFIG_PATH
+// ($APPDATA/MiracleClaw/chat.json) and gets the latest apiKey.
+//
+// Use cases:
+//   - User just changed MAIC provider config (re-login, plan upgrade,
+//     explicit JWT refresh from maic_login / silent_relogin).
+//   - 401 loop from the gateway that didn't self-heal.
+//   - Operator wants to verify the gateway is healthy after a config edit.
+//
+// Side effects:
+//   - ~3-5s downtime on the localhost:28789 listener. Any active
+//     WebView2 navigation to /v1/chat/completions will lose connection.
+//   - On Windows WebView2 will show a transient "this site can't be
+//     reached" until the user retries or the openclaw window's own
+//     retry loop kicks in.
+//
+// Returns:
+//   Ok(())         — old launcher was killed (or wasn't running) and a
+//                    new one is now bound to OPENCLAW_PORT (verified by
+//                    wait_for_gateway_ready).
+//   Err(msg)       — the spawn or wait_for_gateway_ready call failed.
+//                    Caller should show the message to the user.
+#[tauri::command]
+fn mc_refresh_gateway(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    log_to_file("mc_refresh_gateway: force-killing launcher to pick up new JWT");
+    eprintln!("[miracle-claw] mc_refresh_gateway: force-killing launcher sidecar");
+
+    // Kill any existing launcher child. take() leaves AppState.launcher_child
+    // as None so spawn_launcher_and_wait's "kill old" branch becomes a
+    // no-op.
+    if let Some(child) = state.launcher_child.lock().unwrap().take() {
+        let _ = child.kill();
+        // Give the OS a beat to release the port. spawn_launcher_and_wait
+        // also calls kill_orphan_holding_port but that's belt-and-suspenders.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    spawn_launcher_and_wait(&app_handle, OPENCLAW_PORT, Duration::from_secs(30))
 }
 
 /// Tauri command: openclaw_open_window (Lesson 461).
@@ -8106,6 +8198,12 @@ pub fn run() {
             maic_logout,
             silent_relogin,
             start_gateway_after_login,
+            // Lesson 1013 (2026-09-23, David): force-respawn the openclaw
+            // gateway sidecar so a freshly-written MAIC JWT in chat.json
+            // actually gets picked up by the gateway. The gateway caches
+            // apiKey at startup; this is the only reliable way to apply
+            // a JWT update without restarting MC.
+            mc_refresh_gateway,
             openclaw_open_window,
             openclaw_back_to_dashboard,
             mc_open_overlay,
