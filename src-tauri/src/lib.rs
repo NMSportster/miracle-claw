@@ -7031,10 +7031,22 @@ fn spawn_shell(
 /// Reader thread body. Reads lines from `reader` and appends them
 /// to the handle's shared buffer via `push_chunk`. Companion of
 /// `mc_terminal_start`.
+/// Drain a child pipe line-by-line into the terminal buffer.
+///
+/// Lesson 1019 (2026-09-30, David): when the streaming stream is `stderr`
+/// and the line matches the MAIC plugin's `[MC-401]` sentinel, also fire
+/// `on_marker` so the launcher can trigger silent_relogin + gateway
+/// respawn. The marker line itself is NOT pushed to the buffer (it's an
+/// internal protocol, not user-visible output).
+///
+/// `on_marker` is `Option` so the existing test in this file (line ~11200)
+/// can pass `None` and continue to exercise the pure read/buffer path
+/// without needing an `AppState`.
 fn read_lines<R: std::io::Read + Send + 'static>(
     mut reader: R,
     handle: std::sync::Arc<TerminalHandle>,
     stream: &'static str,
+    on_marker: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
 ) {
     use std::io::{BufRead, BufReader};
     let mut br = BufReader::new(&mut reader);
@@ -7047,12 +7059,86 @@ fn read_lines<R: std::io::Read + Send + 'static>(
                 break;
             }
             Ok(_) => {
+                let trimmed = line.trim_end_matches(['\r', '\n']);
+                // Lesson 1019: 401 marker detection. Only on stderr — stdout
+                // carries the model stream and we never want to mistake a
+                // model output chunk for an internal signal. Format:
+                //   [MC-401] {"url":"...","model":"...","ts":...}
+                if stream == "stderr" {
+                    if let Some(rest) = trimmed.strip_prefix("[MC-401] ") {
+                        if let Some(cb) = on_marker.as_ref() {
+                            cb(rest);
+                        }
+                        // Drop the marker line — don't pollute the UI.
+                        continue;
+                    }
+                }
                 handle.push_chunk(stream, std::mem::take(&mut line));
             }
             Err(e) => {
                 handle.push_chunk("system", format!("[{} read error: {}]\n", stream, e));
                 break;
             }
+        }
+    }
+}
+
+/// Handle a `[MC-401]` marker emitted by the MAIC plugin's fetch
+/// interceptor (Lesson 1019).
+///
+/// `rest` is the JSON payload after `[MC-401] `. We don't actually need
+/// to parse it for the relogin decision — any 401 from MAIC means the
+/// cached JWT is bad or expired. The payload is logged for diagnostics
+/// so the user (or us) can correlate the relogin trigger with the
+/// specific model/url that 401'd.
+///
+/// We invoke `silent_relogin` via the same code path the IPC command
+/// uses, by re-implementing the body inline (the command is `#[tauri::command]`
+/// so it expects `tauri::State`, which is awkward to call from a reader
+/// thread). silent_relogin already:
+///   1. Loads cached creds from the OS keychain
+///   2. POSTs to MAIC's /v1/users/login to mint a fresh JWT
+///   3. Writes the new JWT into the Tauri process env + chat.json
+///   4. Kills the launcher sidecar so the next gateway reads the fresh JWT
+///
+/// If silent_relogin returns Err (no cached creds, keychain locked,
+/// network down, wrong password), we log and bail — the user's existing
+/// 401 stays as a 401 and they can re-login manually. If it succeeds,
+/// the launcher respawn kills+replaces the gateway within ~3-5 seconds
+/// and the user's NEXT chat turn goes through with the fresh JWT.
+fn handle_mc401_marker(
+    app_handle: &tauri::AppHandle,
+    rest: &str,
+    log_prefix: &str,
+) {
+    eprintln!(
+        "{} MC-401 marker received from MAIC plugin (payload: {}); triggering silent_relogin",
+        log_prefix,
+        rest.chars().take(200).collect::<String>()
+    );
+    // Best-effort: if silent_relogin fails (no cached creds, keychain
+    // unavailable, wrong password) we just log and let the 401 surface
+    // to the user. We don't want a marker storm to lock the user out of
+    // a manual re-login flow.
+    let state = app_handle.state::<AppState>();
+    match silent_relogin(state) {
+        Ok(Some(info)) => {
+            eprintln!(
+                "{} silent_relogin succeeded for {} (tier={}); gateway will respawn with fresh JWT",
+                log_prefix, info.email, info.tier
+            );
+        }
+        Ok(None) => {
+            eprintln!(
+                "{} silent_relogin returned None (no cached creds); user must log in manually",
+                log_prefix
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "{} silent_relogin failed: {}; user must log in manually",
+                log_prefix, e
+            );
         }
     }
 }
@@ -7173,9 +7259,26 @@ fn mc_terminal_start(
     // the same child via `handle.child` for `try_wait` / `kill`.
     let handle_arc: std::sync::Arc<TerminalHandle> = std::sync::Arc::new(handle);
     let stdout_handle = handle_arc.clone();
-    std::thread::spawn(move || read_lines(stdout, stdout_handle, "stdout"));
+    std::thread::spawn(move || read_lines(stdout, stdout_handle, "stdout", None));
+
+    // Lesson 1019 (2026-09-30, David): wire the stderr marker handler
+    // for the embedded TUI (`mc-terminal` shell). Only that shell runs
+    // the MAIC plugin and can emit `[MC-401]`. The closure captures a
+    // clone of `app_handle` (Send + Clone) and uses `app_handle.state::<AppState>()`
+    // at fire-time so we don't have to refactor AppState to be Arc-wrapped
+    // just for this single reader-thread callback.
     let stderr_handle = handle_arc.clone();
-    std::thread::spawn(move || read_lines(stderr, stderr_handle, "stderr"));
+    let marker_cb: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>> =
+        if shell == "mc-terminal" {
+            let app_handle_for_marker = app_handle.clone();
+            let log_prefix = format!("[miracle-claw][mc-terminal {}]", id);
+            Some(std::sync::Arc::new(move |rest: &str| {
+                handle_mc401_marker(&app_handle_for_marker, rest, &log_prefix);
+            }))
+        } else {
+            None
+        };
+    std::thread::spawn(move || read_lines(stderr, stderr_handle, "stderr", marker_cb));
 
     {
         let mut map = state.terminals.lock().unwrap();
@@ -11208,7 +11311,7 @@ mod tests {
 
         let reader_handle = handle_arc.clone();
         std::thread::spawn(move || {
-            read_lines(stdout, reader_handle, "stdout");
+            read_lines(stdout, reader_handle, "stdout", None);
         });
 
         let start = std::time::Instant::now();
@@ -11234,6 +11337,71 @@ mod tests {
         assert!(
             combined.contains("hello-rc36"),
             "expected 'hello-rc36' in output, got: {:?}",
+            combined
+        );
+    }
+
+    /// Lesson 1019 (2026-09-30, David): a `[MC-401]` marker on stderr must
+    /// (1) fire the supplied `on_marker` callback with the JSON payload
+    /// and (2) NOT be pushed to the buffer. We feed in a synthetic
+    /// reader so we don't depend on a real subprocess.
+    #[test]
+    fn read_lines_drops_mc401_marker_and_fires_callback() {
+        use std::io::Cursor;
+
+        let buffer_arc: std::sync::Arc<Mutex<Vec<OutputChunk>>> =
+            std::sync::Arc::new(Mutex::new(Vec::new()));
+        let seq_arc: std::sync::Arc<Mutex<u64>> = std::sync::Arc::new(Mutex::new(0));
+
+        let handle = TerminalHandle {
+            shell: "test".into(),
+            started_at: 0,
+            child: Mutex::new(None),
+            buffer_arc: buffer_arc.clone(),
+            seq_arc: seq_arc.clone(),
+        };
+        let handle_arc = std::sync::Arc::new(handle);
+
+        let captured: std::sync::Arc<Mutex<Vec<String>>> =
+            std::sync::Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = captured.clone();
+        let cb: std::sync::Arc<dyn Fn(&str) + Send + Sync> =
+            std::sync::Arc::new(move |rest: &str| {
+                captured_clone.lock().unwrap().push(rest.to_string());
+            });
+
+        let input = "[MC-401] {\"url\":\"https://maicserver.com/v1/chat/completions\",\"model\":\"x\"}\nthis line should be buffered\n[MC-401] {\"url\":\"https://maicserver.com/v1/models\"}\n";
+        let reader = Cursor::new(input.as_bytes().to_vec());
+        read_lines(reader, handle_arc.clone(), "stderr", Some(cb));
+
+        // Give the reader thread a beat to finish (Cursor returns EOF
+        // immediately so this should be near-instant).
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let cb_invocations = captured.lock().unwrap().clone();
+        assert_eq!(
+            cb_invocations.len(),
+            2,
+            "expected 2 marker callbacks, got {}",
+            cb_invocations.len()
+        );
+        assert!(cb_invocations[0].contains("chat/completions"));
+        assert!(cb_invocations[1].contains("/v1/models"));
+
+        let buf = buffer_arc.lock().unwrap();
+        let combined: String = buf
+            .iter()
+            .filter(|c| c.stream == "stderr")
+            .map(|c| c.data.as_str())
+            .collect();
+        assert!(
+            !combined.contains("[MC-401]"),
+            "marker line leaked into buffer: {:?}",
+            combined
+        );
+        assert!(
+            combined.contains("this line should be buffered"),
+            "non-marker line should still be in buffer: {:?}",
             combined
         );
     }
