@@ -151,6 +151,95 @@ impl Registry {
         reg
     }
 
+    /// Scan `<bundled_root>/<id>/installer.json` (Lesson 1108 — rc57.7).
+    ///
+    /// Bundled modules ship inside the MC installer under
+    /// `resources/modules/<id>/` and are pre-installed. Terminal-MC
+    /// (which uses the bundled `miracle-claw-tools.exe`) sees them,
+    /// but the in-memory Registry only knows about user-installed
+    /// modules at `<app_data>/modules/<id>/`. The Modules page reads
+    /// from the Registry, so without this discovery the Modules page
+    /// rendered "No modules installed" even though Terminal worked
+    /// fine.
+    ///
+    /// Strategy:
+    /// 1. Scan the bundled root for valid installer.json files.
+    /// 2. For every id found, **skip if `self` already has it** —
+    ///    user-installed wins (may be a newer version).
+    /// 3. Insert bundled ones (they ARE installed, just at a
+    ///    different path).
+    ///
+    /// Errors on individual modules are logged but don't fail the
+    /// scan — same policy as `discover`.
+    pub fn discover_bundled_into(&self, bundled_root: &Path) {
+        let entries = match std::fs::read_dir(bundled_root) {
+            Ok(rd) => rd,
+            Err(e) => {
+                eprintln!(
+                    "[modules] no bundled modules dir at {} ({})",
+                    bundled_root.display(),
+                    e
+                );
+                return;
+            }
+        };
+
+        let mut added = 0usize;
+        let mut skipped_user = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let module_dir = path;
+
+            let manifest = match load_from_dir(&module_dir) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!(
+                        "[modules] bundled: skipping invalid module at {}: {}",
+                        module_dir.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            let mut w = self.inner.write().expect("modules registry poisoned");
+            if w.contains_key(&manifest.id) {
+                // User-installed module with same id wins. Don't
+                // overwrite (may be a newer version).
+                skipped_user += 1;
+                eprintln!(
+                    "[modules] bundled: id={} already user-installed — keeping user copy",
+                    manifest.id
+                );
+                continue;
+            }
+            eprintln!(
+                "[modules] bundled discovered: id={} version={} path={}",
+                manifest.id,
+                manifest.version,
+                module_dir.display()
+            );
+            w.insert(
+                manifest.id.clone(),
+                InstalledModule {
+                    install_dir: module_dir,
+                    manifest,
+                },
+            );
+            added += 1;
+        }
+
+        eprintln!(
+            "[modules] bundled discovery: +{} new, {} already user-installed (total now {})",
+            added,
+            skipped_user,
+            self.inner.read().expect("modules registry poisoned").len()
+        );
+    }
+
     /// Register a newly installed module (replaces if already present).
     pub fn register(&self, module: InstalledModule) {
         let id = module.manifest.id.clone();
@@ -400,5 +489,176 @@ mod tests {
         assert_ne!(h1, h3);
         std::fs::remove_file(&tmp).ok();
         std::fs::remove_file(&tmp2).ok();
+    }
+
+    // Lesson 1108 (rc57.7): bundled-module discovery. The Modules
+    // page reads from the in-memory Registry. Modules shipped inside
+    // the installer at `<resources>/modules/<id>/installer.json` are
+    // "pre-installed" — Terminal-MC finds them via its own
+    // bundled-tools path; the Registry previously didn't see them.
+    //
+    // `discover_bundled_into()` is the fix.
+
+    fn write_minimal_installer(dir: &Path, id: &str, version: &str) {
+        let json = format!(
+            r#"{{
+                "id": "{id}",
+                "name": "{id} module",
+                "version": "{version}",
+                "minMcVersion": "1.0.0",
+                "description": "test {id}",
+                "binary": {{
+                    "name": "{id}.exe",
+                    "type": "sidecar"
+                }},
+                "commands": [
+                    {{ "tauri": "mc_{id}_run", "action": "run", "description": "test" }}
+                ],
+                "uiHooks": []
+            }}"#
+        );
+        std::fs::write(dir.join("installer.json"), json).unwrap();
+    }
+
+    #[test]
+    fn discover_bundled_adds_module_to_empty_registry() {
+        let bundled = std::env::temp_dir().join(format!(
+            "mc_reg_bundled_add_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&bundled);
+        let voice_dir = bundled.join("voice");
+        std::fs::create_dir_all(&voice_dir).unwrap();
+        write_minimal_installer(&voice_dir, "voice", "0.1.0");
+
+        let reg = Registry::new();
+        assert_eq!(reg.len(), 0);
+
+        reg.discover_bundled_into(&bundled);
+        assert_eq!(reg.len(), 1);
+        let info = reg.get("voice").expect("voice should be registered");
+        assert_eq!(info.manifest.version, "0.1.0");
+        assert_eq!(info.install_dir, voice_dir);
+
+        let _ = std::fs::remove_dir_all(&bundled);
+    }
+
+    #[test]
+    fn discover_bundled_keeps_user_installed_version() {
+        let user_root = std::env::temp_dir().join(format!(
+            "mc_reg_user_{}",
+            std::process::id()
+        ));
+        let bundled = std::env::temp_dir().join(format!(
+            "mc_reg_bundled_skip_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&user_root);
+        let _ = std::fs::remove_dir_all(&bundled);
+
+        // User has voice v0.2.0 installed.
+        let user_voice = user_root.join("voice");
+        std::fs::create_dir_all(&user_voice).unwrap();
+        write_minimal_installer(&user_voice, "voice", "0.2.0");
+
+        let reg = Registry::discover(&user_root);
+        assert_eq!(reg.len(), 1);
+
+        // Bundled has voice v0.1.0 (older).
+        let bundled_voice = bundled.join("voice");
+        std::fs::create_dir_all(&bundled_voice).unwrap();
+        write_minimal_installer(&bundled_voice, "voice", "0.1.0");
+
+        reg.discover_bundled_into(&bundled);
+        // Still 1 entry, still the user's 0.2.0 (bundled skipped).
+        assert_eq!(reg.len(), 1);
+        let info = reg.get("voice").unwrap();
+        assert_eq!(info.manifest.version, "0.2.0");
+        assert_eq!(info.install_dir, user_voice);
+
+        let _ = std::fs::remove_dir_all(&user_root);
+        let _ = std::fs::remove_dir_all(&bundled);
+    }
+
+    #[test]
+    fn discover_bundled_merges_without_conflict() {
+        let user_root = std::env::temp_dir().join(format!(
+            "mc_reg_user_merge_{}",
+            std::process::id()
+        ));
+        let bundled = std::env::temp_dir().join(format!(
+            "mc_reg_bundled_merge_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&user_root);
+        let _ = std::fs::remove_dir_all(&bundled);
+
+        // User has email.
+        let user_email = user_root.join("email");
+        std::fs::create_dir_all(&user_email).unwrap();
+        write_minimal_installer(&user_email, "email", "0.1.0");
+
+        // Bundled has voice + calendar (different ids).
+        let b_voice = bundled.join("voice");
+        let b_cal = bundled.join("calendar");
+        std::fs::create_dir_all(&b_voice).unwrap();
+        std::fs::create_dir_all(&b_cal).unwrap();
+        write_minimal_installer(&b_voice, "voice", "0.1.0");
+        write_minimal_installer(&b_cal, "calendar", "0.1.0");
+
+        let reg = Registry::discover(&user_root);
+        assert_eq!(reg.len(), 1); // only email
+
+        reg.discover_bundled_into(&bundled);
+        assert_eq!(reg.len(), 3); // email + voice + calendar
+        assert!(reg.get("email").is_some());
+        assert!(reg.get("voice").is_some());
+        assert!(reg.get("calendar").is_some());
+
+        let _ = std::fs::remove_dir_all(&user_root);
+        let _ = std::fs::remove_dir_all(&bundled);
+    }
+
+    #[test]
+    fn discover_bundled_missing_dir_is_noop() {
+        // Resources dir doesn't exist → no panic, just empty registry
+        // unchanged. This matches `discover()`'s policy of treating
+        // missing dirs as "no modules yet".
+        let phantom = std::env::temp_dir().join(format!(
+            "mc_reg_missing_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&phantom);
+
+        let reg = Registry::new();
+        reg.discover_bundled_into(&phantom);
+        assert_eq!(reg.len(), 0);
+    }
+
+    #[test]
+    fn discover_bundled_skips_invalid_manifest() {
+        let bundled = std::env::temp_dir().join(format!(
+            "mc_reg_bundled_invalid_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&bundled);
+
+        // voice with valid manifest.
+        let voice = bundled.join("voice");
+        std::fs::create_dir_all(&voice).unwrap();
+        write_minimal_installer(&voice, "voice", "0.1.0");
+
+        // broken with garbage manifest — must be skipped, not panic.
+        let broken = bundled.join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("installer.json"), "not valid json").unwrap();
+
+        let reg = Registry::new();
+        reg.discover_bundled_into(&bundled);
+        assert_eq!(reg.len(), 1);
+        assert!(reg.get("voice").is_some());
+        assert!(reg.get("broken").is_none());
+
+        let _ = std::fs::remove_dir_all(&bundled);
     }
 }

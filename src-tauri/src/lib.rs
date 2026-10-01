@@ -4190,6 +4190,19 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         discovered.len(),
         modules_root.display()
     );
+
+    // Lesson 1108 (rc57.7): bundled modules ship inside the installer
+    // under `<resources>/modules/<id>/` and were previously invisible
+    // to the Registry. Terminal-MC (using the bundled
+    // miracle-claw-tools.exe) found them; the Modules page (using
+    // the Registry) didn't. After this scan, both surfaces agree.
+    let bundled_root = crate::modules::bundled_modules_root(&resources_dir(&app_handle));
+    discovered.discover_bundled_into(&bundled_root);
+    eprintln!(
+        "[miracle-claw] modules: after bundled discovery, {} total",
+        discovered.len()
+    );
+
     if let Some(state) = app_handle.try_state::<AppState>() {
         *state.modules.lock().unwrap() = discovered;
     }

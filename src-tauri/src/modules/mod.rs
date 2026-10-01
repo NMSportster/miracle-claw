@@ -74,6 +74,17 @@ pub fn modules_root(app_data_dir: &std::path::Path) -> PathBuf {
     app_data_dir.join("modules")
 }
 
+/// Path where the bundled (pre-installed) modules live inside the
+/// MC installer resources (Lesson 1108 — rc57.7). On Windows this is
+/// `C:\Program Files\MiracleClaw\resources\modules\`. The base
+/// installer ships a handful of optional modules (voice, tts, ocr,
+/// email, calendar, pdf, etc.) so users who never went through the
+/// Marketplace install flow still have working modules in
+/// Terminal-MC and (after this fix) the Modules page.
+pub fn bundled_modules_root(resources_dir: &std::path::Path) -> PathBuf {
+    resources_dir.join("modules")
+}
+
 /// Subdirectory of a module's install dir where the sidecar binary lives.
 pub fn module_bin_dir(module_install_dir: &std::path::Path) -> PathBuf {
     module_install_dir.join("bin")
