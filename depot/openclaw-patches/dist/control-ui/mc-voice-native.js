@@ -148,11 +148,17 @@
 
   // ---- Auto-download whisper model on first use ----
   // Cached after first successful check so we don't spam the dispatcher.
+  // Lesson 1095 (2026-10-01, David): reset cache to null on failure
+  // so the next click retries — previously the cache would stick on
+  // false until the page reloaded.
   var voiceReadyCache = null; // null = not yet, true = ready, false = not installed/error
 
   async function ensureVoiceReady(pill) {
     if (voiceReadyCache === true) return true;
-    if (voiceReadyCache === false) return false;
+    if (voiceReadyCache === false) {
+      // Reset and retry — Lesson 1095.
+      voiceReadyCache = null;
+    }
 
     // Check current state.
     try {
@@ -162,22 +168,42 @@
         return true;
       }
       // Model not loaded -- kick off download.
-      updateOverlay(pill, 'v Downloading whisper model (~75 MB, first time only)...', 'pending');
-      await callModule('mc_voice_download_model', {});
+      updateOverlay(pill, 'Downloading whisper model (~75 MB, first time only)...', 'pending');
+      try {
+        await callModule('mc_voice_download_model', {});
+      } catch (dlErr) {
+        // Lesson 1095: surface the actual reason. Classify the error
+        // so the user sees something specific (HTTP, TLS, DNS, SHA, fs).
+        voiceReadyCache = false;
+        var rawDl = (dlErr && dlErr.message) ? dlErr.message : String(dlErr);
+        var hint;
+        if (/HTTP|status code|404|403|401/i.test(rawDl)) {
+          hint = 'Network error (HTTP). Check your connection / firewall. Click the mic again to retry.';
+        } else if (/TLS|certificate|handshake/i.test(rawDl)) {
+          hint = 'TLS error reaching milagrocloud.com. Your network may intercept HTTPS. Click the mic again to retry.';
+        } else if (/DNS|resolve|host/i.test(rawDl)) {
+          hint = 'DNS error. Check DNS / VPN. Click the mic again to retry.';
+        } else if (/sha256|SHA|mismatch/i.test(rawDl)) {
+          hint = 'Downloaded file failed SHA256 verification. Try again — may be a transient corruption.';
+        } else {
+          hint = 'Download failed: ' + rawDl.slice(0, 140) + '. Click the mic again to retry.';
+        }
+        var dlErr2 = new Error(hint);
+        dlErr2.originalMessage = rawDl;
+        throw dlErr2;
+      }
       // Re-check.
       var status2 = await callModule('mc_voice_check', {});
       if (status2 && status2.model_loaded) {
         voiceReadyCache = true;
         return true;
       }
+      voiceReadyCache = false;
+      throw new Error('Download finished but model is not on disk. Check the MiracleClaw log for SHA / filesystem errors.');
     } catch (e) {
-      // mc_voice_* not installed (returns NotInstalled error), or download
-      // failed. Surface the message and bail.
       voiceReadyCache = false;
       throw e;
     }
-    voiceReadyCache = false;
-    return false;
   }
 
   // ---- Main handler ----
@@ -222,11 +248,33 @@
 
       clearOverlay(pill);
       if (!text) {
-        showOverlay('No speech detected', 'error');
+        // Lesson 1095 (2026-10-01, David): "No speech detected" was
+        // the most-confusing voice failure because it could mean
+        // mic muted, VAD too strict, whisper rejected audio, or
+        // the user spoke too quietly. The sidecar v0.1.8 returns
+        // diagnostics.peakAmplitude + diagnostics.rms + vadStats.
+        // We disambiguate so the user knows what to fix.
+        var diag = result && result.diagnostics;
+        var peak = diag && typeof diag.peakAmplitude === 'number' ? diag.peakAmplitude : null;
+        var rms = diag && typeof diag.rms === 'number' ? diag.rms : null;
+        var vad = diag && diag.vadStats;
+        var detail;
+        if (peak === 0) {
+          detail = 'No audio captured. Check mic is unmuted and Windows has granted microphone permission to MiracleClaw.';
+        } else if (peak !== null && peak < 0.01) {
+          detail = 'Mic level very low. Try speaking louder or moving closer.';
+        } else if (vad && typeof vad.speechFrames === 'number' && vad.speechFrames === 0 && vad.totalFrames > 0) {
+          detail = 'Mic picked up audio but voice activity detector rejected it. Try speaking sooner after clicking, or in a quieter room.';
+        } else if (rms !== null) {
+          detail = 'No speech detected (rms ' + rms.toFixed(3) + ', peak ' + (peak !== null ? peak.toFixed(3) : '?') + ').';
+        } else {
+          detail = 'No speech detected. Check mic and try again.';
+        }
+        showOverlay(detail, 'error');
         setTimeout(function () {
           var p = document.getElementById('mc-voice-native-overlay');
           if (p) p.remove();
-        }, 2500);
+        }, 4000);
         return;
       }
 

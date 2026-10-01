@@ -41,6 +41,7 @@ import {
   reapplyAllUiHooks,
   ensureVoiceModel,
   checkModuleHealth,
+  voiceModelFailureToast,
 } from "../modules-runtime.js";
 import { toast } from "../toast.js";
 import { openModuleHelp } from "./module-help.js";
@@ -676,32 +677,46 @@ async function handleInstall(btn, id, ctx) {
  * separately-downloaded whisper model. The Download model CTA on the
  * Voice card invokes mc_voice_download_model, then invalidates the
  * model-health cache and re-renders so the pill flips to "ready".
+ *
+ * Lesson 1095 (2026-10-01, David): ensureVoiceModel now returns a
+ * rich {ok, reason, message} object. We render a specific toast
+ * with a retry action for each failure mode instead of the generic
+ * "Check Settings → Modules" hint.
  */
 async function handleDownloadModel(btn, id, ctx) {
   btn.disabled = true;
   const oldLabel = btn.textContent;
   btn.textContent = "Downloading…";
-  // Lesson 583 (2026-08-26 07:34 MDT, David): capture the last
-  // status reported by ensureVoiceModel so the failure toast can
-  // show the real sidecar error instead of the generic network hint.
-  let lastStatus = "";
   try {
-    const ok = await ensureVoiceModel((status) => {
-      lastStatus = status;
-      btn.textContent = status.startsWith("Downloading") ? "Downloading (~141 MB)…" : status;
+    const result = await ensureVoiceModel((status) => {
+      btn.textContent = status.startsWith("Downloading")
+        ? "Downloading (~75 MB)…"
+        : status;
     });
-    if (ok) {
+    if (result.ok) {
       toast("Whisper model downloaded — voice is ready.", { kind: "success" });
       invalidateModelHealth("voice");
     } else {
-      toast(
-        lastStatus && lastStatus !== "Checking whisper model…"
-          ? `Whisper model download failed: ${lastStatus}`
-          : "Whisper model download failed. Click again to retry, or check Settings → Modules → Voice logs.",
-        { kind: "error", duration: 12000 }
-      );
+      const t = voiceModelFailureToast(result) || {
+        title: "Whisper model download failed",
+        body: result.message || "Unknown error",
+        kind: "error",
+        actionLabel: "Retry download",
+      };
+      const retryHandler = t.actionLabel === "Open Settings → Modules"
+        ? () => { window.location.hash = "#/settings/modules"; }
+        : () => handleDownloadModel(btn, id, ctx);
+      toast(`${t.title}: ${t.body}`, {
+        kind: t.kind,
+        duration: 12000,
+        action: retryHandler,
+        actionLabel: t.actionLabel,
+      });
     }
   } catch (e) {
+    // outer catch is for unexpected JS errors (toast itself failing,
+    // etc.); the inner ensureVoiceModel already handles its own
+    // exceptions and returns {ok: false}.
     toast(`Model download failed: ${e}`, { kind: "error", duration: 12000 });
   } finally {
     btn.disabled = false;

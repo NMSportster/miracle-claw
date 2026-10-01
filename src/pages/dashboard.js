@@ -22,7 +22,7 @@ import { openPalette as openCmdKPalette } from "../cmd_k_palette.js";
 // Lesson 571 (2026-08-25 00:37 MDT, David): MC Module Framework —
 // dashboard FAB calls the voice module via the JS-side runtime.
 // Button starts greyed out (data-module-voice-installed="false").
-import { isModuleInstalled, invokeModule, ensureVoiceModel, listInstalledModules } from "../modules-runtime.js";
+import { isModuleInstalled, invokeModule, ensureVoiceModel, listInstalledModules, voiceModelFailureToast } from "../modules-runtime.js";
 import { mountModulesMenu, closeModuleModal, getInstalledModulesMerged } from "../modules-menu.js";
 import { toast } from "../toast.js";
 
@@ -840,14 +840,28 @@ export const dashboardPage = {
           // model is present before transcribing. If missing,
           // auto-download (~75MB) so the user gets a working mic
           // without having to dig into the binary's env vars.
+          //
+          // Lesson 1095 (2026-10-01, David): rich result with
+          // reason + retry. Toast action re-invokes this handler.
           const ready = await ensureVoiceModel((status) => {
             voiceGlyph.textContent = status.startsWith("Downloading") ? "📥…" : "🎙…";
           });
-          if (!ready) {
-            toast(
-              "🎙 whisper model missing. Run Settings → Modules → Voice → \"Download model\".",
-              { kind: "error", duration: 10000 }
-            );
+          if (!ready.ok) {
+            const t = voiceModelFailureToast(ready) || {
+              title: "Voice model download failed",
+              body: ready.message || "Unknown error",
+              kind: "error",
+              actionLabel: "Retry download",
+            };
+            const retryHandler = t.actionLabel === "Open Settings → Modules"
+              ? () => { window.location.hash = "#/settings/modules"; }
+              : () => runVoiceFab();
+            toast(`${t.title}: ${t.body}`, {
+              kind: t.kind,
+              duration: 12000,
+              action: retryHandler,
+              actionLabel: t.actionLabel,
+            });
             return;
           }
           const result = await invokeModule("mc_voice_transcribe", {

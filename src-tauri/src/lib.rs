@@ -6031,26 +6031,240 @@ fn mc_open_checkout_url(plan_code: String) -> Result<(), String> {
 
 // GET /v1/categories — public, no JWT.
 #[tauri::command]
-fn mc_list_categories() -> Result<serde_json::Value, String> {
+fn mc_list_categories(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let maic_base = resolve_maic_base_url();
     let url = format!(
         "{}/v1/categories",
         crate::auth::tier::normalize_api_base(&maic_base)
     );
-    let resp = ureq::get(&url)
+    match ureq::get(&url)
         .set("Accept", "application/json")
         .timeout(std::time::Duration::from_secs(10))
         .call()
-        .map_err(|e| format!("/v1/categories: {e}"))?;
-    let body: serde_json::Value = resp
-        .into_json()
-        .map_err(|e| format!("parse /v1/categories: {e}"))?;
-    Ok(body)
+    {
+        Ok(resp) => {
+            let body: serde_json::Value = resp
+                .into_json()
+                .map_err(|e| format!("parse /v1/categories: {e}"))?;
+            Ok(body)
+        }
+        Err(ureq::Error::Status(404, _)) => {
+            // Lesson 1096 (2026-10-01, David): derive categories from the
+            // bundled catalog so the sidebar still has options.
+            let raw = load_bundled_modules_catalog(&app);
+            let mut counts: std::collections::BTreeMap<String, u32> =
+                std::collections::BTreeMap::new();
+            for v in &raw {
+                let cat = v
+                    .get("category")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("Other")
+                    .to_string();
+                *counts.entry(cat).or_insert(0) += 1;
+            }
+            let cats: Vec<serde_json::Value> = counts
+                .into_iter()
+                .map(|(id, count)| {
+                    serde_json::json!({
+                        "id": id,
+                        "slug": id,
+                        "name": id,
+                        "count": count,
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({
+                "categories": cats,
+                "source": "bundled",
+            }))
+        }
+        Err(e) => Err(format!("/v1/categories: {e}")),
+    }
+}
+
+// ---- Modules catalog fallback -----------------------------------------------
+//
+// Lesson 1096 (2026-10-01, David): MAIC's `/v1/marketplace/modules` and
+// `/v1/categories` endpoints are 404s today — the marketplace UI ships
+// with MC but the server-side catalog was never built. Instead of hiding
+// the marketplace page, we ship a bundled catalog of "official" modules
+// at `resources/modules-catalog.json` and serve it from Rust. The Rust
+// command also overlays the live install state from the in-memory
+// registry so the marketplace UI can show "Installed ✓" / "Install"
+// without an extra round trip.
+//
+// When MAIC eventually ships a real marketplace, `mc_list_marketplace_modules`
+// will keep working (precedence: live MAIC > bundled catalog) and this
+// fallback simply stops being hit.
+
+/// One catalog entry, joined with live registry state when served.
+#[derive(Debug, Clone, serde::Serialize)]
+struct CatalogEntry {
+    id: String,
+    name: String,
+    subtitle: Option<String>,
+    version: String,
+    description: String,
+    icon: String,
+    category: String,
+    tags: Vec<String>,
+    publisher: String,
+    min_mc_version: Option<String>,
+    /// True iff a manifest for this id is loaded in the live registry.
+    installed: bool,
+    /// Live installed version (from the on-disk installer.json). May
+    /// differ from the bundled `version` if the user installed an older
+    /// or newer build than the catalog lists.
+    installed_version: Option<String>,
+}
+
+fn load_bundled_modules_catalog(app: &tauri::AppHandle) -> Vec<serde_json::Value> {
+    // Lesson 1096 (2026-10-01, David): the bundled catalog lives at
+    // src-tauri/modules-catalog.json (top level of src-tauri, NOT under
+    // resources/) so that bundle-runtime.sh's `rm -rf $RESOURCES_DIR`
+    // doesn't wipe it. Tauri still ships it via the `resources` field
+    // in tauri.conf.json, which flattens entries onto the installer
+    // resources dir, so on the bundled install it sits alongside
+    // `miracle-claw-gateway.mjs` etc.
+    //
+    // We look in three places:
+    //   1. <resources-dir>/modules-catalog.json  — bundled installer
+    //   2. <exe-dir>/../modules-catalog.json     — dev run
+    //   3. <exe-dir>/modules-catalog.json        — dev fallback
+    let candidates: Vec<PathBuf> = {
+        let mut v = Vec::new();
+        v.push(resources_dir(app).join("modules-catalog.json"));
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                v.push(dir.join("modules-catalog.json"));
+                if let Some(parent) = dir.parent() {
+                    v.push(parent.join("modules-catalog.json"));
+                }
+            }
+        }
+        v
+    };
+
+    for path in &candidates {
+        match std::fs::read_to_string(path) {
+            Ok(s) => match serde_json::from_str::<Vec<serde_json::Value>>(&s) {
+                Ok(arr) => {
+                    eprintln!("[miracle-claw] modules catalog: loaded {} from {}", arr.len(), path.display());
+                    return arr;
+                }
+                Err(e) => {
+                    eprintln!("[miracle-claw] modules catalog: parse failed at {}: {}", path.display(), e);
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                eprintln!("[miracle-claw] modules catalog: read failed at {}: {}", path.display(), e);
+            }
+        }
+    }
+
+    eprintln!(
+        "[miracle-claw] modules catalog: not bundled (looked in {}). Marketplace will be empty.",
+        candidates
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    Vec::new()
+}
+
+fn merge_catalog_with_registry(
+    catalog: Vec<serde_json::Value>,
+    registry: &crate::modules::registry::Registry,
+) -> Vec<CatalogEntry> {
+    let installed = registry.list();
+    let installed_by_id: std::collections::HashMap<String, crate::modules::registry::ModuleInfo> =
+        installed
+            .into_iter()
+            .map(|m| (m.id.clone(), m))
+            .collect();
+
+    catalog
+        .into_iter()
+        .filter_map(|raw| {
+            let id = raw.get("id").and_then(|v| v.as_str())?.to_string();
+            let name = raw
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&id)
+                .to_string();
+            let version = raw
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0.0.0")
+                .to_string();
+            let description = raw
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let subtitle = raw
+                .get("subtitle")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let icon = raw
+                .get("icon")
+                .and_then(|v| v.as_str())
+                .unwrap_or("🧩")
+                .to_string();
+            let category = raw
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Other")
+                .to_string();
+            let tags: Vec<String> = raw
+                .get("tags")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let publisher = raw
+                .get("publisher")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Milagro Cloud")
+                .to_string();
+            let min_mc_version = raw
+                .get("minMcVersion")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let (is_installed, installed_version) = match installed_by_id.get(&id) {
+                Some(m) => (true, Some(m.version.clone())),
+                None => (false, None),
+            };
+
+            Some(CatalogEntry {
+                id,
+                name,
+                subtitle,
+                version,
+                description,
+                icon,
+                category,
+                tags,
+                publisher,
+                min_mc_version,
+                installed: is_installed,
+                installed_version,
+            })
+        })
+        .collect()
 }
 
 // GET /v1/marketplace/modules — authed. Optional category + sort.
 #[tauri::command]
 fn mc_list_marketplace_modules(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
     category: Option<String>,
     sort: Option<String>,
 ) -> Result<serde_json::Value, String> {
@@ -6074,16 +6288,46 @@ fn mc_list_marketplace_modules(
         url = format!("{}?{}", url, query_parts.join("&"));
     }
 
-    let resp = ureq::get(&url)
+    let live_result = ureq::get(&url)
         .set("Authorization", &format!("Bearer {jwt}"))
         .set("Accept", "application/json")
         .timeout(std::time::Duration::from_secs(10))
-        .call()
-        .map_err(|e| format!("/v1/marketplace/modules: {e}"))?;
-    let body: serde_json::Value = resp
-        .into_json()
-        .map_err(|e| format!("parse /v1/marketplace/modules: {e}"))?;
-    Ok(body)
+        .call();
+
+    match live_result {
+        Ok(resp) => {
+            let body: serde_json::Value = resp
+                .into_json()
+                .map_err(|e| format!("parse /v1/marketplace/modules: {e}"))?;
+            Ok(body)
+        }
+        Err(ureq::Error::Status(404, _)) => {
+            // Lesson 1096 (2026-10-01, David): MAIC's marketplace isn't
+            // wired yet. Fall back to the bundled catalog rather than
+            // returning an error to the UI. The JS side renders either
+            // shape (array or {modules:[]}) the same way.
+            let raw = load_bundled_modules_catalog(&app);
+            let mut merged = merge_catalog_with_registry(raw, &state.modules.lock().unwrap());
+
+            if let Some(cat) = category.as_ref().filter(|s| !s.is_empty()) {
+                merged.retain(|m| m.category.eq_ignore_ascii_case(cat));
+            }
+            match sort.as_deref().unwrap_or("alphabetical") {
+                "recent" => merged.sort_by(|a, b| b.version.cmp(&a.version)),
+                "top_rated" | "alphabetical" => {
+                    merged.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                }
+                _ => {}
+            }
+
+            Ok(serde_json::json!({
+                "modules": merged,
+                "source": "bundled",
+                "message": "Showing bundled catalog — MAIC marketplace is offline.",
+            }))
+        }
+        Err(e) => Err(format!("/v1/marketplace/modules: {e}")),
+    }
 }
 
 // GET /v1/modules/installed — authed.
@@ -6120,17 +6364,32 @@ fn mc_install_module(module_id: String) -> Result<serde_json::Value, String> {
         crate::auth::tier::normalize_api_base(&maic_base)
     );
     let body = serde_json::json!({ "module_id": module_id });
-    let resp = ureq::post(&url)
+    match ureq::post(&url)
         .set("Authorization", &format!("Bearer {jwt}"))
         .set("Content-Type", "application/json")
         .set("Accept", "application/json")
         .timeout(std::time::Duration::from_secs(15))
         .send_json(&body)
-        .map_err(|e| format!("/v1/modules/install: {}", map_ureq_http_error(e)))?;
-    let parsed: serde_json::Value = resp
-        .into_json()
-        .map_err(|e| format!("parse /v1/modules/install: {e}"))?;
-    Ok(parsed)
+    {
+        Ok(resp) => {
+            let parsed: serde_json::Value = resp
+                .into_json()
+                .map_err(|e| format!("parse /v1/modules/install: {e}"))?;
+            Ok(parsed)
+        }
+        Err(ureq::Error::Status(404, _)) => {
+            // Lesson 1096 (2026-10-01, David): MAIC's install endpoint
+            // isn't wired yet. Surface a clear message instead of the
+            // raw 404. Modules still ship pre-installed in the bundle.
+            Err(
+                "Module downloads are temporarily unavailable — MAIC's install \
+                 endpoint is offline. This module is bundled with your MC install \
+                 already; if it isn't shown as Installed, restart MiracleClaw."
+                    .to_string(),
+            )
+        }
+        Err(e) => Err(format!("/v1/modules/install: {}", map_ureq_http_error(e))),
+    }
 }
 
 // POST /v1/modules/uninstall — authed. Returns { success }.

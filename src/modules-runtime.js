@@ -320,20 +320,38 @@ export async function checkModuleHealth(moduleId) {
 
 /**
  * Ensure the voice whisper model is downloaded. Idempotent.
- * Returns true if model is now available (either pre-existing or
- * freshly downloaded), false if download failed.
  *
- * Triggers a toast notification via the caller-supplied onStatus
- * callback (e.g. "Downloading model…", "Ready", "Failed").
+ * Returns a rich result object so callers can render specific UX
+ * (toast + retry button, status pill, etc.) for each failure mode:
+ *   - {ok: true, ...}                 → model ready, transcribe may proceed
+ *   - {ok: false, reason: 'http', ...} → download failed (network/HTTP/TLS)
+ *   - {ok: false, reason: 'sha', ...}  → download finished but SHA mismatch
+ *   - {ok: false, reason: 'sidecar', ...} → sidecar error / not installed
+ *   - {ok: false, reason: 'unknown', ...}
  *
- * Lesson 581 (2026-08-25 16:25 MDT, David): Voice binary ships with
- * `mc_voice_download_model` action that downloads
- * ggml-base.en.bin (~75MB) from huggingface.co/.../whisper.cpp/ with
- * SHA256 verification. This helper wires it into the JS flow so
- * users get a button instead of a cryptic binary error.
+ * Callers should map `reason` to a user-friendly toast. We DO NOT
+ * hide the actual error message — Lesson 583 found that generic
+ * toasts left users stranded on real failures (404, TLS, DNS,
+ * corporate firewall, etc.).
+ *
+ * Triggers a status callback so the UI can show progress:
+ *   - 'Checking whisper model…'       — initial probe
+ *   - 'Whisper model ready'           — already cached, fast path
+ *   - 'Downloading whisper model (~75 MB)' — first-time download
+ *   - 'Whisper model ready'           — download completed
+ *   - 'Whisper model download failed: <reason>' — on failure
+ *
+ * Lesson 1095 (2026-10-01, David): "Work out all the bugs so the
+ * customer thinks it works the first time." Original returned a
+ * bare boolean + a misleading toast — when download failed, users
+ * saw "Run Settings → Modules → Voice → 'Download model'" which
+ * implied they had to do manual work. The reality is we already
+ * tried to download — the toast should explain the actual error
+ * and offer retry.
  *
  * @param {(status: string) => void} onStatus — UI status callback
- * @returns {Promise<boolean>}
+ * @returns {Promise<{ok: boolean, reason?: string, message?: string,
+ *                    model_loaded?: boolean, model_path?: string|null}>}
  */
 export async function ensureVoiceModel(onStatus) {
   const setStatus = (s) => { try { onStatus?.(s); } catch {} };
@@ -342,28 +360,131 @@ export async function ensureVoiceModel(onStatus) {
   const health = await checkModuleHealth("voice");
   if (health.model_loaded) {
     setStatus("Whisper model ready");
-    return true;
+    return { ok: true, model_loaded: true, model_path: health.model_path };
   }
 
-  setStatus("Downloading whisper model (~141 MB)…");
+  // tiny.en is the default since voice binary v0.1.7 (Lesson 586).
+  // Was "~141 MB" historically (base.en) which confused users when
+  // the actual download was 75 MB.
+  setStatus("Downloading whisper model (~75 MB, first time only)…");
   try {
     await invokeModule("mc_voice_download_model", {});
-    // Verify the download succeeded.
     const recheck = await checkModuleHealth("voice");
     if (recheck.model_loaded) {
       setStatus("Whisper model ready");
-      return true;
+      return { ok: true, model_loaded: true, model_path: recheck.model_path };
     }
-    setStatus("Whisper model download did not complete");
-    return false;
-  } catch (e) {
-    // Surface the actual sidecar error so the user can act on it.
-    // Lesson 583 (2026-08-26 07:34 MDT, David): the previous
-    // generic "Check network + retry, or set MILAGRO_VOICE_MODEL_PATH"
-    // toast hid every real cause (HTTP errors, TLS, SHA mismatch,
-    // container rebuild missing, etc.) behind a single message.
-    const msg = String(e);
+    // Download action returned ok but the file isn't on disk. Either
+    // a SHA mismatch (sidecar would log + fail), a permissions issue
+    // writing to %USERPROFILE%\.cache\, or the sidecar exited early.
+    const msg = "Download finished but model is not on disk. Check the MiracleClaw log (Settings → Logs) for the SHA or filesystem error.";
     setStatus(`Whisper model download failed: ${msg}`);
-    return false;
+    return { ok: false, reason: "missing", message: msg };
+  } catch (e) {
+    // Classify the failure so callers can render specific UX.
+    const raw = String(e?.message || e || "");
+    let reason = "unknown";
+    let message = raw;
+
+    if (/NotInstalled|sidecar not found|module 'voice'/i.test(raw)) {
+      reason = "sidecar";
+      message = "Voice module is not installed. Open Settings → Modules → Voice to install it.";
+    } else if (/HTTP|status code|404|403|401/i.test(raw)) {
+      reason = "http";
+      // Keep the actual status so user can act on it (Lesson 583).
+      message = `Couldn't download the model (${raw.slice(0, 120)}). Check your network or firewall. Click voice again to retry.`;
+    } else if (/TLS|certificate|handshake/i.test(raw)) {
+      reason = "tls";
+      message = `TLS error downloading model (${raw.slice(0, 120)}). Your network may be intercepting HTTPS. Click voice again to retry.`;
+    } else if (/sha256|SHA|mismatch/i.test(raw)) {
+      reason = "sha";
+      message = `Downloaded file failed SHA256 verification (${raw.slice(0, 120)}). The download may be corrupted. Click voice again to retry.`;
+    } else if (/DNS|resolve|host/i.test(raw)) {
+      reason = "dns";
+      message = `DNS error reaching milagrocloud.com (${raw.slice(0, 120)}). Check your DNS / VPN. Click voice again to retry.`;
+    } else if (/disk|space|permission|denied|Access/i.test(raw)) {
+      reason = "fs";
+      message = `Filesystem error (${raw.slice(0, 120)}). Make sure C:\\Users\\<you>\\.cache\\ is writable. Click voice again to retry.`;
+    } else {
+      // Lesson 583: don't hide the actual error.
+      message = `Whisper model download failed: ${raw.slice(0, 200)}`;
+    }
+
+    setStatus(message);
+    return { ok: false, reason, message };
   }
 }
+
+/**
+ * Convert an `ensureVoiceModel` failure into a toast + retry action.
+ *
+ * Returns { title, body, kind, actionLabel, actionToast } so the
+ * caller can hand it straight to the toast helper. Standardizing
+ * the shape here means every surface (terminal, dashboard, chat
+ * overlay, modules page) gets the same copy without duplicating
+ * the message logic.
+ *
+ * Lesson 1095 (2026-10-01, David): the original "Run Settings →
+ * Modules → Voice → 'Download model'" toast was misleading because
+ * `ensureVoiceModel` ALREADY tried to download. The right copy
+ * tells the user what actually happened and gives them a retry path.
+ *
+ * @param {{ok: boolean, reason?: string, message?: string}} result
+ *   The result object from ensureVoiceModel.
+ * @returns {{title: string, body: string, kind: 'error'|'warn',
+ *            actionLabel: string|null}}
+ */
+export function voiceModelFailureToast(result) {
+  if (result?.ok) return null;
+  const reason = result?.reason || "unknown";
+  const body = result?.message || "Voice model download failed.";
+  // Default: every failure gets a retry button. The action itself is
+  // caller's responsibility (they have the click handler in scope).
+  switch (reason) {
+    case "sidecar":
+      return {
+        title: "Voice module not installed",
+        body,
+        kind: "warn",
+        actionLabel: "Open Settings → Modules",
+      };
+    case "http":
+    case "tls":
+    case "dns":
+      return {
+        title: "Couldn't download voice model",
+        body,
+        kind: "error",
+        actionLabel: "Retry download",
+      };
+    case "sha":
+      return {
+        title: "Voice model corrupted",
+        body,
+        kind: "error",
+        actionLabel: "Retry download",
+      };
+    case "fs":
+      return {
+        title: "Voice model filesystem error",
+        body,
+        kind: "error",
+        actionLabel: "Retry download",
+      };
+    case "missing":
+      return {
+        title: "Voice model not found after download",
+        body,
+        kind: "error",
+        actionLabel: "Retry download",
+      };
+    default:
+      return {
+        title: "Voice model download failed",
+        body,
+        kind: "error",
+        actionLabel: "Retry download",
+      };
+  }
+}
+

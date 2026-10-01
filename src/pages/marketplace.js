@@ -93,6 +93,7 @@ async function loadInstalled() {
 }
 
 async function loadMarketplace() {
+  let bundledNotice = null;
   try {
     const res = await invoke("mc_list_marketplace_modules", {
       category: state.activeCategory || null,
@@ -100,10 +101,14 @@ async function loadMarketplace() {
     });
     const mods = Array.isArray(res) ? res : (res.modules || res.items || []);
     state.modules = mods;
+    if (res && res.source === "bundled" && res.message) {
+      bundledNotice = res.message;
+    }
   } catch (err) {
     state.modules = [];
     throw err;
   }
+  return bundledNotice;
 }
 
 // ============================================================================
@@ -146,14 +151,26 @@ function renderCard(m) {
   const id = m.module_id || m.id;
   const name = m.name || m.title || id;
   const desc = m.description || m.summary || "";
+  // Lesson 1096 (2026-10-01, David): bundled catalog returns
+  // `installed: bool` per entry; live MAIC catalog + registry
+  // requires merging. We prefer the entry flag (truth from Rust)
+  // over the separate installedIds set, which may be stale on
+  // first paint.
+  const installed = m.installed === true || state.installedIds.has(id);
   const publisher = m.publisher || m.author || "Unknown";
-  const version = m.version || "";
+  // Lesson 1096: when installed, show the actually-installed
+  // version (which may differ from the catalog's "newest").
+  const version = installed && m.installed_version
+    ? m.installed_version
+    : (m.version || "");
   const category = m.category || (m.categories && m.categories[0]) || "";
   const rating = m.rating !== undefined ? m.rating : (m.avg_rating);
   const downloads = m.download_count !== undefined ? m.download_count : m.installs;
   const icon = m.icon || "🧩";
-  const installed = state.installedIds.has(id);
   const tags = Array.isArray(m.tags) ? m.tags : [];
+  // Lesson 1096: subtitle goes under the name on the card; MAIC's
+  // catalog didn't ship one but ours does and it's useful.
+  const subtitle = m.subtitle || "";
 
   const ratingLine = (rating !== null && rating !== undefined && Number.isFinite(Number(rating)))
     ? `<span class="mc-mkt-rating" title="${escapeHtml(rating)}">${ratingStars(rating)} <span class="muted">${escapeHtml(Number(rating).toFixed(1))}</span></span>`
@@ -177,6 +194,7 @@ function renderCard(m) {
         <div class="modules-card-icon">${escapeHtml(icon)}</div>
         <div class="modules-card-titles">
           <div class="modules-card-name">${escapeHtml(name)}</div>
+          ${subtitle ? `<div class="modules-card-subtitle muted small">${escapeHtml(subtitle)}</div>` : ""}
           <div class="modules-card-publisher muted small">by ${escapeHtml(publisher)}${version ? ` · v${escapeHtml(version)}` : ""}</div>
           ${category ? `<div class="muted small">${escapeHtml(category)}</div>` : ""}
         </div>
@@ -208,6 +226,9 @@ function renderGrid() {
 }
 
 function renderShell() {
+  const noticeHtml = state.bundledNotice
+    ? `<div class="mc-mkt-notice muted small" role="status">⚠️ ${escapeHtml(state.bundledNotice)}</div>`
+    : "";
   return `
     <div class="mc-mkt-page">
       <header class="mc-page-header">
@@ -215,6 +236,7 @@ function renderShell() {
         <h1>Marketplace</h1>
         <p class="muted small">Browse and install modules from the MAIC catalog.</p>
       </header>
+      ${noticeHtml}
       <div class="mc-mkt-layout">
         <aside class="mc-mkt-sidebar">
           <h3 class="mc-mkt-sidebar-title">Categories</h3>
@@ -292,12 +314,14 @@ async function refresh(root, opts = {}) {
   if (resultsHost) resultsHost.innerHTML = `<div class="mc-mkt-loading muted small">Loading…</div>`;
   if (!opts.skipCategories) await loadCategories();
   if (!opts.skipInstalled) await loadInstalled();
+  let bundledNotice = null;
   try {
-    await loadMarketplace();
+    bundledNotice = await loadMarketplace();
   } catch (err) {
     toast(`Marketplace load failed: ${err}`);
     state.modules = [];
   }
+  state.bundledNotice = bundledNotice;
   if (state.unmounted) return;
   // Re-render shell so sidebar + grid reflect new state.
   root.innerHTML = renderShell();

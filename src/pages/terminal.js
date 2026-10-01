@@ -51,7 +51,7 @@ import "@xterm/xterm/css/xterm.css";
 // the JS-side module runtime. The button starts greyed out
 // (data-module-voice-installed="false") and lights up when the
 // voice module installs.
-import { isModuleInstalled, invokeModule, ensureVoiceModel, listInstalledModules } from "../modules-runtime.js";
+import { isModuleInstalled, invokeModule, ensureVoiceModel, listInstalledModules, voiceModelFailureToast } from "../modules-runtime.js";
 import { mountModulesMenu, closeModuleModal, getInstalledModulesMerged } from "../modules-menu.js";
 import { toast } from "../toast.js";
 // rc53.5 (feature/secrets-vault): mount the secrets page inside an
@@ -932,14 +932,46 @@ export const terminalPage = {
         // model is present before transcribing. If missing,
         // auto-download (~75MB) so the user gets a working mic
         // without having to dig into the binary's env vars.
+        //
+        // Lesson 1095 (2026-10-01, David): ensureVoiceModel now
+        // returns a rich {ok, reason, message} object. We render
+        // a specific toast + retry button per failure mode rather
+        // than the old misleading "Run Settings → Modules" message.
         const ready = await ensureVoiceModel((status) => {
           voiceGlyph.textContent = status.startsWith("Downloading") ? "📥…" : "🎙…";
         });
-        if (!ready) {
-          toast(
-            "🎙 whisper model missing. Run Settings → Modules → Voice → \"Download model\".",
-            { kind: "error", duration: 10000 }
-          );
+        if (!ready.ok) {
+          const t = voiceModelFailureToast(ready) || {
+            title: "Voice model download failed",
+            body: ready.message || "Unknown error",
+            kind: "error",
+            actionLabel: "Retry download",
+          };
+          // Lesson 1095 (2026-10-01, David): the toast action lets
+          // the user retry without digging into Settings. Each
+          // failure mode gets a specific action:
+          //   - 'Open Settings → Modules' for missing-sidecar
+          //   - 'Retry download' for everything else (HTTP, TLS,
+          //     DNS, SHA, fs). The action re-invokes this click
+          //     handler.
+          const retryHandler = t.actionLabel === "Open Settings → Modules"
+            ? () => {
+                // Best-effort: open the modules settings page.
+                if (typeof window.mcOpenSettings === "function") {
+                  window.mcOpenSettings("modules");
+                } else {
+                  // Fallback: dispatch a hash event the page_registry
+                  // is already listening for.
+                  window.location.hash = "#/settings/modules";
+                }
+              }
+            : () => voiceBtn.click();
+          toast(`${t.title}: ${t.body}`, {
+            kind: t.kind,
+            duration: 12000,
+            action: retryHandler,
+            actionLabel: t.actionLabel,
+          });
           return;
         }
         const result = await invokeModule("mc_voice_transcribe", {
@@ -961,7 +993,30 @@ export const terminalPage = {
         } else if (result && result.warning) {
           toast(`🎙 ${result.warning}`, { kind: "warn" });
         } else {
-          toast("🎙 (no speech detected)", { kind: "info" });
+          // Lesson 1095 (2026-10-01, David): "No speech detected" is
+          // the most-confusing failure because it could mean mic
+          // muted, VAD too strict, whisper rejected audio, or the
+          // user spoke too quietly. Sidecar v0.1.8 returns
+          // diagnostics.peakAmplitude + diagnostics.rms + vadStats.
+          // If peak is 0, mic captured silence (mute / permission /
+          // wrong device). If peak > 0 but VAD says no speech, it's
+          // VAD being too aggressive. Show the user what we
+          // actually measured so they can act.
+          const diag = result?.diagnostics || {};
+          const peak = diag?.peakAmplitude;
+          const rms = diag?.rms;
+          const vad = diag?.vadStats || {};
+          let detail = "🎙 (no speech detected)";
+          if (typeof peak === "number" && peak === 0) {
+            detail = "🎙 Mic captured silence (peak amplitude 0). Check that the mic is unmuted and Windows has granted microphone permission to MiracleClaw.";
+          } else if (typeof peak === "number" && peak < 0.01) {
+            detail = "🎙 Mic level very low. Try speaking louder or moving closer to the mic.";
+          } else if (vad && typeof vad.speechFrames === "number" && vad.speechFrames === 0 && vad.totalFrames > 0) {
+            detail = "🎙 Mic picked up audio but voice activity detector rejected it. Try speaking sooner after clicking, or in a quieter room.";
+          } else if (typeof rms === "number") {
+            detail = `🎙 (no speech detected — rms ${rms.toFixed(3)}, peak ${peak?.toFixed?.(3) ?? "?"})`;
+          }
+          toast(detail, { kind: "warn", duration: 8000 });
         }
       } catch (e) {
         const msg = String(e);
