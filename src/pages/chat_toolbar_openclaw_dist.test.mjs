@@ -507,3 +507,90 @@ test("Lesson 985 follow-up Bug 4: modules-menu logs click + openModuleModal call
     "openModuleModal must console.log its inputs at entry"
   );
 });
+
+test("rc57.12: chat toolbar showRunForm renders prop.description as mc-oc-modal-field-help (Lesson 1132)", () => {
+  // David 2026-10-07 17:08 MDT: "the [Windows] card was not updated"
+  // — the MC Windows Tools menu showed generic module cards while
+  // Terminal showed rich per-field help. Root cause: mc-toolbar.js
+  // showRunForm() rendered form fields but never read
+  // prop.description or prop.placeholder. After rc57.11 polish on
+  // dashboard_launchpad.js, the launchpad + Terminal were rich and
+  // Windows was bare. This pins the parity fix.
+  assert.match(
+    jsSrc,
+    /prop\.description/,
+    "showRunForm must read prop.description"
+  );
+  assert.match(
+    jsSrc,
+    /mc-oc-modal-field-help/,
+    "showRunForm must render the help class"
+  );
+  assert.match(
+    jsSrc,
+    /escapeHtml/,
+    "showRunForm must HTML-escape the help text (defense against schema injection)"
+  );
+});
+
+test("rc57.12: chat toolbar showRunForm applies prop.placeholder to text inputs (Lesson 1132)", () => {
+  // Pin the placeholder parity with dashboard_launchpad.js renderField.
+  // Trim then cap at 120 chars so runaway schemas don't break the form.
+  assert.match(
+    jsSrc,
+    /prop\.placeholder/,
+    "showRunForm must read prop.placeholder"
+  );
+  assert.match(
+    jsSrc,
+    /inputEl\.placeholder\s*=/,
+    "showRunForm must apply placeholder to the input element"
+  );
+  assert.match(
+    jsSrc,
+    /\.slice\(0,\s*120\)/,
+    "showRunForm must cap placeholder at 120 chars (matches dashboard_launchpad.js)"
+  );
+});
+
+test("rc57.12: chat toolbar showRunForm caps description at 240 chars (matches dashboard_launchpad.js)", () => {
+  assert.match(
+    jsSrc,
+    /\.slice\(0,\s*240\)/,
+    "showRunForm must cap description at 240 chars (same as dashboard_launchpad.js)"
+  );
+});
+
+test("rc57.12: chat toolbar escapes HTML for help text (defense against schema injection)", () => {
+  // mc-toolbar.js originally referenced a bare `escapeHtml(v)` in
+  // the enum option loop without defining it (rc56.8) — that worked
+  // accidentally because the enum values were safe ASCII. rc57.12
+  // defines a local escapeHtml() so help text + placeholder come
+  // out safe regardless of host-page globals.
+  assert.match(
+    jsSrc,
+    /function\s+escapeHtml/,
+    "mc-toolbar.js must define its own escapeHtml() helper"
+  );
+});
+
+test("rc57.12: mc-toolbar.css styles .mc-oc-modal-field + .mc-oc-modal-field-help", () => {
+  // The chat toolbar modal used to inherit defaults (label inline,
+  // inputs unstyled). rc57.12 adds proper form/field/help styling
+  // so the Windows Tools menu matches the launchpad UX.
+  assert.match(
+    cssSrc,
+    /\.mc-oc-modal-form\b/,
+    "css must style .mc-oc-modal-form"
+  );
+  assert.match(
+    cssSrc,
+    /\.mc-oc-modal-field\b/,
+    "css must style .mc-oc-modal-field"
+  );
+  assert.match(
+    cssSrc,
+    /\.mc-oc-modal-field-help\b/,
+    "css must style .mc-oc-modal-field-help"
+  );
+});

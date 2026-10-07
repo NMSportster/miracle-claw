@@ -81,6 +81,26 @@
   }
 
   // ---------------------------------------------------------------------------
+  // escapeHtml — local helper so the toolbar doesn't depend on any
+  // global that may or may not exist in the host page (Lesson 1132).
+  // The chat toolbar used to reference a bare `escapeHtml(v)` in the
+  // enum option loop without defining it, which silently worked only
+  // because the enum values were safe ASCII strings. Help text and
+  // placeholder text come from the module's form_schema and can
+  // contain anything, so we escape explicitly here.
+  // ---------------------------------------------------------------------------
+
+  function escapeHtml(s) {
+    if (s === null || s === undefined) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  // ---------------------------------------------------------------------------
   // Toast
   // ---------------------------------------------------------------------------
 
@@ -177,22 +197,77 @@
 
   async function fetchInstalledModulesMerged() {
     // Lesson 975: read remote (MAIC) install list. The Tauri command
-    // is the same one the rest of MC uses. If it fails, return [] and
-    // the dropdown will show "No modules installed" -- same graceful
-    // fallback the terminal toolbar uses.
+    // is the same one the rest of MC uses. If it fails, fall back to
+    // the local registry (mc_module_list) so the dropdown never goes
+    // blank when MAIC is down (Lesson 1109, 2026-10-02, David —
+    // market "it used to work, fix the marketplaces so this can't
+    // happen again"). The local list covers modules discovered by
+    // the bundled installer; the remote list covers installs done
+    // via MAIC's /v1/modules/install. Merge by id, preferring the
+    // remote version (it has the live version string + client_manifest).
+    var remote = [];
+    var remoteOk = false;
     try {
       var resp = await tauriInvoke('mc_list_installed_modules');
-      var list = Array.isArray(resp) ? resp
+      remote = Array.isArray(resp) ? resp
         : Array.isArray(resp && resp.modules) ? resp.modules
         : Array.isArray(resp && resp.installed) ? resp.installed
         : [];
-      // Normalize: MAIC returns each module with module_id,
-      // client_manifest, etc. Map to { id, name, version, hooks, icon }.
-      return list.map(normalizeRemoteModule);
+      remoteOk = true;
     } catch (e) {
       console.warn('[mc-toolbar] mc_list_installed_modules failed:', e);
+    }
+
+    var local = [];
+    try {
+      var localResp = await tauriInvoke('mc_module_list');
+      local = Array.isArray(localResp) ? localResp
+        : Array.isArray(localResp && localResp.modules) ? localResp.modules
+        : [];
+    } catch (e) {
+      // mc_module_list reads from the in-memory registry (no network)
+      // — failure here is genuinely unexpected.
+      console.warn('[mc-toolbar] mc_module_list failed:', e);
+    }
+
+    if (remote.length === 0 && local.length > 0 && !remoteOk) {
+      // MAIC unreachable — surface the local modules so the
+      // dropdown isn't empty. Tag each with a small "offline copy"
+      // marker in the meta line.
+      return local.map(function (m) {
+        var n = normalizeLocalModule(m);
+        n._offline = true;
+        return n;
+      });
+    }
+
+    if (remote.length === 0) {
       return [];
     }
+
+    // Both sources responded: merge by id, remote-first.
+    var byId = new Map();
+    local.forEach(function (m) { var n = normalizeLocalModule(m); byId.set(n.id, n); });
+    return remote.map(function (m) {
+      var n = normalizeRemoteModule(m);
+      var l = byId.get(n.id);
+      if (l && !n.version) n.version = l.version;
+      return n;
+    });
+  }
+
+  function normalizeLocalModule(m) {
+    // mc_module_list returns the runtime registry shape. Best-effort
+    // mapping; the toolbar uses {id, name, version, icon, tools}.
+    return {
+      id: m.id || m.module_id || '(unknown)',
+      name: m.name || m.title || m.module_id || m.id || '(unknown)',
+      version: m.version || '',
+      hooks: m.hooks || m.ui_hooks || {},
+      icon: m.icon || '🧩',
+      tools: m.tools || m._raw_tools || [],
+      _raw: m,
+    };
   }
 
   function normalizeRemoteModule(m) {
@@ -266,7 +341,7 @@
         ? 'no tools -- open in launchpad'
         : toolCount === 1 ? '1 tool'
         : toolCount + ' tools';
-      metaEl.textContent = 'v' + (m.version || '?') + ' ? ' + toolLabel;
+      metaEl.textContent = 'v' + (m.version || '?') + ' ? ' + toolLabel + (m._offline ? ' (offline copy)' : '');
       bodyEl.appendChild(nameEl);
       bodyEl.appendChild(metaEl);
       var runBtn = document.createElement('span');
@@ -459,7 +534,33 @@
             else inputEl.value = String(prop.default);
           }
           if (required.indexOf(name) !== -1) inputEl.required = true;
+          // rc57.12: apply placeholder (trimmed, capped 120 chars) on
+          // text/textarea/select so users see an inline example.
+          // Lesson 1132 — same rules as dashboard_launchpad.js
+          // renderField(): trim then cap to prevent runaway schemas.
+          if (prop.placeholder !== undefined && prop.placeholder !== null) {
+            var phStr = String(prop.placeholder).trim().slice(0, 120);
+            if (phStr && (inputEl.tagName === 'INPUT' || inputEl.tagName === 'TEXTAREA')) {
+              inputEl.placeholder = phStr;
+            }
+          }
           field.appendChild(inputEl);
+          // rc57.12: render per-field help text under the input so
+          // the toolbar matches the launchpad / dashboard_launchpad
+          // UX. Without this the MC Windows Tools menu shows a
+          // generic module card while the Terminal shows rich
+          // per-field help (Lesson 1131 — parity gap).
+          // Description capped at 240 chars, HTML-escaped (defense
+          // against schema injection), rendered as <p>.
+          if (prop.description !== undefined && prop.description !== null) {
+            var descStr = String(prop.description).trim().slice(0, 240);
+            if (descStr) {
+              var helpEl = document.createElement('p');
+              helpEl.className = 'mc-oc-modal-field-help';
+              helpEl.innerHTML = escapeHtml(descStr);
+              field.appendChild(helpEl);
+            }
+          }
           form.appendChild(field);
           renderedFields = true;
         });

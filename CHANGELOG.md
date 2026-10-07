@@ -4328,3 +4328,43 @@ The RC55.13/RC55.14 schema migration (Lesson 800) wrote:
 - Windows: `MiracleClaw_1.1.0-rc55.15_x64-setup.exe` (60.5MB, MD5 `61f5f608e97afaab6a14a76d09034884`)
 - All 180 lib tests pass (10 schema-migration tests rewritten + 1 new repair test)
 - David's config was manually repaired at 13:19:56 MDT; rc55.15 writer will detect no work to do on first run
+
+## v1.2.0-rc57.12 (2026-10-07)
+
+**Miracle Claw Windows Tools menu parity with Terminal** (Lesson 1132, David 2026-10-07 17:08 MDT).
+
+### Problem
+- Terminal's Tools hover menu → rich form fields with per-field help text (rc57.11 polish).
+- MC Windows chat's Tools hover menu → generic module card with no field help, no placeholders.
+- Root cause: MC has TWO separate form renderers — `dashboard_launchpad.js` (which got rc57.11 polish) and `mc-toolbar.js` (which didn't). The chat toolbar lived in `depot/openclaw-patches/dist/control-ui/mc-toolbar.js` and had its own form rendering loop that never read `prop.description` or `prop.placeholder`.
+
+### Fix
+- `depot/openclaw-patches/dist/control-ui/mc-toolbar.js` `showRunForm()` now:
+  - Renders `prop.description` (trimmed, capped 240 chars, HTML-escaped) as `<p class="mc-oc-modal-field-help">` under each input.
+  - Applies `prop.placeholder` (trimmed, capped 120 chars) to text inputs.
+  - Defines a local `escapeHtml()` helper so help text + placeholder come out safe regardless of host-page globals.
+- `depot/openclaw-patches/dist/control-ui/mc-toolbar.css`:
+  - `.mc-oc-modal-form` — flex column with 12px gap
+  - `.mc-oc-modal-field` — label stacked over input
+  - `.mc-oc-modal-field-help` — 12px muted line under input (matches `.mc-field-help` from rc57.11)
+
+### DB polish (all 8 modules)
+Expanded `client_manifest.instructions` and added per-field `description` + `placeholder` for all 7 remaining modules:
+- ad-performance (summarize)
+- brand-asset-kit (bio)
+- calendar-companion (find_slot)
+- data-analyzer (summarize)
+- firecrawl (fetch_url, crawl_site)
+- marketing-suite (draft_email, social_post)
+- voice-memo (transcribe)
+
+17 form fields now have `description` (avg 152 chars) + `placeholder` (avg 32 chars). Instructions written in David's voice — warm, plain English, "we'll do X" style, with concrete examples per module. Target: "newby just learning" customers (David's words).
+
+email-campaigns-pro was already updated in rc57.11 — no changes this build.
+
+### Tests
+- 5 new tests in `src/pages/chat_toolbar_openclaw_dist.test.mjs` (rc57.12 batch): parity, escape, cap behavior, CSS class coverage.
+- 22/22 relevant tests pass. 3 pre-existing failures (Lesson 985 batch) unrelated to this build.
+
+### Build
+- Full Tauri rebuild required (`mc-toolbar.js` and `.css` get embedded into the installer's `resources/dist/control-ui/` and `miracle-claw.exe`).

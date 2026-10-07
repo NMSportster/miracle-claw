@@ -301,6 +301,71 @@
   background: #5d9aff;
 }
 
+/* === Module form (rc57.12 — parity with dashboard_launchpad.js renderField) ===
+ *
+ * Lesson 1131: Without these styles, the MC Windows Tools menu looks
+ * "generic" compared to Terminal because the modal had no per-field
+ * help text or placeholder support. These rules make the form fields
+ * look like the rest of MC's UI (label stacked over input, small
+ * muted help line under it).
+ */
+.mc-oc-modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+.mc-oc-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mc-oc-modal-field > label {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+}
+.mc-oc-modal-req {
+  color: #ff8a8a;
+  font-weight: 700;
+}
+.mc-oc-modal-field > input[type="text"],
+.mc-oc-modal-field > input[type="number"],
+.mc-oc-modal-field > textarea,
+.mc-oc-modal-field > select {
+  width: 100%;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.4);
+  color: #f5f5f7;
+  border: 1px solid rgba(255, 255, 255, 0.20);
+  border-radius: 4px;
+  font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  box-sizing: border-box;
+}
+.mc-oc-modal-field > input[type="text"]:focus,
+.mc-oc-modal-field > input[type="number"]:focus,
+.mc-oc-modal-field > textarea:focus,
+.mc-oc-modal-field > select:focus {
+  outline: none;
+  border-color: #4a8cff;
+  box-shadow: 0 0 0 2px rgba(74, 140, 255, 0.20);
+}
+.mc-oc-modal-field > input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin-top: 4px;
+}
+/* rc57.12: per-field help text — small muted line under the input.
+ * Matches dashboard_launchpad.js .mc-field-help (12px, muted, no
+ * margin). HTML-escaped in JS so no injection risk. */
+.mc-oc-modal-field-help {
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.60);
+  margin: 0;
+  padding: 0;
+}
+
 /* === Attach dropzone (used inside attach modal) === */
 .mc-oc-attach-dropzone {
   border: 2px dashed rgba(255, 255, 255, 0.30);
