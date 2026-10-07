@@ -5,6 +5,28 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.0-rc57.10] — 2026-10-07 (MAIC incomplete-turn recovery)
+
+Adds the `maic` provider to the embedded-agent's incomplete-turn retry guard so the "⚠️ Agent couldn't generate a response" error stops appearing on `stopReason=length` and similar recoverable failures. Root cause was that the OpenClaw bundle's `OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN = /^ollama(?:-|$)/` was checked by three retry paths (resolveReasoningOnlyRetryInstruction, resolveEmptyResponseRetryInstruction, isIncompleteTurnRecoverySupportedProviderModel). The pattern only matched `ollama` and `ollama-*` providers, so MAIC's provider never got the reasoning-only retry (2 max) or empty-response retry (1 max) — every recovery fell through to the user-visible error.
+
+**Changes**:
+- **dist patch** (`depot/openclaw-patches/dist/selection-JInn13lc.js.replace`): extends the pattern to `/^(?:ollama|maic)(?:-|$)/` so MAIC's provider is now eligible for the same retry guard that ollama has. Marker-based idempotency; re-runs of `scripts/patch-openclaw-dist.sh` are no-ops once applied.
+- **scripts/patch-openclaw-dist.sh**: learns a new `.replace` mode for single-line sentinel-and-replace edits to multi-K-line bundle files. Previously only supported `.insert` and full `.js`/`.css`/`.html` rewrites. The new mode requires a unique sentinel line in the target file and refuses to apply if it's missing or ambiguous. Lesson 1127.
+
+**Verification**: Tauri `scripts/build-windows-docker.sh` re-applies all patches after re-staging `src-tauri/resources/`, so the fix survives any fresh openclaw tarball re-download.
+
+**Side benefits**:
+- Reasoning-only retries now hit for MAIC (was hard-coded to 0/2 before). When a model uses its entire `max_completion_tokens` budget on reasoning, the runtime now extends `max_completion_tokens` and re-asks.
+- Empty-response retries now hit for MAIC (was 0/1 before). When the model returns a tool-call-finish or 0-token response, the runtime re-asks once with a nudge.
+
+**Related fixes (deployed earlier this session, no rc bump needed for those — they were on the MAIC side, not the MC side)**:
+- MAIC streaming token tracking (`stream_options.include_usage=true` injected at the LiteLLM request layer) — fixes `usage_events` showing 0/0 for streaming requests.
+- MAIC tool-loop token tracking — appends the final usage chunk to the SSE re-emit buffer so tool-calling responses get counted.
+- MAIC `enforce_min_max_tokens` now checks BOTH `max_tokens` AND `max_completion_tokens` and sets both fields to the same resolved value. Required because MC sends `max_completion_tokens` (the newer OpenAI field) while curl sends `max_tokens`. The old code only checked `max_tokens`, so MAIC's floor was a no-op against Ollama Cloud for MC traffic. Lesson 1126.
+- MAIC LiteLLM caps bumped: `chat-nemotron-nano` 8K→32K, `chat-nemotron-super` 8K→65K, `chat-nemotron-ultra` 8K→65K, `chat-glm` 8K→16K, `chat-qwen` 8K→32K, `chat-deepseek` 8K→65K. Matches the upstream Ollama Cloud limits.
+- MAIC Nemotron floor entries added to `min_max_tokens_per_model` (Nemotron Nano/Super/Ultra all at 600) to match the reasoning treatment for Kimi/DeepSeek/GLM.
+- MC `chat.json` (Windows): primary model switched from `milagro-oc-glm` to `chat-nemotron-super`; fallbacks are `[milagro-oc-deepseek, milagro-oc-minimax]`; per-model `maxTokens`/`contextWindow`/`reasoning` catalog entries added for all 20 models so MC stops defaulting to 8192 for models that support 32K-65K output.
+
 ## [v1.1.0-rc55.22] — 2026-09-08 (Workflows / specialists — OpenProse integration)
 
 Adds subagent-style parallel workflows to MC without bolting on a custom orchestrator. We bundle and surface the existing OpenProse extension, stamp it on at bootstrap (Lesson 535 pattern), and ship a curated 6-workflow + 6-specialist library plus a Workflow Center UI. This is the feature customers ask about most after seeing Claude Code's "tasks" — but ours uses plain English, no `.prose` filenames, and works from the Terminal tile too.

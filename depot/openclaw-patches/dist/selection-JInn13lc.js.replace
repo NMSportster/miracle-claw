@@ -1,0 +1,17 @@
+// MC-PATCH: maic-incomplete-turn-recovery
+// REPLACE: const OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN = /^ollama(?:-|$)/;
+// Lesson 1127 (2026-10-07, David): MC's main provider is `maic` (MAIC),
+// not `ollama`. The default pattern only matches `ollama` / `ollama-*`,
+// so the embedded-agent retry guards (resolveReasoningOnlyRetryInstruction,
+// resolveEmptyResponseRetryInstruction, isIncompleteTurnRecoverySupportedProviderModel)
+// never trigger for `maic/*` providers — every `stopReason=length` falls
+// through to the "⚠️ Agent couldn't generate a response" error path. Extending
+// the pattern to also accept `maic`/`maic-*` enables automatic reasoning-only
+// retries (up to 2) and empty-response retries (up to 1) for MAIC models.
+//
+// Why this is safe: the retry path only fires on incomplete turns
+// (stopReason=length, no visible text, no committed side effects). MAIC
+// is a strict-agentic runtime, so the retry instructions are well-defined
+// for it. The fix is one regex, additive only — no behavior change for
+// existing `ollama` providers.
+const OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN = /^(?:ollama|maic)(?:-|$)/;

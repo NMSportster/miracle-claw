@@ -19,6 +19,10 @@
 #                       (Lesson 534 — MAIC compat: insert before the `return params;`
 #                        that ends buildOpenAICompletionsParams in
 #                        openai-transport-stream-*.js)
+#   <name>.js.replace   REPLACE a sentinel line in src-tauri/resources/<relpath>
+#                       (Lesson 1127 — single-line edits to multi-K-line bundle files
+#                        without rewriting the whole file; sentinel+replacement,
+#                        marker-based idempotency)
 #   <name>.json         WRITE  to src-tauri/resources/<relpath> (merge? skip)
 #   <name>.delete       RECORD only (mark for future deletion)
 #
@@ -112,12 +116,16 @@ skipped=0
 
 while IFS= read -r patch_file; do
     rel="${patch_file#$PATCHES_DIR/}"
-    # *.html.insert / *.js.insert patches target the same-named .html/.js file
-    # (Lesson 511 / Lesson 534). The .insert suffix is a patcher-internal mode
-    # marker, not part of the destination filename.
+    # *.html.insert / *.js.insert / *.js.replace patches target the same-named
+    # .html/.js file (Lesson 511 / Lesson 534 / Lesson 1127). The .insert /
+    # .replace suffix is a patcher-internal mode marker, not part of the
+    # destination filename.
     case "$rel" in
         *.html.insert|*.js.insert|*.mjs.insert|*.cjs.insert)
             rel="${rel%.insert}"
+            ;;
+        *.js.replace|*.mjs.replace|*.cjs.replace)
+            rel="${rel%.replace}"
             ;;
     esac
     target="$RESOURCES_DIR/$rel"
@@ -364,8 +372,95 @@ while IFS= read -r patch_file; do
             applied=$((applied + 1))
             ;;
 
+        *.js.replace|*.mjs.replace|*.cjs.replace)
+            # REPLACE patch (Lesson 1127 — surgical single-line edits).
+            # Inserts the patch contents immediately before a sentinel line
+            # AND replaces that sentinel line with the LAST line of the patch.
+            # This lets us change one or two lines in a multi-thousand-line
+            # bundle file without rewriting the whole thing.
+            #
+            # Patch file format:
+            #   Line 1:   // MC-PATCH: <id>           (idempotency marker)
+            #   Line 2:   // REPLACE: <text>         (sentinel to find AND replace)
+            #   Line 3+:   (optional — additional lines inserted BEFORE the replacement)
+            #   Last line: <replacement text>        (replaces the sentinel)
+            #
+            # Idempotency: grep -F for the marker in target; if present, skip.
+            # The replacement is the last non-empty line of the patch file. If
+            # the patch body has only the marker + sentinel (just renaming one
+            # line), the replacement is line 2's "text" portion.
+            #
+            # If the sentinel is not found in the target (or found multiple
+            # times), we skip with a warning — the openclaw bundle structure
+            # changed and the maintainer needs to refine the sentinel.
+            first_line=$(head -n 1 "$patch_file")
+            marker=""
+            if [[ "$first_line" =~ ^//[[:space:]]*MC-PATCH:[[:space:]]*([^[:space:]]+)$ ]]; then
+                marker="// MC-PATCH: ${BASH_REMATCH[1]}"
+            fi
+
+            if [[ -z "$marker" ]]; then
+                echo "  SKIP $rel — *.js.replace patches require first line \`// MC-PATCH: <id>\`"
+                skipped=$((skipped + 1))
+                continue
+            fi
+
+            # Sentinel is on line 2, with REPLACE: prefix (same syntax as
+            # INSERT-BEFORE: in *.js.insert, but the last line of the patch
+            # REPLACES the sentinel instead of inserting before it).
+            sentinel_line=$(sed -n '2p' "$patch_file")
+            if [[ ! "$sentinel_line" =~ ^//[[:space:]]*REPLACE:[[:space:]](.+)$ ]]; then
+                echo "  SKIP $rel — *.js.replace patches require line 2 \`// REPLACE: <text>\`"
+                skipped=$((skipped + 1))
+                continue
+            fi
+            sentinel="${BASH_REMATCH[1]}"
+
+            if grep -qF "$marker" "$target" 2>/dev/null; then
+                echo "  SKIP $rel (marker $marker already present)"
+                skipped=$((skipped + 1))
+                continue
+            fi
+
+            sentinel_count=$(grep -cF "$sentinel" "$target" 2>/dev/null || true)
+            if [[ "$sentinel_count" -eq 0 ]]; then
+                echo "  SKIP $rel — sentinel '$sentinel' not found in target (openclaw bundle structure changed?)"
+                skipped=$((skipped + 1))
+                continue
+            fi
+            if [[ "$sentinel_count" -gt 1 ]]; then
+                echo "  SKIP $rel — sentinel '$sentinel' appears $sentinel_count times in target (ambiguous). Refine the sentinel."
+                skipped=$((skipped + 1))
+                continue
+            fi
+
+            # The replacement is the last line of the patch file.
+            replacement=$(tail -n 1 "$patch_file")
+
+            if ! $DRY_RUN; then
+                # Build the awk program: when the sentinel line is seen,
+                # emit the marker + REPLACE comment + replacement, then
+                # SKIP the original sentinel line. Otherwise print as-is.
+                awk -v marker="$marker" -v repline="$sentinel_line" -v replacement="$replacement" -v sentinel="$sentinel" '
+                    { line = $0
+                      if (line == sentinel && !replaced) {
+                        print marker
+                        print repline
+                        print replacement
+                        replaced = 1
+                        next
+                      }
+                      print line
+                    }
+                ' "$target" > "$target.new" && mv "$target.new" "$target"
+                echo "$rel $marker" >> "$APPLIED_LOG"
+            fi
+            echo "  REPLACE $rel (marker $marker, replaces '$sentinel')"
+            applied=$((applied + 1))
+            ;;
+
         *)
-            echo "  SKIP $rel — unknown file type (only .html, .html.insert, .js, .js.insert, .css, .mjs, .cjs, .json supported)"
+            echo "  SKIP $rel — unknown file type (only .html, .html.insert, .js, .js.insert, .js.replace, .css, .mjs, .cjs, .json supported)"
             skipped=$((skipped + 1))
             ;;
     esac
