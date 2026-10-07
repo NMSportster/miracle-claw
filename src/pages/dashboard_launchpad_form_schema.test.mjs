@@ -325,6 +325,133 @@ test("rendered select field marks required and includes options", () => {
 });
 
 // =========================================================================
+// rc57.11 (2026-10-07, David): per-field help text + placeholder.
+//
+// The form_schema `description` field becomes a `mc-field-help` <p>
+// under the input. `placeholder` becomes a real HTML placeholder attr
+// on text/textarea inputs. Both are trimmed and capped so a runaway
+// schema can't blow up the form.
+// =========================================================================
+
+test("formFieldsFromSchema picks up description as help", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      goal: {
+        type: "string",
+        title: "Goal",
+        description: "What you want to accomplish.",
+      },
+    },
+  };
+  const [f] = formFieldsFromSchema(schema);
+  assert.equal(f.help, "What you want to accomplish.");
+});
+
+test("formFieldsFromSchema picks up placeholder", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      goal: {
+        type: "string",
+        title: "Goal",
+        placeholder: "win back inactive customers",
+      },
+    },
+  };
+  const [f] = formFieldsFromSchema(schema);
+  assert.equal(f.placeholder, "win back inactive customers");
+});
+
+test("formFieldsFromSchema trims and caps long descriptions", () => {
+  const long = "x".repeat(500);
+  const schema = {
+    type: "object",
+    properties: { goal: { type: "string", title: "Goal", description: long } },
+  };
+  const [f] = formFieldsFromSchema(schema);
+  assert.equal(f.help.length, 240, "help text is capped at 240 chars");
+});
+
+test("formFieldsFromSchema trims and caps long placeholders", () => {
+  const long = "x".repeat(300);
+  const schema = {
+    type: "object",
+    properties: { goal: { type: "string", title: "Goal", placeholder: long } },
+  };
+  const [f] = formFieldsFromSchema(schema);
+  assert.equal(f.placeholder.length, 120, "placeholder is capped at 120 chars");
+});
+
+test("formFieldsFromSchema omits help when description missing", () => {
+  const schema = {
+    type: "object",
+    properties: { goal: { type: "string", title: "Goal" } },
+  };
+  const [f] = formFieldsFromSchema(schema);
+  assert.equal(f.help, undefined);
+});
+
+test("rendered text field includes help paragraph when help is set", () => {
+  const f = {
+    name: "goal",
+    label: "Goal",
+    type: "text",
+    required: true,
+    help: "What you want to accomplish. Be specific.",
+  };
+  const html = renderField(f);
+  assert.match(html, /class="mc-field-help"/);
+  assert.match(html, /What you want to accomplish/);
+});
+
+test("rendered text field omits help paragraph when help is unset", () => {
+  const f = {
+    name: "goal",
+    label: "Goal",
+    type: "text",
+    required: true,
+  };
+  const html = renderField(f);
+  assert.doesNotMatch(html, /mc-field-help/);
+});
+
+test("rendered text field includes placeholder attribute", () => {
+  const f = {
+    name: "goal",
+    label: "Goal",
+    type: "text",
+    placeholder: "win back inactive customers",
+  };
+  const html = renderField(f);
+  assert.match(html, /placeholder="win back inactive customers"/);
+});
+
+test("rendered textarea field includes placeholder attribute", () => {
+  const f = {
+    name: "body",
+    label: "Body",
+    type: "textarea",
+    placeholder: "Paste your draft here",
+  };
+  const html = renderField(f);
+  assert.match(html, /<textarea/);
+  assert.match(html, /placeholder="Paste your draft here"/);
+});
+
+test("rendered help text is HTML-escaped (defense against schema injection)", () => {
+  const f = {
+    name: "goal",
+    label: "Goal",
+    type: "text",
+    help: '<script>alert("xss")</script>',
+  };
+  const html = renderField(f);
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /&lt;script&gt;/);
+});
+
+// =========================================================================
 // Week 7.3 (2026-09-10): friendly error mapping.
 //
 // `mapMclawError(err)` parses the Rust-side `HTTP <code>: <body>`

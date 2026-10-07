@@ -5917,6 +5917,34 @@ kbd {
   color: var(--error, #c0392b);
 }
 
+/* Lesson 1109: bundled-catalog warning (when MAIC is offline). */
+.mc-mkt-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 193, 7, 0.08);
+  margin-bottom: 12px;
+}
+.mc-mkt-notice-text {
+  flex: 1 1 auto;
+}
+.mc-mkt-notice-dismiss {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.mc-mkt-notice-dismiss:hover {
+  color: var(--accent, #2c7be5);
+}
+
 .mc-mkt-empty {
   text-align: center;
   padding: 64px 16px;
@@ -6279,6 +6307,264 @@ kbd {
   background: linear-gradient(180deg, var(--bg-card) 0%, transparent 100%);
 }
 
+/* rc57.9 (2026-10-02, David): expandable module card.
+
+The pre-rc57.9 launchpad showed one row per module with a single
+"Run" button (only the first tool). That hid every other tool the
+module had and gave zero guidance on how to use it — two reasons
+this feature was invisible to first-time installers.
+
+The new design:
+  - Each module is a card with an always-visible header
+    (icon + name + "N tools" badge + caret).
+  - Click the header to toggle the body open/closed.
+  - The body lists every tool with a description and a "Use"
+    button that opens the form modal for that tool.
+  - The body also includes an expandable "How to use" hint that
+    holds one paragraph of guidance fetched from the server's
+    client_manifest.instructions field.
+  - Single-tool modules open by default (the "I just installed
+    something, let me click Run" path). Multi-tool modules start
+    collapsed so the grid stays scannable.
+  - Starter cards (empty state, not-yet-installed) use the same
+    shape but the "Use" buttons are absent and there's a single
+    "Install" button instead. */
+.mc-tool-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.mc-tool-card-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  color: var(--fg);
+  font: inherit;
+}
+
+.mc-tool-card-head:hover {
+  background: var(--bg-page, rgba(0, 0, 0, 0.03));
+}
+
+.mc-tool-card-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mc-tool-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.mc-tool-tools-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  background: var(--bg-page, rgba(0, 0, 0, 0.06));
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.mc-tool-card-caret {
+  font-size: 14px;
+  color: var(--fg-muted);
+  transition: transform 0.15s ease;
+}
+
+.mc-tool-card[data-expanded="true"] .mc-tool-card-caret {
+  transform: rotate(180deg);
+}
+
+.mc-tool-card-body {
+  border-top: 1px solid var(--border);
+  padding: 12px 16px 14px 16px;
+  background: var(--bg-page, rgba(0, 0, 0, 0.02));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mc-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mc-tool-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+
+.mc-tool-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mc-tool-row-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.mc-tool-row-desc {
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+
+.mc-tool-row-use,
+.mc-tool-install,
+.mc-tool-uninstall {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.mc-tool-row-use {
+  background: var(--accent, #2d6cdf);
+  color: #fff;
+}
+
+.mc-tool-row-use:hover {
+  filter: brightness(1.08);
+}
+
+.mc-tool-install {
+  background: var(--accent, #2d6cdf);
+  color: #fff;
+  align-self: flex-start;
+}
+
+.mc-tool-install:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.mc-tool-uninstall {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg-muted);
+  align-self: flex-start;
+}
+
+.mc-tool-uninstall:hover {
+  color: #c0392b;
+  border-color: #c0392b;
+}
+
+.mc-tool-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.mc-tool-instructions {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.mc-tool-instructions summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--fg);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mc-tool-instructions summary::before {
+  content: "💡";
+}
+
+.mc-tool-instructions summary::-webkit-details-marker {
+  display: none;
+}
+
+.mc-tool-instructions p {
+  margin: 8px 0 0 0;
+  color: var(--fg-muted);
+  line-height: 1.5;
+  /* rc57.11: see .mc-modal-instructions p. */
+  white-space: pre-line;
+}
+
+.mc-starter-card {
+  border-style: dashed;
+}
+
+.mc-modal-tool-desc {
+  margin: 0 0 12px 0;
+  font-size: 13px;
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+
+.mc-modal-instructions {
+  background: var(--bg-page, rgba(0, 0, 0, 0.04));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.mc-modal-instructions summary {
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mc-modal-instructions summary::before {
+  content: "💡";
+}
+
+.mc-modal-instructions summary::-webkit-details-marker {
+  display: none;
+}
+
+.mc-modal-instructions p {
+  margin: 8px 0 0 0;
+  color: var(--fg-muted);
+  line-height: 1.5;
+  /* rc57.11: honor newlines in the instructions text so we can use
+     blank lines as paragraph breaks. Plain text from the server is
+     always safe; anything weirder would be escaped by the JS layer. */
+  white-space: pre-line;
+}
+
 .mc-recent h2 {
   margin: 0 0 12px 0;
   font-size: 18px;
@@ -6421,6 +6707,18 @@ kbd {
 .mc-field select:focus {
   outline: 2px solid var(--accent, #2d6cdf);
   outline-offset: 1px;
+}
+
+/* rc57.11 (2026-10-07, David): per-field help text. Rendered under
+   the input as a small muted line so users see what good input looks
+   like without having to open the "How to use" details block.
+   Margin-top makes it feel attached to its input rather than the
+   next field. */
+.mc-field-help {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-muted);
 }
 
 .mc-modal-empty {

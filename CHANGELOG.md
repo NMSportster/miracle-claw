@@ -5,6 +5,31 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.0-rc57.11] — 2026-10-07 (Email Campaigns Pro in-app instructions + per-field help)
+
+Before adding new stuff, make the existing stuff work fantastically. The Email Campaigns Pro module's form modal was sending users into two unlabeled text fields ("Goal", "Audience") with one short instruction paragraph and no per-field help. This release adds the wiring for rich in-form guidance and ships a fully-written Email Campaigns Pro instruction set so the form is self-explanatory.
+
+**Why this matters**:
+- The MAIC server's `client_manifest.instructions` field is already rendered in the launchpad/marketplace cards and the modal's "How to use" details block, but it was terse and the form fields had no inline help.
+- The form_schema JSON-Schema subset used by the launchpad modal (`src/pages/dashboard_launchpad.js`) supported `minLength`/`maxLength`/`format`/`enum` but silently dropped `description` and `placeholder` — so even if module authors wrote helpful schema, it was thrown away.
+
+**Changes**:
+- **MAIC DB** (`email-campaigns-pro.client_manifest`): rewrote the `instructions` field with a plain-English writeup covering (a) what the module does, (b) how to write a good `goal` with 5 concrete examples, (c) how to write a good `audience` with 4 examples + the "leave blank" note, and (d) 4 tips for better results. Updated the `sequence` tool's `form_schema` to include `description` on both fields and relabeled the audience title to `Audience (optional)`.
+- **`formFieldsFromSchema()`** (`src/pages/dashboard_launchpad.js`): reads `prop.description` and `prop.placeholder` from the form schema. Both are trimmed and capped (help: 240 chars, placeholder: 120 chars) so a runaway schema can't blow up the form. Mirrors the existing minLength/maxLength handling.
+- **`renderField()`** (`src/pages/dashboard_launchpad.js`): renders `f.help` as a `<p class="mc-field-help">` line under the input, and `f.placeholder` as a real HTML `placeholder` attribute on text and textarea inputs. Help text is HTML-escaped (defense against schema injection).
+- **CSS** (`src/styles.css`): adds `.mc-field-help` (12px muted, tight line-height) and `white-space: pre-line` on `.mc-modal-instructions p` + `.mc-tool-instructions p` so blank lines in the instructions text render as paragraph breaks. Existing help-text classes were already there but no schema was emitting the field.
+- **Tests** (`src/pages/dashboard_launchpad_form_schema.test.mjs`): 10 new unit tests covering description, placeholder, trimming, capping, XSS escaping, and rendering for text + textarea fields. 36/36 tests in the file pass.
+
+**Live behavior**:
+- As soon as you install/refresh the Email Campaigns Pro module, the launchpad card and modal pick up the new "How to use" copy and the audience field is relabeled `Audience (optional)`.
+- Per-field help text + placeholders show in the modal once you're on rc57.11 (the prior rc57.9 dist doesn't read `prop.description`).
+- Other modules (ad-performance, brand-asset-kit, calendar-companion, data-analyzer, firecrawl, marketing-suite, voice-memo) already have `client_manifest.instructions` and the same `mc-modal-instructions` rendering, so they automatically get the better paragraph rendering too. They don't yet have per-field `description` entries in their form schemas — that's a follow-up if/when we revisit them.
+
+**Notes for module authors**:
+- Add `description` to a field's `properties` entry to get inline help text. Plain prose, will be escaped.
+- Add `placeholder` to a field's `properties` entry to get example text inside the empty input.
+- Both are 100% optional — fields without them render exactly as before.
+
 ## [v1.2.0-rc57.10] — 2026-10-07 (MAIC incomplete-turn recovery)
 
 Adds the `maic` provider to the embedded-agent's incomplete-turn retry guard so the "⚠️ Agent couldn't generate a response" error stops appearing on `stopReason=length` and similar recoverable failures. Root cause was that the OpenClaw bundle's `OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN = /^ollama(?:-|$)/` was checked by three retry paths (resolveReasoningOnlyRetryInstruction, resolveEmptyResponseRetryInstruction, isIncompleteTurnRecoverySupportedProviderModel). The pattern only matched `ollama` and `ollama-*` providers, so MAIC's provider never got the reasoning-only retry (2 max) or empty-response retry (1 max) — every recovery fell through to the user-visible error.

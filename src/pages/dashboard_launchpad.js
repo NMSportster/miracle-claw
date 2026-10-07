@@ -7,7 +7,12 @@
 //   2. Tier row: [Free ████░░░░ 12,400/50K]  [Plans & Pricing →]
 //   3. Container heading: "Good {morning|afternoon|evening}, *David*."
 //   4. Launch tiles (3): Windows / Terminal / Commands
-//   5. Your Tools: grid of installed modules + [+ Add a tool]
+//   5. Your Tools: grid of installed module cards (rc57.9 redesign).
+//      Each card shows the module's icon, name, one-line description,
+//      and an expand toggle that reveals:
+//        - All tools (each with name, description, "Use" button)
+//        - An "Instructions" expandable hint with one-paragraph guidance
+//      Clicking a tool's "Use" button opens the form modal for that tool.
 //   6. Recent: last 3 module invocations
 //
 // Data sources (all proxied through Rust Tauri commands, never direct HTTP):
@@ -270,15 +275,46 @@ function renderYourTools(installed) {
     // launchpad. The launchpad used to read m.tools directly and
     // showed "No tools" for everything.
     const tools = (m.client_manifest && m.client_manifest.tools) || [];
-    const firstTool = tools[0] && tools[0].name;
+    const instructions = (m.client_manifest && m.client_manifest.instructions) || "";
+    const toolRows = tools.map((t) => `
+      <div class="mc-tool-row" data-tool-name="${escapeHtml(t.name)}">
+        <div class="mc-tool-row-info">
+          <div class="mc-tool-row-name">${escapeHtml(t.name)}</div>
+          <div class="mc-tool-row-desc">${escapeHtml(t.description || "")}</div>
+        </div>
+        <button class="mc-tool-row-use" data-action="use-tool" data-tool-name="${escapeHtml(t.name)}">Use</button>
+      </div>
+    `).join("");
+    const hasTools = tools.length > 0;
+    // rc57.9: expand the card by default when there's only one tool
+    // (the typical case after install) so the user sees the "Use"
+    // button immediately. Multi-tool modules start collapsed so the
+    // grid stays scannable.
+    const expandOnMount = hasTools && tools.length === 1;
+    const toolsLabel = `${tools.length} tool${tools.length === 1 ? "" : "s"}`;
     return `
-      <div class="mc-tool-tile" data-module-id="${escapeHtml(m.module_id)}">
-        <div class="mc-tool-emoji">${emoji}</div>
-        <div class="mc-tool-name">${escapeHtml(m.name)}</div>
-        <div class="mc-tool-desc">${escapeHtml(m.description || "")}</div>
-        ${firstTool
-          ? `<button class="mc-tool-run" data-action="run-tool">Run</button>`
-          : `<button class="mc-tool-run" disabled>No tools</button>`}
+      <div class="mc-tool-tile mc-tool-card" data-module-id="${escapeHtml(m.module_id)}" data-expanded="${expandOnMount ? "true" : "false"}">
+        <button class="mc-tool-card-head" data-action="toggle-card">
+          <span class="mc-tool-emoji">${emoji}</span>
+          <span class="mc-tool-card-title">
+            <span class="mc-tool-name">${escapeHtml(m.name)}</span>
+            <span class="mc-tool-desc">${escapeHtml(m.description || "")}</span>
+          </span>
+          <span class="mc-tool-card-meta">
+            <span class="mc-tool-tools-count">${toolsLabel}</span>
+            <span class="mc-tool-card-caret" aria-hidden="true">▾</span>
+          </span>
+        </button>
+        <div class="mc-tool-card-body" ${expandOnMount ? "" : "hidden"}>
+          ${hasTools ? `<div class="mc-tool-list">${toolRows}</div>` : `<p class="mc-tool-empty">No tools registered.</p>`}
+          ${instructions ? `
+            <details class="mc-tool-instructions">
+              <summary>How to use ${escapeHtml(m.name)}</summary>
+              <p>${escapeHtml(instructions)}</p>
+            </details>
+          ` : ""}
+          <button class="mc-tool-uninstall" data-action="uninstall">Remove from your tools</button>
+        </div>
       </div>
     `;
   }).join("");
@@ -356,12 +392,42 @@ function renderStarters(marketplaceModules) {
     const emoji = m.icon || "🧩";
     const name = m.name || m.title || id;
     const desc = m.description || m.summary || "";
+    // rc57.9: starter cards mirror the installed-card shape so users
+    // can preview tools + instructions BEFORE installing.
+    const tools = (m.client_manifest && m.client_manifest.tools) || [];
+    const instructions = (m.client_manifest && m.client_manifest.instructions) || "";
+    const toolRows = tools.map((t) => `
+      <div class="mc-tool-row">
+        <div class="mc-tool-row-info">
+          <div class="mc-tool-row-name">${escapeHtml(t.name)}</div>
+          <div class="mc-tool-row-desc">${escapeHtml(t.description || "")}</div>
+        </div>
+      </div>
+    `).join("");
+    const toolsLabel = `${tools.length} tool${tools.length === 1 ? "" : "s"}`;
     return `
-      <div class="mc-tool-tile mc-starter-tile" data-module-id="${escapeHtml(id)}">
-        <div class="mc-tool-emoji">${emoji}</div>
-        <div class="mc-tool-name">${escapeHtml(name)}</div>
-        <div class="mc-tool-desc">${escapeHtml(desc)}</div>
-        <button class="mc-tool-run" data-action="install-starter">Install</button>
+      <div class="mc-tool-tile mc-tool-card mc-starter-card" data-module-id="${escapeHtml(id)}" data-expanded="false">
+        <button class="mc-tool-card-head" data-action="toggle-card">
+          <span class="mc-tool-emoji">${emoji}</span>
+          <span class="mc-tool-card-title">
+            <span class="mc-tool-name">${escapeHtml(name)}</span>
+            <span class="mc-tool-desc">${escapeHtml(desc)}</span>
+          </span>
+          <span class="mc-tool-card-meta">
+            <span class="mc-tool-tools-count">${toolsLabel}</span>
+            <span class="mc-tool-card-caret" aria-hidden="true">▾</span>
+          </span>
+        </button>
+        <div class="mc-tool-card-body" hidden>
+          ${tools.length ? `<div class="mc-tool-list">${toolRows}</div>` : ""}
+          ${instructions ? `
+            <details class="mc-tool-instructions">
+              <summary>How to use ${escapeHtml(name)}</summary>
+              <p>${escapeHtml(instructions)}</p>
+            </details>
+          ` : ""}
+          <button class="mc-tool-install" data-action="install-starter">Install</button>
+        </div>
       </div>
     `;
   }).join("");
@@ -417,7 +483,7 @@ function renderRecent(runs) {
 
 // --- modal: module form --------------------------------------------------
 
-function openModuleModal(module) {
+function openModuleModal(module, opts) {
   _closeModal();
   // Lesson 963: tools come from client_manifest.tools, not module.tools.
   const tools = (module.client_manifest && module.client_manifest.tools) || [];
@@ -425,14 +491,19 @@ function openModuleModal(module) {
     toast(`${module.name} has no tools to run.`);
     return;
   }
-  const firstTool = tools[0];
+  // rc57.9: accept an explicit toolName so the user can open any tool,
+  // not just the first. Falls back to the first tool when no name
+  // is given (legacy callers, like the empty-state starter).
+  const wantedName = opts && opts.toolName;
+  const tool = (wantedName && tools.find((t) => t.name === wantedName)) || tools[0];
   // Week 3 (2026-09-09): MAIC's form_schema is the JSON Schema subset
   // (type/required/properties), NOT the simpler {fields:[{name,label,type}]}
   // shape the old code expected. We use the same parsing rules as the
   // shared Rust `form_schema` module (see src-tauri/src/form_schema.rs)
   // so TUI + launchpad + mclaw CLI render the SAME fields.
-  const fields = formFieldsFromSchema(firstTool.form_schema);
+  const fields = formFieldsFromSchema(tool.form_schema);
   const fieldsHtml = fields.map(renderField).join("");
+  const instructions = (module.client_manifest && module.client_manifest.instructions) || "";
 
   const modal = document.createElement("div");
   modal.className = "mc-modal";
@@ -440,11 +511,18 @@ function openModuleModal(module) {
     <div class="mc-modal-backdrop" data-action="modal-close"></div>
     <div class="mc-modal-panel">
       <header class="mc-modal-header">
-        <h3>${escapeHtml(module.name)} · ${escapeHtml(firstTool.name)}</h3>
+        <h3>${escapeHtml(module.name)} · ${escapeHtml(tool.name)}</h3>
         <button class="mc-iconbtn" data-action="modal-close" title="Close">×</button>
       </header>
-      <form class="mc-modal-form" data-module="${escapeHtml(module.module_id)}" data-tool="${escapeHtml(firstTool.name)}">
-        ${fieldsHtml || `<p class="mc-modal-empty">${escapeHtml(firstTool.description || "No inputs needed.")}</p>`}
+      <p class="mc-modal-tool-desc">${escapeHtml(tool.description || "")}</p>
+      ${instructions ? `
+        <details class="mc-modal-instructions">
+          <summary>How to use ${escapeHtml(module.name)}</summary>
+          <p>${escapeHtml(instructions)}</p>
+        </details>
+      ` : ""}
+      <form class="mc-modal-form" data-module="${escapeHtml(module.module_id)}" data-tool="${escapeHtml(tool.name)}">
+        ${fieldsHtml || `<p class="mc-modal-empty">${escapeHtml(tool.description || "No inputs needed.")}</p>`}
         <footer class="mc-modal-footer">
           <button type="button" data-action="modal-close">Cancel</button>
           <button type="submit" class="mc-primary">Run</button>
@@ -546,7 +624,7 @@ function openModuleModal(module) {
       // { outputs, duration_ms, run_id }.
       const run = await invoke("mc_run_module", {
         moduleId: module.module_id,
-        tool: firstTool.name,
+        tool: tool.name,
         inputs,
         surface: "tauri",
       });
@@ -629,6 +707,17 @@ function formFieldsFromSchema(schema) {
       if (prop.minLength !== undefined) field.minLength = prop.minLength;
       if (prop.maxLength !== undefined) field.maxLength = prop.maxLength;
     }
+    // rc57.11 (2026-10-07, David): per-field help text from the form
+    // schema's `description` field. Rendered under the input as a
+    // small muted line so users see what good input looks like
+    // without opening the "How to use" details block. Trimmed to a
+    // reasonable length so a runaway schema can't blow up the form.
+    if (typeof prop.description === "string" && prop.description.trim().length > 0) {
+      field.help = prop.description.trim().slice(0, 240);
+    }
+    if (typeof prop.placeholder === "string" && prop.placeholder.trim().length > 0) {
+      field.placeholder = prop.placeholder.trim().slice(0, 120);
+    }
     out.push(field);
   }
   return out;
@@ -653,9 +742,18 @@ function renderField(f) {
   const id = `f-${f.name}`;
   const requiredMark = f.required ? " *" : "";
   const label = `<label for="${id}">${escapeHtml(f.label)}${requiredMark}</label>`;
+  // rc57.11: per-field help text + placeholder from the form schema.
+  // Help goes under the input as a small muted line; placeholder
+  // shows inside the empty input as an example.
+  const helpHtml = f.help
+    ? `<p class="mc-field-help">${escapeHtml(f.help)}</p>`
+    : "";
+  const placeholderAttr = f.placeholder
+    ? ` placeholder="${escapeHtml(f.placeholder)}"`
+    : "";
   let input;
   if (f.type === "textarea") {
-    input = `<textarea id="${id}" name="${cssEscape(f.name)}"${f.required ? " required" : ""}${f.minLength !== undefined ? ` minlength="${f.minLength}"` : ""}${f.maxLength !== undefined ? ` maxlength="${f.maxLength}"` : ""}>${escapeHtml(f.default ?? "")}</textarea>`;
+    input = `<textarea id="${id}" name="${cssEscape(f.name)}"${f.required ? " required" : ""}${f.minLength !== undefined ? ` minlength="${f.minLength}"` : ""}${f.maxLength !== undefined ? ` maxlength="${f.maxLength}"` : ""}${f.placeholder ? ` placeholder="${escapeHtml(f.placeholder)}"` : ""}>${escapeHtml(f.default ?? "")}</textarea>`;
   } else if (f.type === "select") {
     const opts = (f.options || []).map((o) =>
       `<option value="${escapeHtml(String(o))}"${o === f.default ? " selected" : ""}>${escapeHtml(String(o))}</option>`).join("");
@@ -678,9 +776,9 @@ function renderField(f) {
     const def = f.default !== undefined ? ` value="${escapeHtml(String(f.default))}"` : "";
     const minAttr = f.minLength !== undefined ? ` minlength="${f.minLength}"` : "";
     const maxAttr = f.maxLength !== undefined ? ` maxlength="${f.maxLength}"` : "";
-    input = `<input id="${id}" name="${cssEscape(f.name)}" type="text"${minAttr}${maxAttr}${f.required ? " required" : ""}${def} />`;
+    input = `<input id="${id}" name="${cssEscape(f.name)}" type="text"${minAttr}${maxAttr}${placeholderAttr}${f.required ? " required" : ""}${def} />`;
   }
-  return `<div class="mc-field">${label}${input}</div>`;
+  return `<div class="mc-field">${label}${input}${helpHtml}</div>`;
 }
 
 // Detect whether a field is a checkbox (the form has a hidden "" before
@@ -827,28 +925,57 @@ async function _onClick(ev) {
       // commands in src-tauri/src/lib.rs; UI lives at src/pages/marketplace.js.
       navigate("marketplace");
       break;
-    case "run-tool": {
-      const installedCard = target.closest("[data-module-id]");
-      if (!installedCard) return;
-      const moduleIdFromCard = installedCard.dataset.moduleId;
-      // We need the full client_manifest to render the form. Re-fetch is
-      // wasteful — but for Week 2 we keep it simple by re-listing installed.
+    case "toggle-card": {
+      const card = target.closest(".mc-tool-card");
+      if (!card) return;
+      const body = card.querySelector(".mc-tool-card-body");
+      if (!body) return;
+      const isExpanded = card.dataset.expanded === "true";
+      if (isExpanded) {
+        body.hidden = true;
+        card.dataset.expanded = "false";
+      } else {
+        body.hidden = false;
+        card.dataset.expanded = "true";
+      }
+      break;
+    }
+    case "use-tool": {
+      const card = target.closest("[data-module-id]");
+      if (!card) return;
+      const moduleIdFromCard = card.dataset.moduleId;
+      const toolName = target.dataset.toolName || null;
       invoke("mc_list_installed_modules").then((res) => {
         const mod = (res.modules || []).find((m) => m.module_id === moduleIdFromCard);
-        if (mod) openModuleModal(mod);
+        if (mod) openModuleModal(mod, { toolName });
       }).catch((err) => toast(`Failed to load module: ${err}`));
       break;
     }
-    case "install-starter": {
-      // Week 7.1: empty-state "Install" button. Same Rust command as
-      // the marketplace's install button, but instead of navigating
-      // away we re-mount the page so the empty state is replaced
-      // with the normal "Your Tools" grid (and the just-installed
-      // module shows up).
+    case "uninstall": {
       const card = target.closest("[data-module-id]");
       if (!card) return;
       const moduleId = card.dataset.moduleId;
-      const button = card.querySelector("button");
+      invoke("mc_uninstall_module", { moduleId })
+        .then(() => {
+          toast(`Removed ${moduleId}.`);
+          if (_currentRoot && _currentCtx) {
+            _currentRoot.removeEventListener("click", _onClick);
+            mount(_currentRoot, _currentCtx);
+          }
+        })
+        .catch((err) => toast(`Uninstall failed: ${err}`));
+      break;
+    }
+    case "install-starter": {
+      // rc57.9: empty-state starter cards have an Install button when
+      // expanded. Same Rust command as the marketplace's install
+      // button, but we re-mount the page so the empty state is
+      // replaced with the normal "Your Tools" grid (and the
+      // just-installed module shows up).
+      const card = target.closest("[data-module-id]");
+      if (!card) return;
+      const moduleId = card.dataset.moduleId;
+      const button = card.querySelector("button.mc-tool-install");
       if (button) {
         button.disabled = true;
         button.textContent = "Installing…";
@@ -856,14 +983,8 @@ async function _onClick(ev) {
       invoke("mc_install_module", { moduleId })
         .then(() => {
           toast(`Installed ${moduleId}.`);
-          // Re-mount the page. mount() handles its own abort via
-          // _abortController, so we can safely call it again — the
-          // previous AbortController is replaced.
           if (_currentRoot && _currentCtx) {
-            // Clear the existing click listener before re-rendering.
             _currentRoot.removeEventListener("click", _onClick);
-            // Re-mount (sets a fresh AbortController, re-fetches data,
-            // re-renders the shell).
             mount(_currentRoot, _currentCtx);
           }
         })
