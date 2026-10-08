@@ -4938,14 +4938,108 @@ fn spawn_launcher_and_wait(
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let stderr_log_path = log_path.clone();
     let stderr_app_handle = app_handle.clone();
+    // Lesson 1142 (2026-10-08, David): the MAIC plugin's
+    // `[MC-401]` stderr marker is dead because the openclaw
+    // provider-transport uses undici runtime, not globalThis.fetch,
+    // so the plugin's wrapper never sees the model-fetch call. The
+    // fallback is to tap the gateway's stdout for the
+    // `[model-fetch] response ... provider=maic ... status=401`
+    // line. Rate-limit silent_relogin to once per 30 seconds so
+    // the 3-failover cascade (3 model calls × 3+ stdout lines per
+    // call) doesn't fire 9+ relogins. We use AtomicI64 storing
+    // unix-epoch milliseconds; on detection, only call
+    // silent_relogin if `now - last >= 30_000`.
+    let stdout_acc: std::sync::Arc<std::sync::Mutex<Vec<u8>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let last_maic_401_relogin: std::sync::Arc<std::sync::atomic::AtomicI64> =
+        std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let stdout_app_handle = app_handle.clone();
+    let stdout_log_path = log_path.clone();
     std::thread::spawn(move || {
         while let Some(event) = rx.blocking_recv() {
             match event {
                 CommandEvent::Stdout(bytes) => {
+                    // Lesson 1142: tap stdout for the gateway's
+                    // "[model-fetch] response ... provider=maic
+                    // ... status=401" line. The MAIC plugin's
+                    // [MC-401] stderr marker is dead (Lesson 1140
+                    // was based on a wrong assumption that the
+                    // plugin's globalThis.fetch wrapper gets
+                    // called, but the openclaw provider-transport
+                    // uses undici runtime instead). Rate-limit
+                    // silent_relogin to once per 30s.
+                    let acc_clone = stdout_acc.clone();
+                    let app_for_relogin = stdout_app_handle.clone();
+                    let last_clone = last_maic_401_relogin.clone();
+                    {
+                        let mut acc = acc_clone.lock().unwrap();
+                        scan_stdout_for_maic_401(
+                            &mut acc,
+                            &bytes,
+                            |line| {
+                                // Rate-limit: only fire
+                                // silent_relogin if it's been
+                                // >=30s since the last one.
+                                // CompareAndSwap on
+                                // AtomicI64 (epoch ms).
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as i64)
+                                    .unwrap_or(0);
+                                let last_ms = last_clone.load(
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+                                if now_ms - last_ms < 30_000 {
+                                    return; // too soon
+                                }
+                                // Try to claim the slot: only one
+                                // thread can win the CAS. If we
+                                // lose, someone else already
+                                // fired within 30s.
+                                let prev = last_clone.compare_exchange(
+                                    last_ms,
+                                    now_ms,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+                                if prev.is_err() {
+                                    return; // race lost
+                                }
+                                eprintln!(
+                                    "[miracle-claw][launcher] MAIC 401 detected on stdout; firing silent_relogin (line: {})",
+                                    line.chars().take(200).collect::<String>()
+                                );
+                                log_to_file(&format!(
+                                    "MAIC 401 detected on stdout; firing silent_relogin (line: {})",
+                                    line.chars().take(200).collect::<String>()
+                                ));
+                                let state = app_for_relogin.state::<AppState>();
+                                match silent_relogin(state) {
+                                    Ok(Some(info)) => {
+                                        eprintln!(
+                                            "[miracle-claw][launcher] silent_relogin succeeded for {} (tier={}); gateway will respawn with fresh JWT",
+                                            info.email, info.tier
+                                        );
+                                    }
+                                    Ok(None) => {
+                                        eprintln!(
+                                            "[miracle-claw][launcher] silent_relogin returned None (no cached creds); user must log in manually"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[miracle-claw][launcher] silent_relogin failed: {}; user must log in manually",
+                                            e
+                                        );
+                                    }
+                                }
+                            },
+                        );
+                    }
                     let s = String::from_utf8_lossy(&bytes);
                     eprint!("[launcher.stdout] {}", s);
                     let _ = std::io::stderr().flush();
-                    if let Some(p) = &log_path {
+                    if let Some(p) = &stdout_log_path {
                         if let Ok(mut f) = std::fs::OpenOptions::new()
                             .create(true).append(true).open(p)
                         {
@@ -7567,6 +7661,81 @@ pub fn scan_stderr_for_mc401<FMarker, FLine>(
         }
     }
     // Drop everything we consumed; keep the partial tail.
+    if start > 0 {
+        accumulator.drain(..start);
+    }
+}
+
+/// Lesson 1142 (2026-10-08, David, follow-up to Lesson 1140): scan
+/// the openclaw gateway sidecar's **stdout** for a `model-fetch`
+/// response line that indicates a 401 from the `maic` provider.
+///
+/// Why this exists: the MAIC plugin's `[MC-401]` stderr marker
+/// relies on its `globalThis.fetch` wrapper being called for
+/// every outbound HTTP request. But the openclaw provider-transport
+/// uses `fetchWithRuntimeDispatcher` (undici runtime, NOT
+/// globalThis.fetch) — see
+/// `src-tauri/resources/dist/runtime-fetch-k5Zth7kk.js` —
+/// which routes around the wrapper. So when a model call gets a
+/// 401, the plugin's wrapper never sees it, no marker is emitted,
+/// and the auto-relogin wiring from Lesson 1140 sits dormant.
+///
+/// The fallback: the openclaw provider-transport DOES log the 401
+/// to stdout in a stable, recognizable format:
+///
+/// ```
+/// [provider-transport-fetch] [model-fetch] response provider=maic
+///   api=openai-completions model=chat-nemotron-super status=401
+///   elapsedMs=602 contentType=application/json
+/// ```
+///
+/// We tap that line out of stdout (the same way
+/// `scan_stderr_for_mc401` taps stderr) and fire `silent_relogin`
+/// once per detection. Rate-limiting is the caller's responsibility
+/// (a 3-failover cascade emits 3+ such lines, and we don't want
+/// 3 silent_relogins in a row).
+pub fn scan_stdout_for_maic_401<FMatch>(
+    accumulator: &mut Vec<u8>,
+    new_bytes: &[u8],
+    mut on_match: FMatch,
+) where
+    FMatch: FnMut(&str),
+{
+    accumulator.extend_from_slice(new_bytes);
+    let mut start = 0usize;
+    while start < accumulator.len() {
+        match accumulator[start..].iter().position(|&b| b == b'\n') {
+            Some(rel) => {
+                let end = start + rel;
+                let line_end = if end > start && accumulator[end - 1] == b'\r' {
+                    end - 1
+                } else {
+                    end
+                };
+                let line = std::str::from_utf8(&accumulator[start..line_end])
+                    .unwrap_or("");
+                // Substring check is intentional, not strict regex.
+                // The gateway's log line format may change between
+                // openclaw versions and we don't want a log format
+                // tweak to break auto-relogin. We require all three
+                // markers to be present to avoid false positives:
+                //   1. `[model-fetch] response` — distinguishes from
+                //      the start-of-request line and from other
+                //      subsystems
+                //   2. `provider=maic` — only fire for MAIC, not
+                //      for any other 401 from another provider
+                //   3. `status=401` — the actual auth failure
+                if line.contains("[model-fetch] response")
+                    && line.contains("provider=maic")
+                    && line.contains("status=401")
+                {
+                    on_match(line);
+                }
+                start = end + 1;
+            }
+            None => break,
+        }
+    }
     if start > 0 {
         accumulator.drain(..start);
     }
@@ -12377,5 +12546,113 @@ mod tests {
         write_chat_json_with_literal("persisted-jwt-after-empty-env");
         let jwt = current_maic_jwt().expect("chat.json should win over empty env");
         assert_eq!(jwt, "persisted-jwt-after-empty-env");
+    }
+
+    // ============================================================
+    // Lesson 1142: scan_stdout_for_maic_401
+    // ============================================================
+    //
+    // We test the gateway-side stdout line shape (with all three
+    // required substrings: "[model-fetch] response", "provider=maic",
+    // "status=401"). Negative cases: response-200, response-401 from
+    // a non-maic provider, start-of-request line, chunked split.
+    #[test]
+    fn scan_stdout_for_maic_401_detects_provider_maic_status_401() {
+        let mut acc: Vec<u8> = Vec::new();
+        let mut matches: Vec<String> = Vec::new();
+        let line = b"[provider-transport-fetch] [model-fetch] response provider=maic api=openai-completions model=chat-nemotron-super status=401 elapsedMs=602 contentType=application/json\n";
+        scan_stdout_for_maic_401(&mut acc, line, |l| matches.push(l.to_string()));
+        assert_eq!(matches.len(), 1, "should fire once for the maic 401 line");
+        assert!(matches[0].contains("status=401"));
+        assert!(acc.is_empty(), "no partial line should remain");
+    }
+
+    #[test]
+    fn scan_stdout_for_maic_401_ignores_200_response() {
+        let mut acc: Vec<u8> = Vec::new();
+        let mut matches: Vec<String> = Vec::new();
+        let line = b"[provider-transport-fetch] [model-fetch] response provider=maic api=openai-completions model=chat-nemotron-super status=200 elapsedMs=602 contentType=application/json\n";
+        scan_stdout_for_maic_401(&mut acc, line, |l| matches.push(l.to_string()));
+        assert_eq!(matches.len(), 0, "200 response is not auth failure");
+    }
+
+    #[test]
+    fn scan_stdout_for_maic_401_ignores_non_maic_401() {
+        // We don't want to fire silent_relogin for a 401 from
+        // OpenAI, Anthropic, etc. — only MAIC.
+        let mut acc: Vec<u8> = Vec::new();
+        let mut matches: Vec<String> = Vec::new();
+        let line = b"[provider-transport-fetch] [model-fetch] response provider=openai api=openai-completions model=gpt-4 status=401 elapsedMs=200 contentType=application/json\n";
+        scan_stdout_for_maic_401(&mut acc, line, |l| matches.push(l.to_string()));
+        assert_eq!(matches.len(), 0, "non-maic 401 should not fire");
+    }
+
+    #[test]
+    fn scan_stdout_for_maic_401_ignores_request_start_line() {
+        // The same `provider=maic` substring appears in the
+        // start-of-request line ("[model-fetch] start
+        // provider=maic...") but we only want to fire on the
+        // *response* line. The "[model-fetch] response" check is
+        // what distinguishes them.
+        let mut acc: Vec<u8> = Vec::new();
+        let mut matches: Vec<String> = Vec::new();
+        let line = b"[provider-transport-fetch] [model-fetch] start provider=maic api=openai-completions model=chat-nemotron-super method=POST url=https://maicserver.com/v1/chat/completions timeoutMs=60000 proxy=none policy=custom\n";
+        scan_stdout_for_maic_401(&mut acc, line, |l| matches.push(l.to_string()));
+        assert_eq!(matches.len(), 0, "request start line should not fire");
+    }
+
+    #[test]
+    fn scan_stdout_for_maic_401_handles_chunked_split() {
+        // A real-world scenario: the gateway logs the start
+        // line in one chunk, the response line in another. We
+        // want the response line to fire even if it lands
+        // across multiple TCP/pipe writes.
+        let mut acc: Vec<u8> = Vec::new();
+        let mut matches: Vec<String> = Vec::new();
+        // First chunk: just the start, no \n yet.
+        let chunk1 = b"[provider-transport-fetch] [model-fetch] start provider=maic";
+        scan_stdout_for_maic_401(&mut acc, chunk1, |l| matches.push(l.to_string()));
+        assert_eq!(matches.len(), 0, "no complete line yet");
+        assert!(!acc.is_empty(), "partial should be in accumulator");
+        // Second chunk: the start line terminator + an unrelated
+        // line + the response line split across two writes.
+        let chunk2a = b" model=chat-nemotron-super method=POST\n[gateway] resolving authentication...\n[provider-transport-fetch] [model-fetch] response provider=maic";
+        let chunk2b = b" api=openai-completions model=chat-nemotron-super status=401 elapsedMs=602 contentType=application/json\n";
+        scan_stdout_for_maic_401(&mut acc, chunk2a, |l| matches.push(l.to_string()));
+        assert_eq!(matches.len(), 0, "no match yet (response is split)");
+        scan_stdout_for_maic_401(&mut acc, chunk2b, |l| matches.push(l.to_string()));
+        assert_eq!(matches.len(), 1, "match should fire after split-across-chunks completes");
+        assert!(matches[0].contains("status=401"));
+        assert!(acc.is_empty(), "no partial should remain");
+    }
+
+    #[test]
+    fn scan_stdout_for_maic_401_handles_crlf_endings() {
+        // Windows line endings — Tauri 2 on Windows normalizes
+        // pipe writes through stdio which can produce \r\n.
+        let mut acc: Vec<u8> = Vec::new();
+        let mut matches: Vec<String> = Vec::new();
+        let line = b"[provider-transport-fetch] [model-fetch] response provider=maic api=openai-completions model=chat-nemotron-super status=401 elapsedMs=602 contentType=application/json\r\n";
+        scan_stdout_for_maic_401(&mut acc, line, |l| matches.push(l.to_string()));
+        assert_eq!(matches.len(), 1, "CRLF line should fire");
+        assert!(acc.is_empty());
+    }
+
+    #[test]
+    fn scan_stdout_for_maic_401_handles_three_failover_cascade() {
+        // In a real failure: gateway logs 3 responses (one per
+        // fallback candidate) in 3 separate stdout chunks. We
+        // fire the callback 3 times; the caller is responsible
+        // for rate-limiting (30s window via AtomicI64 in the
+        // spawn_launcher_and_wait wiring).
+        let mut acc: Vec<u8> = Vec::new();
+        let mut matches: Vec<String> = Vec::new();
+        let line_a = b"[provider-transport-fetch] [model-fetch] response provider=maic model=chat-nemotron-super status=401\n";
+        let line_b = b"[provider-transport-fetch] [model-fetch] response provider=maic model=milagro-oc-deepseek status=401\n";
+        let line_c = b"[provider-transport-fetch] [model-fetch] response provider=maic model=milagro-oc-minimax status=401\n";
+        scan_stdout_for_maic_401(&mut acc, line_a, |l| matches.push(l.to_string()));
+        scan_stdout_for_maic_401(&mut acc, line_b, |l| matches.push(l.to_string()));
+        scan_stdout_for_maic_401(&mut acc, line_c, |l| matches.push(l.to_string()));
+        assert_eq!(matches.len(), 3, "all 3 maic 401s in the failover cascade should fire");
     }
 }

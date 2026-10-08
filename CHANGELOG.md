@@ -5,6 +5,36 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.0-rc57.15] — 2026-10-08 (Lesson 1142: real MAIC 401 detector on launcher stdout)
+
+## [v1.2.0-rc57.15] — 2026-10-08 (Lesson 1142: real MAIC 401 detector on launcher stdout)
+
+rc57.14 (Lesson 1140) wired up `[MC-401]` stderr marker detection in the openclaw launcher sidecar. It worked in the unit tests. It did NOT work in production. The user installed rc57.14, hit a 401, and the launcher's stderr had zero `[MC-401]` markers in it. The auto-relogin never fired.
+
+**Root cause**: the MAIC plugin's `[MC-401]` marker relies on its `globalThis.fetch` wrapper being called for every outbound HTTP request. But the openclaw provider-transport module uses `fetchWithRuntimeDispatcher` (undici runtime, NOT `globalThis.fetch`) — see `src-tauri/resources/dist/runtime-fetch-k5Zth7kk.js`. The undici runtime fetch routes around the plugin's wrapper. The plugin's marker is never emitted because the plugin's wrapper never sees the call.
+
+**The fix**: tap the openclaw provider-transport's own stdout line `[provider-transport-fetch] [model-fetch] response provider=maic ... status=401` and fire `silent_relogin` from that. The line IS emitted (we saw it in the launcher's `launcher.stdout` log at 13:22 MDT: 3 lines for 3 model-fallback attempts) and unambiguously signals a MAIC 401.
+
+**Changes**:
+- **`scan_stdout_for_maic_401()`** (new in `src-tauri/src/lib.rs`): same accumulator-based pattern as `scan_stderr_for_mc401`. Fires `on_match(line)` for any line containing all three substrings: `[model-fetch] response`, `provider=maic`, `status=401`. Substring check (not regex) so a future log format tweak doesn't break auto-relogin.
+- **`spawn_launcher_and_wait()`** (`src-tauri/src/lib.rs`): added a `stdout_acc` accumulator + `AtomicI64`-based 30-second rate limiter + `scan_stdout_for_maic_401` invocation in the `CommandEvent::Stdout` branch. Rate-limit prevents the 3-failover cascade (3 model calls × 3+ stdout lines per call) from firing 9+ relogins.
+- **Test** (`src-tauri/src/lib.rs::tests::scan_stdout_for_maic_401_*`): 7 cases — detects 401, ignores 200, ignores non-maic 401, ignores request start line, handles chunked split, handles CRLF, handles 3-failover cascade. 7 passed, 0 failed.
+- **All 302 lib tests pass** (was 295 before; 7 new from this release).
+- `package.json` + `src-tauri/Cargo.toml` + `src-tauri/tauri.conf.json` — bumped to 1.2.0-rc57.15
+
+**Anti-pattern reminder** (Lesson 1142):
+- When wiring a child-process event detector, **trace the actual code path the signal flows through**, not the path the docs say it should. The MAIC plugin's wrapper was "supposed to" catch every fetch, but the openclaw runtime installed a fetchImpl that bypassed it. Lesson 1140 was based on docs/code reading; Lesson 1142 is based on actual log evidence.
+- The signal you can act on is better than the signal you wish you had. The `[model-fetch] response` line is emitted by the openclaw runtime itself, so it can't be bypassed by a plugin shim.
+- Rate-limit: any event that triggers a global state change (e.g., silent_relogin that respawns the gateway) should be rate-limited. 30s is a reasonable default — long enough that one relogin per cascade is fine, short enough that consecutive authentications of the same user on different devices are also fine.
+
+**What you'll see in production**: the same log line as rc57.14 expects, but emitted from stdout now:
+```
+[miracle-claw][launcher] MAIC 401 detected on stdout; firing silent_relogin (line: [provider-transport-fetch] [model-fetch] response provider=maic ... status=401 ... )
+[miracle-claw][launcher] silent_relogin succeeded for <email> (tier=...); gateway will respawn with fresh JWT
+```
+
+**Related**: Lesson 1140 (Lesson 1142's wrong-but-trying predecessor), Lesson 1141 (build script archive fix), Lesson 1019 (MAIC plugin marker emitter — Lesson 1142 supersedes it for the launcher path).
+
 ## [v1.2.0-rc57.14] — 2026-10-08 (Tauri MC chat auto-relogin on JWT 401)
 
 Miracle Claw's silent-relogin-on-401 flow (Lesson 194, v1.7.2 of the earlier Tauri stack; carried over into MC v1.2.0) was wired up only for the **embedded TUI** (`mc-terminal` shell). The Tauri MC chat webview — which is just a WebView2 pointed at the openclaw gateway sidecar (`miracle-claw-launcher --gateway-port 28789`) — was missing the stderr-drain that watches for the MAIC plugin's `[MC-401]` markers. Result: when the user's MAIC JWT hit its 7-day hard cap, the Tauri MC chat window showed `All models failed (3): maic/... 401 status code (no body). Re-authenticate with: openclaw models auth login --provider 'maic' --force` and refused to recover automatically. Only the embedded `mc-terminal` shell (a separate shell process MC spawns) would have auto-relogged-in. This release closes that gap for the chat webview.
