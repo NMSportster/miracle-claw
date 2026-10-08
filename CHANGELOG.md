@@ -5,6 +5,56 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.0-rc57.16] — 2026-10-08 (Lesson 1143: relogin deadlock fix + log_to_file visibility)
+
+David installed rc57.15, hit a 401, the detector fired (we saw `MAIC 401 detected on stdout; firing silent_relogin` in `miracle-claw.log`), but `silent_relogin` never produced a result log line. The 3-failover cascade continued. The chat.json apiKey was NOT updated (still expired). The launcher sidecar was NOT killed. Result: user had to re-log in manually again.
+
+**Root cause** (Lesson 1143): the relogin callback was running INSIDE `stdout_acc.lock().unwrap()`. That means the relogin (sync, 100ms-5s) was blocking the stdout lock. Worse, `silent_relogin` calls `child.kill()` on the very launcher whose stdout we're reading — the kill happens but the surrounding thread can be torn down mid-callback. And the result eprintlns went to **the bundled Tauri process's stderr, which on Windows is a no-op (not captured anywhere)** — we only saw the "firing" line because THAT one was also written via `log_to_file`, but the result arms were eprintln-only.
+
+**Two fixes**:
+
+**Fix 1 — Move relogin off the stdout lock + spawn a separate thread**
+
+Old: callback ran inside `acc_clone.lock().unwrap()`. The lock was held for the full silent_relogin duration.
+
+New: `scan_stdout_for_maic_401` only RECORDS that a 401 was detected (returns `Option<String>` from the lock block). After the lock is released, if detection happened, `std::thread::spawn` is called to run the actual `silent_relogin` in a separate thread. The stdout reader thread never blocks on relogin work.
+
+**Fix 2 — Add `log_to_file` calls at every step of the relogin path**
+
+Before: only the "firing silent_relogin" line was logged via `log_to_file`. The result arms (success/None/Err) and all internal `silent_relogin` steps only went to `eprintln!` (parent stderr, lost on Windows).
+
+After: every step in the relogin path writes to BOTH `eprintln!` (visible in dev console) AND `log_to_file` (visible in `%APPDATA%\MiracleClaw\miracle-claw.log`). Steps now logged:
+- `MAIC 401 detected on stdout; firing silent_relogin`
+- `MAIC 401 detector: entering silent_relogin()`
+- `silent_relogin: entered`
+- `silent_relogin: endpoint=...`
+- `silent_relogin: creds loaded for ...` (or `no cached creds` / `failed to load cached creds: ...`)
+- `silent_relogin: POST /v1/users/login starting`
+- `silent_relogin: HTTP response N bytes` (or `HTTP failed: ...`)
+- `silent_relogin: setting MAIC_API_KEY env var`
+- `silent_relogin: ensure_maic_provider_config_for_tier(...)`
+- `silent_relogin: replace_secret_ref_with_literal starting` / `done`
+- `silent_relogin: success — user=..., tier=...`
+- `silent_relogin: killing launcher sidecar` (or `no launcher child to kill`)
+- `silent_relogin: child.kill() returned`
+- `silent_relogin: returning Ok(Some(MaicLoginInfo))`
+- `MAIC 401 detector: silent_relogin succeeded/failed/None` + thread exit
+
+**What David will see in miracle-claw.log on next MAIC 401**: a continuous chain of 15+ log entries showing exactly which step the relogin reached. If it hangs again, the LAST entry will tell us exactly where. If it succeeds, we'll see `killing launcher sidecar` and `child.kill() returned` followed by a fresh `spawn_launcher_and_wait Ok` for the respawned launcher.
+
+**Anti-pattern reminder** (Lesson 1143):
+- When wrapping a function in a callback, check if the callback runs INSIDE a lock. The original Lesson 1142 code had the relogin callback inside `stdout_acc.lock()` — that meant any sync function (HTTP, file I/O) called by the callback would hold the lock indefinitely.
+- For visibility-critical code paths, ALWAYS log to both `eprintln!` AND a persistent log file. On Windows, the bundled Tauri process's stderr is often `/dev/null` — eprintln-only diagnostics are invisible to users.
+- `std::thread::spawn` is fine for `silent_relogin`'s sync work. Don't reach for tokio unless you actually need async I/O — the spawn adds overhead but is the simplest way to decouple a sync function from its caller.
+- Debugging priority: add log_to_file FIRST when something isn't working, before you start refactoring. Lesson 1142 was based on "we see the firing line, so the detector works" — but the result of the relogin was never visible.
+
+**Where this applies**:
+- `src-tauri/src/lib.rs::spawn_launcher_and_wait` CommandEvent::Stdout branch (rc57.16, the new flow)
+- `src-tauri/src/lib.rs::silent_relogin` (rc57.16, the new log_to_file calls)
+- Any future Tauri/openclaw integration where a stdout/stderr reader fires a long-running operation
+
+**Related**: Lesson 1140 ([MC-401] stderr marker — the wrong signal), Lesson 1142 (stdout [model-fetch] 401 line — the right signal, but held in lock), Lesson 1141 (build script archive fix).
+
 ## [v1.2.0-rc57.15] — 2026-10-08 (Lesson 1142: real MAIC 401 detector on launcher stdout)
 
 ## [v1.2.0-rc57.15] — 2026-10-08 (Lesson 1142: real MAIC 401 detector on launcher stdout)

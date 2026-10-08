@@ -3777,6 +3777,7 @@ fn maic_logout(
 fn silent_relogin(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<MaicLoginInfo>, String> {
+    log_to_file("silent_relogin: entered");
     // Determine the endpoint we'd be logging into: same resolution logic
     // as maic_login so a MAIC_API_URL override is honored.
     let endpoint = std::env::var("MAIC_API_URL")
@@ -3785,6 +3786,7 @@ fn silent_relogin(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
     let endpoint = strip_trailing_v1(&endpoint);
+    log_to_file(&format!("silent_relogin: endpoint={}", endpoint));
 
     // Load cached creds. The most common "no creds" path is the user
     // didn't check Remember me — return Ok(None) so OpenClaw knows to
@@ -3793,6 +3795,7 @@ fn silent_relogin(
         Ok(c) => c,
         Err(auto_relogin::AutoReloginError::NoCachedCreds) => {
             eprintln!("[miracle-claw] silent_relogin: no cached creds");
+            log_to_file("silent_relogin: no cached creds");
             return Ok(None);
         }
         Err(e) => {
@@ -3800,9 +3803,11 @@ fn silent_relogin(
                 "[miracle-claw] silent_relogin: failed to load cached creds: {}",
                 e
             );
+            log_to_file(&format!("silent_relogin: failed to load cached creds: {}", e));
             return Err(format!("failed to load cached credentials: {}", e));
         }
     };
+    log_to_file(&format!("silent_relogin: creds loaded for {}", creds.email));
 
     // Run the same login POST as maic_login. We re-implement the core
     // (parse response, set env var, replace SecretRef, return info) here
@@ -3813,8 +3818,13 @@ fn silent_relogin(
         "password": creds.password,
     })
     .to_string();
+    log_to_file("silent_relogin: POST /v1/users/login starting");
     let response_body = http_post_json_with_tls_fallback(&endpoint, "/v1/users/login", &body)
-        .map_err(|e| format!("silent relogin HTTP failed: {}", e))?;
+        .map_err(|e| {
+            log_to_file(&format!("silent_relogin: HTTP failed: {}", e));
+            format!("silent relogin HTTP failed: {}", e)
+        })?;
+    log_to_file(&format!("silent_relogin: HTTP response {} bytes", response_body.len()));
 
     let parsed: serde_json::Value = serde_json::from_str(&response_body)
         .map_err(|e| format!("silent relogin response could not be parsed: {}", e))?;
@@ -3836,6 +3846,7 @@ fn silent_relogin(
         .unwrap_or("free")
         .to_string();
 
+    log_to_file("silent_relogin: setting MAIC_API_KEY env var");
     // Update env var + on-disk config so the rest of MC sees the new token.
     std::env::set_var(ENV_VAR_NAME, &token);
     // Lesson 523 (NEW): pass the resolved tier so silent relogin
@@ -3843,8 +3854,11 @@ fn silent_relogin(
     // for Free→Pro upgrades mid-session where the original bootstrap
     // wrote an empty tools array.
     let parsed_tier = crate::auth::tier::Tier::from_str(&tier);
+    log_to_file(&format!("silent_relogin: ensure_maic_provider_config_for_tier({:?})", parsed_tier));
     let _ = ensure_maic_provider_config_for_tier(parsed_tier);
+    log_to_file("silent_relogin: replace_secret_ref_with_literal starting");
     let _ = replace_secret_ref_with_literal();
+    log_to_file("silent_relogin: replace_secret_ref_with_literal done");
 
     // Lesson 517 / rc20: route the default model on silent relogin too.
     // Critical for users whose first login happened on Free and whose
@@ -3861,6 +3875,7 @@ fn silent_relogin(
         "[miracle-claw] silent_relogin: success — user={}, tier={}",
         resolved_email, tier
     );
+    log_to_file(&format!("silent_relogin: success — user={}, tier={}", resolved_email, tier));
 
     // Lesson 1013 (2026-09-23, David): kill the launcher sidecar so the
     // gateway picks up the new JWT on next respawn. Same reasoning as
@@ -3874,8 +3889,13 @@ fn silent_relogin(
         eprintln!(
             "[miracle-claw] silent_relogin: killing launcher sidecar so gateway re-reads new JWT"
         );
+        log_to_file("silent_relogin: killing launcher sidecar so gateway re-reads new JWT");
         let _ = child.kill();
+        log_to_file("silent_relogin: child.kill() returned");
+    } else {
+        log_to_file("silent_relogin: no launcher child to kill (state was None)");
     }
+    log_to_file("silent_relogin: returning Ok(Some(MaicLoginInfo))");
 
     Ok(Some(MaicLoginInfo {
         token,
@@ -4968,11 +4988,22 @@ fn spawn_launcher_and_wait(
                     // called, but the openclaw provider-transport
                     // uses undici runtime instead). Rate-limit
                     // silent_relogin to once per 30s.
+                    //
+                    // IMPORTANT: do the scan-and-decide outside the
+                    // stdout lock. The callback used to run while
+                    // holding stdout_acc, which meant silent_relogin
+                    // (sync, ~100ms-5s) blocked ALL stdout processing.
+                    // Worse, if silent_relogin called child.kill() the
+                    // launcher would die and any subsequent stdout
+                    // lines would be lost. Now we just record the
+                    // detection, release the lock, and fire the
+                    // relogin in a separate thread.
                     let acc_clone = stdout_acc.clone();
-                    let app_for_relogin = stdout_app_handle.clone();
                     let last_clone = last_maic_401_relogin.clone();
-                    {
+                    let app_for_relogin = stdout_app_handle.clone();
+                    let detected_line: Option<String> = {
                         let mut acc = acc_clone.lock().unwrap();
+                        let mut found: Option<String> = None;
                         scan_stdout_for_maic_401(
                             &mut acc,
                             &bytes,
@@ -4980,8 +5011,6 @@ fn spawn_launcher_and_wait(
                                 // Rate-limit: only fire
                                 // silent_relogin if it's been
                                 // >=30s since the last one.
-                                // CompareAndSwap on
-                                // AtomicI64 (epoch ms).
                                 let now_ms = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .map(|d| d.as_millis() as i64)
@@ -5005,36 +5034,55 @@ fn spawn_launcher_and_wait(
                                 if prev.is_err() {
                                     return; // race lost
                                 }
-                                eprintln!(
-                                    "[miracle-claw][launcher] MAIC 401 detected on stdout; firing silent_relogin (line: {})",
-                                    line.chars().take(200).collect::<String>()
-                                );
-                                log_to_file(&format!(
-                                    "MAIC 401 detected on stdout; firing silent_relogin (line: {})",
-                                    line.chars().take(200).collect::<String>()
-                                ));
-                                let state = app_for_relogin.state::<AppState>();
-                                match silent_relogin(state) {
-                                    Ok(Some(info)) => {
-                                        eprintln!(
-                                            "[miracle-claw][launcher] silent_relogin succeeded for {} (tier={}); gateway will respawn with fresh JWT",
-                                            info.email, info.tier
-                                        );
-                                    }
-                                    Ok(None) => {
-                                        eprintln!(
-                                            "[miracle-claw][launcher] silent_relogin returned None (no cached creds); user must log in manually"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "[miracle-claw][launcher] silent_relogin failed: {}; user must log in manually",
-                                            e
-                                        );
-                                    }
-                                }
+                                found = Some(line.to_string());
                             },
                         );
+                        found
+                    };
+                    if let Some(line) = detected_line {
+                        // Fire the relogin in a separate thread so
+                        // we don't block the stdout reader.
+                        std::thread::spawn(move || {
+                            log_to_file(&format!(
+                                "MAIC 401 detected on stdout; firing silent_relogin (line: {})",
+                                line.chars().take(200).collect::<String>()
+                            ));
+                            eprintln!(
+                                "[miracle-claw][launcher] MAIC 401 detected on stdout; firing silent_relogin (line: {})",
+                                line.chars().take(200).collect::<String>()
+                            );
+                            let state = app_for_relogin.state::<AppState>();
+                            log_to_file("MAIC 401 detector: entering silent_relogin()");
+                            match silent_relogin(state) {
+                                Ok(Some(info)) => {
+                                    eprintln!(
+                                        "[miracle-claw][launcher] silent_relogin succeeded for {} (tier={}); gateway will respawn with fresh JWT",
+                                        info.email, info.tier
+                                    );
+                                    log_to_file(&format!(
+                                        "MAIC 401 detector: silent_relogin succeeded for {} (tier={})",
+                                        info.email, info.tier
+                                    ));
+                                }
+                                Ok(None) => {
+                                    eprintln!(
+                                        "[miracle-claw][launcher] silent_relogin returned None (no cached creds); user must log in manually"
+                                    );
+                                    log_to_file("MAIC 401 detector: silent_relogin returned None (no cached creds)");
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[miracle-claw][launcher] silent_relogin failed: {}; user must log in manually",
+                                        e
+                                    );
+                                    log_to_file(&format!(
+                                        "MAIC 401 detector: silent_relogin failed: {}",
+                                        e
+                                    ));
+                                }
+                            }
+                            log_to_file("MAIC 401 detector: silent_relogin() returned, thread exiting");
+                        });
                     }
                     let s = String::from_utf8_lossy(&bytes);
                     eprint!("[launcher.stdout] {}", s);
