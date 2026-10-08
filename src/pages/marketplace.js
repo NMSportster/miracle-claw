@@ -171,6 +171,11 @@ function renderCard(m) {
   // Lesson 1096: subtitle goes under the name on the card; MAIC's
   // catalog didn't ship one but ours does and it's useful.
   const subtitle = m.subtitle || "";
+  // rc57.9 (2026-10-02, David): mirror the launchpad card's expand-to-see
+  // pattern on the marketplace so users can preview tools and read the
+  // "How to use" hint BEFORE installing.
+  const tools = (m.client_manifest && m.client_manifest.tools) || [];
+  const instructions = (m.client_manifest && m.client_manifest.instructions) || "";
 
   const ratingLine = (rating !== null && rating !== undefined && Number.isFinite(Number(rating)))
     ? `<span class="mc-mkt-rating" title="${escapeHtml(rating)}">${ratingStars(rating)} <span class="muted">${escapeHtml(Number(rating).toFixed(1))}</span></span>`
@@ -188,25 +193,43 @@ function renderCard(m) {
     ? `<button class="mc-mkt-btn mc-mkt-btn-installed" data-action="uninstall" data-id="${escapeHtml(id)}">Installed ✓</button>`
     : `<button class="mc-mkt-btn mc-mkt-btn-install" data-action="install" data-id="${escapeHtml(id)}">Install</button>`;
 
-  return `
-    <article class="modules-card modules-card-available mc-mkt-card" data-id="${escapeHtml(id)}">
-      <div class="modules-card-head">
-        <div class="modules-card-icon">${escapeHtml(icon)}</div>
-        <div class="modules-card-titles">
-          <div class="modules-card-name">${escapeHtml(name)}</div>
-          ${subtitle ? `<div class="modules-card-subtitle muted small">${escapeHtml(subtitle)}</div>` : ""}
-          <div class="modules-card-publisher muted small">by ${escapeHtml(publisher)}${version ? ` · v${escapeHtml(version)}` : ""}</div>
-          ${category ? `<div class="muted small">${escapeHtml(category)}</div>` : ""}
-        </div>
-        <div class="mc-mkt-card-meta">
-          ${ratingLine}
-          ${downloadsLine}
-        </div>
+  const toolsLabel = `${tools.length} tool${tools.length === 1 ? "" : "s"}`;
+  const toolRows = tools.map((t) => `
+    <div class="mc-tool-row">
+      <div class="mc-tool-row-info">
+        <div class="mc-tool-row-name">${escapeHtml(t.name)}</div>
+        <div class="mc-tool-row-desc">${escapeHtml(t.description || "")}</div>
       </div>
-      <p class="modules-card-desc">${escapeHtml(desc)}</p>
-      ${tagsLine}
-      <div class="modules-card-actions">
-        ${action}
+    </div>
+  `).join("");
+
+  return `
+    <article class="modules-card modules-card-available mc-mkt-card mc-tool-card" data-id="${escapeHtml(id)}" data-expanded="false">
+      <button class="modules-card-head mc-tool-card-head" data-action="toggle-mkt-card">
+        <span class="modules-card-icon">${escapeHtml(icon)}</span>
+        <span class="modules-card-titles mc-tool-card-title">
+          <span class="modules-card-name mc-tool-name">${escapeHtml(name)}</span>
+          ${subtitle ? `<span class="modules-card-subtitle muted small">${escapeHtml(subtitle)}</span>` : ""}
+          <span class="modules-card-desc mc-tool-desc">${escapeHtml(desc)}</span>
+        </span>
+        <span class="mc-tool-card-meta">
+          <span class="mc-tool-tools-count">${toolsLabel}</span>
+          <span class="mc-tool-card-caret" aria-hidden="true">▾</span>
+        </span>
+      </button>
+      <div class="mc-tool-card-body" hidden>
+        ${publisher || version ? `<div class="muted small">by ${escapeHtml(publisher)}${version ? ` · v${escapeHtml(version)}` : ""}</div>` : ""}
+        ${category ? `<div class="muted small">${escapeHtml(category)}</div>` : ""}
+        ${ratingLine || downloadsLine ? `<div class="mc-mkt-card-meta">${ratingLine}${downloadsLine}</div>` : ""}
+        ${tagsLine}
+        ${tools.length ? `<div class="mc-tool-list">${toolRows}</div>` : ""}
+        ${instructions ? `
+          <details class="mc-tool-instructions">
+            <summary>How to use ${escapeHtml(name)}</summary>
+            <p>${escapeHtml(instructions)}</p>
+          </details>
+        ` : ""}
+        <div class="modules-card-actions">${action}</div>
       </div>
     </article>
   `;
@@ -227,7 +250,10 @@ function renderGrid() {
 
 function renderShell() {
   const noticeHtml = state.bundledNotice
-    ? `<div class="mc-mkt-notice muted small" role="status">⚠️ ${escapeHtml(state.bundledNotice)}</div>`
+    ? `<div class="mc-mkt-notice muted small" role="status" id="mc-mkt-notice">
+        <span class="mc-mkt-notice-text">⚠️ ${escapeHtml(state.bundledNotice)}</span>
+        <button class="mc-mkt-notice-dismiss" data-action="dismiss-notice" aria-label="Dismiss">×</button>
+      </div>`
     : "";
   return `
     <div class="mc-mkt-page">
@@ -348,6 +374,33 @@ function wireEvents(root, ctx) {
       case "uninstall":
         uninstallModule(root, target.dataset.id);
         break;
+      case "dismiss-notice":
+        // Lesson 1109: dismiss the bundled-catalog warning for this
+        // session. If it comes back next time the user reopens the
+        // page AND MAIC is still down, that's a server-fix signal,
+        // not a UI bug — but at least the page is usable today.
+        state.bundledNotice = null;
+        const noticeEl = root.querySelector("#mc-mkt-notice");
+        if (noticeEl) noticeEl.remove();
+        break;
+      case "toggle-mkt-card": {
+        // rc57.9: mirror the launchpad's expand-to-see pattern on
+        // the marketplace so users can preview tools + instructions
+        // before installing.
+        const card = target.closest(".mc-mkt-card");
+        if (!card) return;
+        const body = card.querySelector(".mc-tool-card-body");
+        if (!body) return;
+        const isExpanded = card.dataset.expanded === "true";
+        if (isExpanded) {
+          body.hidden = true;
+          card.dataset.expanded = "false";
+        } else {
+          body.hidden = false;
+          card.dataset.expanded = "true";
+        }
+        break;
+      }
       default:
         break;
     }

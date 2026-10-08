@@ -4917,6 +4917,27 @@ fn spawn_launcher_and_wait(
     // post-mortem debugging. Tagged lines like "[launcher.stderr] <msg>"
     // make it trivial to filter the log for gateway-side failures.
     let log_path = log_file_path(); // captured before move into thread
+    // Lesson 1140 (2026-10-08, David): tap the sidecar's stderr for
+    // `[MC-401]` markers and fire `silent_relogin` when we see one.
+    // The openclaw gateway (which the Tauri MC chat webview is
+    // pointed at) embeds the same MAIC plugin the embedded
+    // `mc-terminal` TUI uses, so the plugin emits the same markers
+    // on the same kind of 401. Until this fix the sidecar's stderr
+    // was piped to eprintln! + log file only — the marker went to
+    // /dev/null and the user had to manually re-auth when their
+    // JWT expired.
+    //
+    // We use a per-line accumulator (the launcher's stderr comes as
+    // raw byte chunks via `CommandEvent::Stderr`, not as a `Read`
+    // we can `BufRead::read_line` on) and pass each complete line
+    // through `scan_stderr_for_mc401`. The non-marker line still
+    // gets printed to eprintln! and written to the log file
+    // exactly as before — we don't change the visible stderr
+    // behavior, only tap it for the marker.
+    let stderr_acc: std::sync::Arc<std::sync::Mutex<Vec<u8>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stderr_log_path = log_path.clone();
+    let stderr_app_handle = app_handle.clone();
     std::thread::spawn(move || {
         while let Some(event) = rx.blocking_recv() {
             match event {
@@ -4934,10 +4955,50 @@ fn spawn_launcher_and_wait(
                     }
                 }
                 CommandEvent::Stderr(bytes) => {
+                    // Step 1: tap for [MC-401] markers BEFORE
+                    // printing. We do this in a separate accumulator
+                    // to avoid disturbing the existing eprintln!
+                    // / log_to_file behavior on non-marker lines.
+                    let acc_clone = stderr_acc.clone();
+                    let app_for_marker = stderr_app_handle.clone();
+                    {
+                        let mut acc = acc_clone.lock().unwrap();
+                        scan_stderr_for_mc401(
+                            &mut acc,
+                            &bytes,
+                            |rest| {
+                                // handle_mc401_marker already logs
+                                // its own prefix line; we just need
+                                // to call it with the right
+                                // app_handle and log_prefix.
+                                handle_mc401_marker(
+                                    &app_for_marker,
+                                    rest,
+                                    "[miracle-claw][launcher]",
+                                );
+                            },
+                            |_line| {
+                                // Non-marker line: nothing to do
+                                // here — step 2 below prints/writes
+                                // the raw chunk as before. The
+                                // accumulator is only consulted for
+                                // markers, so the cost of the scan
+                                // is one `position(b'\n')` per
+                                // chunk, which is negligible.
+                            },
+                        );
+                    }
+
+                    // Step 2: existing print + log-to-file behavior,
+                    // unchanged. The marker line itself is harmless
+                    // to print — it just shows up in the dev console
+                    // as `[launcher.stderr] [MC-401] {...}`. The
+                    // silent_relogin has already been triggered
+                    // before this point.
                     let s = String::from_utf8_lossy(&bytes);
                     eprint!("[launcher.stderr] {}", s);
                     let _ = std::io::stderr().flush();
-                    if let Some(p) = &log_path {
+                    if let Some(p) = &stderr_log_path {
                         if let Ok(mut f) = std::fs::OpenOptions::new()
                             .create(true).append(true).open(p)
                         {
@@ -7412,6 +7473,102 @@ fn handle_mc401_marker(
                 log_prefix, e
             );
         }
+    }
+}
+
+/// Drain a chunk of stderr bytes into a line accumulator, calling
+/// `on_marker` for each complete line that starts with `[MC-401] `.
+///
+/// Companion to `read_lines` for consumers (like the openclaw gateway
+/// sidecar in `spawn_launcher_and_wait`) that receive stderr as byte
+/// chunks via Tauri `CommandEvent::Stderr` rather than as a
+/// `std::io::Read`. Returns the un-consumed trailing bytes (partial
+/// line at end of chunk) so the caller can prepend them to the next
+/// chunk. Lines that do NOT match the marker are passed to
+/// `on_non_marker` for the caller to log/print as usual.
+///
+/// Why a separate helper (instead of forcing everything through
+/// `read_lines`): `read_lines` requires `R: Read` and pushes lines
+/// into a `TerminalHandle` buffer. The launcher's stderr handler
+/// already pipes to eprintln! + log file via `CommandEvent`, and we
+/// don't want to fork that into a separate "goes-to-terminal-buffer"
+/// path — the launcher's stderr is a different kind of output from
+/// the embedded TUI's stderr. We just want to TAP it for the marker.
+///
+/// Lesson 1140 (2026-10-08, David): the openclaw gateway sidecar
+/// emits the same `[MC-401]` markers as the embedded `mc-terminal`
+/// TUI, but until this fix the sidecar's stderr was only used for
+/// logging — the marker went to /dev/null. The Tauri MC chat window
+/// (which is a webview pointed at the openclaw gateway) would hit
+/// 401, the plugin would emit the marker, nothing would catch it,
+/// and the user saw "All models failed (3): maic/... 401 status
+/// code (no body)" until they manually re-logged in.
+pub fn scan_stderr_for_mc401<FMarker, FLine>(
+    accumulator: &mut Vec<u8>,
+    new_bytes: &[u8],
+    mut on_marker: FMarker,
+    mut on_non_marker: FLine,
+) where
+    FMarker: FnMut(&str),
+    FLine: FnMut(&str),
+{
+    accumulator.extend_from_slice(new_bytes);
+    // Find every complete line (terminator: \n). The last partial
+    // line (if any) stays in the accumulator for the next chunk.
+    let mut start = 0usize;
+    while start < accumulator.len() {
+        match accumulator[start..].iter().position(|&b| b == b'\n') {
+            Some(rel) => {
+                let end = start + rel; // index of the \n itself
+                // Strip trailing \r if present (Windows line endings).
+                let line_end = if end > start && accumulator[end - 1] == b'\r' {
+                    end - 1
+                } else {
+                    end
+                };
+                let line = std::str::from_utf8(&accumulator[start..line_end])
+                    .unwrap_or("");
+                // Lesson 1140: only treat a line as a complete
+                // marker if it starts with `[MC-401] ` AND the
+                // payload (rest) ends with `}`. A partial JSON
+                // payload that arrives split across two
+                // `CommandEvent::Stderr` chunks will see the first
+                // half as a line that starts with `[MC-401] `
+                // (because we don't know yet that the JSON is
+                // truncated). Requiring the closing brace is a
+                // cheap structural check: legitimate MAIC plugin
+                // markers always look like `[MC-401] {json...}` —
+                // the JSON is one object on one line. Truncated
+                // versions will not have the closing brace and
+                // are silently dropped (NOT passed to
+                // on_non_marker) — they're not a real stderr
+                // line the user/dev wants to see in the dev
+                // console, and we can't act on them anyway. The
+                // line was delimited by \n so the partial is
+                // already consumed from the accumulator; the
+                // continuation bytes, if any, will be on the
+                // NEXT line and look like `[more-marker-payload
+                // ...` which the on_non_marker handler will log
+                // normally as plain stderr (the right behavior
+                // if the marker really was split across chunks —
+                // we just lose the silent_relogin in that rare
+                // edge case).
+                if let Some(rest) = line.strip_prefix("[MC-401] ") {
+                    if rest.ends_with('}') {
+                        on_marker(rest);
+                    }
+                    // else: silently drop truncated marker.
+                } else if !line.is_empty() {
+                    on_non_marker(line);
+                }
+                start = end + 1; // skip past the \n
+            }
+            None => break, // no more complete lines; keep the tail
+        }
+    }
+    // Drop everything we consumed; keep the partial tail.
+    if start > 0 {
+        accumulator.drain(..start);
     }
 }
 
@@ -11676,6 +11833,164 @@ mod tests {
             "non-marker line should still be in buffer: {:?}",
             combined
         );
+    }
+
+    /// Lesson 1140 (2026-10-08, David): the openclaw gateway
+    /// sidecar's stderr comes in via `CommandEvent::Stderr` byte
+    /// chunks, not as a `Read` we can `BufRead::read_line` on.
+    /// `scan_stderr_for_mc401` is the chunk-based equivalent: it
+    /// accumulates bytes across chunks, splits on newlines, and
+    /// fires `on_marker` for any complete line that starts with
+    /// `[MC-401] ` AND ends with `}` (a structural sanity check so
+    /// truncated markers split across chunks don't fire false
+    /// positives). Non-marker lines go to `on_non_marker` so the
+    /// caller can keep printing/logging them. Partial trailing
+    /// bytes stay in the accumulator for the next chunk.
+    ///
+    /// We exercise four cases that the launcher's stderr handler
+    /// will hit in production:
+    ///   1. Single-chunk delivery (the common case — stderr lines
+    ///      are short and arrive whole).
+    ///   2. Multiple markers in the same chunk.
+    ///   3. CRLF line endings (Windows-native) — the `\r` must
+    ///      not leak into the captured payload.
+    ///   4. Trailing partial line at end-of-chunk stays buffered
+    ///      (so the next chunk can complete it).
+    ///   5. A line that LOOKS like a marker prefix but doesn't
+    ///      end with `}` is treated as a non-marker (defensive
+    ///      against split-across-chunks markers and random
+    ///      strings that happen to share the prefix).
+    #[test]
+    fn scan_stderr_for_mc401_handles_realistic_chunks() {
+        // Case 1: single-chunk, single marker.
+        let mut acc: Vec<u8> = Vec::new();
+        let mut markers: Vec<String> = Vec::new();
+        let mut non_markers: Vec<String> = Vec::new();
+        scan_stderr_for_mc401(
+            &mut acc,
+            b"[MC-401] {\"url\":\"https://maicserver.com/v1/chat/completions\"}\n",
+            |rest| markers.push(rest.to_string()),
+            |line| non_markers.push(line.to_string()),
+        );
+        assert_eq!(markers.len(), 1);
+        assert!(markers[0].contains("chat/completions"));
+        assert_eq!(non_markers.len(), 0, "marker line should not be a non-marker");
+        assert!(acc.is_empty(), "complete line should be drained from acc");
+
+        // Case 2: multiple markers in one chunk.
+        let mut acc: Vec<u8> = Vec::new();
+        let mut markers: Vec<String> = Vec::new();
+        scan_stderr_for_mc401(
+            &mut acc,
+            b"[MC-401] {\"a\":1}\n[MC-401] {\"a\":2}\n[MC-401] {\"a\":3}\n",
+            |rest| markers.push(rest.to_string()),
+            |_| {},
+        );
+        assert_eq!(markers.len(), 3, "expected 3 markers, got {}", markers.len());
+        assert!(markers[0].contains("\"a\":1"));
+        assert!(markers[1].contains("\"a\":2"));
+        assert!(markers[2].contains("\"a\":3"));
+
+        // Case 3: CRLF line endings — the \r must be stripped.
+        let mut acc: Vec<u8> = Vec::new();
+        let mut markers: Vec<String> = Vec::new();
+        scan_stderr_for_mc401(
+            &mut acc,
+            b"[MC-401] {\"url\":\"crlf\"}\r\n[MC-401] {\"url\":\"crlf2\"}\r\n",
+            |rest| markers.push(rest.to_string()),
+            |_| {},
+        );
+        assert_eq!(markers.len(), 2);
+        assert!(markers[0].contains("crlf"));
+        assert!(!markers[0].ends_with('\r'), "trailing \\r leaked: {:?}", markers[0]);
+        assert!(markers[1].contains("crlf2"));
+
+        // Case 4: trailing partial line is preserved in the
+        // accumulator, no marker fires (no \n yet), next chunk
+        // completes it.
+        let mut acc: Vec<u8> = Vec::new();
+        let mut markers: Vec<String> = Vec::new();
+        // The partial includes the [MC-401] prefix and a
+        // partial JSON payload — but does NOT end with }
+        // (because the closing brace arrives in the next
+        // chunk). This is exactly what an OS-pipe-split
+        // marker looks like.
+        let partial = b"[MC-401] {\"url\":\"ends-on-next-call\"";
+        scan_stderr_for_mc401(
+            &mut acc,
+            partial,
+            |rest| markers.push(rest.to_string()),
+            |_| {},
+        );
+        assert_eq!(markers.len(), 0, "partial should not fire");
+        // Acc should equal the partial bytes verbatim.
+        assert_eq!(
+            acc.as_slice(),
+            partial,
+            "partial should be preserved verbatim"
+        );
+        // Next chunk finishes the line: closing brace + \n.
+        scan_stderr_for_mc401(
+            &mut acc,
+            b"}\n",
+            |rest| markers.push(rest.to_string()),
+            |_| {},
+        );
+        assert_eq!(markers.len(), 1);
+        assert!(markers[0].contains("ends-on-next-call"));
+        assert!(acc.is_empty());
+
+        // Case 5: a line that starts with [MC-401] but doesn't
+        // end with } is NOT a marker (defensive). It also
+        // should NOT be passed to on_non_marker as if it were
+        // a real stderr line — it's truncated garbage from the
+        // launcher's perspective. We just leave it dropped
+        // (the chunk had a \n at the end so the partial is
+        // gone from the accumulator; if a real continuation
+        // arrives, it'll start with non-marker text that we
+        // log normally).
+        let mut acc: Vec<u8> = Vec::new();
+        let mut markers: Vec<String> = Vec::new();
+        let mut non_markers: Vec<String> = Vec::new();
+        scan_stderr_for_mc401(
+            &mut acc,
+            b"[MC-401] {\"url\":\"truncated-mid-stream\n",
+            |rest| markers.push(rest.to_string()),
+            |line| non_markers.push(line.to_string()),
+        );
+        // The line starts with [MC-401] but doesn't end with }
+        // (the JSON is truncated). Must NOT fire marker.
+        assert_eq!(markers.len(), 0, "truncated marker must not fire");
+        // Must NOT fire non-marker either — it's not a real
+        // stderr line, it's a half-marker we can't act on.
+        assert_eq!(
+            non_markers.len(),
+            0,
+            "truncated marker should be silently dropped, not logged as stderr: {:?}",
+            non_markers
+        );
+        // The accumulator should be empty (the line was
+        // delimited by \n so we consumed it).
+        assert!(acc.is_empty());
+
+        // Case 6: mixed marker + non-marker + truncated marker
+        // in one chunk — only the complete marker fires.
+        let mut acc: Vec<u8> = Vec::new();
+        let mut markers: Vec<String> = Vec::new();
+        let mut non_markers: Vec<String> = Vec::new();
+        scan_stderr_for_mc401(
+            &mut acc,
+            b"[non-marker line]\n[MC-401] {\"a\":42}\n[MC-401] {\"a\":trunc\n[more non-marker]\n",
+            |rest| markers.push(rest.to_string()),
+            |line| non_markers.push(line.to_string()),
+        );
+        assert_eq!(markers.len(), 1, "only the complete marker should fire");
+        assert!(markers[0].contains("\"a\":42"));
+        // Two real non-marker lines.
+        assert_eq!(non_markers.len(), 2);
+        assert_eq!(non_markers[0], "[non-marker line]");
+        assert_eq!(non_markers[1], "[more non-marker]");
+        assert!(acc.is_empty());
     }
 
     /// Lesson 224: spawn_shell must accept an optional extra_env map and

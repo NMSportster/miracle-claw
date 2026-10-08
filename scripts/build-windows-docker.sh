@@ -199,22 +199,30 @@ if [[ -d "$BUNDLE_SRC" && -n "$(ls -A "$BUNDLE_SRC" 2>/dev/null)" ]]; then
     if [[ -n "$TAURI_VERSION" && -f "$LATEST_INSTALLER" ]]; then
         DESKTOP_NAME="MiracleClaw_${TAURI_VERSION}_x64-setup.exe"
         DESKTOP_PATH="/mnt/c/Users/Adeal/Desktop/${DESKTOP_NAME}"
-        # Lesson 429: if the Desktop installer already exists with a different
-        # MD5, archive it with the MD5 hash in the filename so we don't lose
-        # version history when iterating hotfixes without a version bump.
-        if [[ -f "$DESKTOP_PATH" ]]; then
-            EXISTING_MD5=$(md5sum "$DESKTOP_PATH" 2>/dev/null | awk '{print $1}')
+        # Lesson 429: if a DIFFERENT-version installer already exists
+        # on the Desktop (e.g. rc57.13 still sitting there when we're
+        # about to install rc57.14), archive the older one with its own
+        # version + the existing MD5 hash. We can't just check
+        # `[[ -f $DESKTOP_PATH ]]` because that path uses the NEW
+        # version; for a hotfix-to-new-version transition the old
+        # filename will not match. The right scan is "any .exe on
+        # the Desktop that isn't the new one".
+        for OLD_DESKTOP_PATH in /mnt/c/Users/Adeal/Desktop/MiracleClaw_*_x64-setup.exe; do
+            [[ ! -f "$OLD_DESKTOP_PATH" ]] && continue
+            [[ "$OLD_DESKTOP_PATH" == "$DESKTOP_PATH" ]] && continue
+            EXISTING_MD5=$(md5sum "$OLD_DESKTOP_PATH" 2>/dev/null | awk '{print $1}')
             NEW_MD5=$(md5sum "$LATEST_INSTALLER" 2>/dev/null | awk '{print $1}')
-            if [[ "$EXISTING_MD5" != "$NEW_MD5" ]]; then
-                ARCHIVE_NAME="MiracleClaw_${TAURI_VERSION}_${EXISTING_MD5:0:8}_x64-setup.exe"
-                ARCHIVE_DIR="/mnt/c/Users/Adeal/Desktop/_archive"
-                ARCHIVE_PATH="${ARCHIVE_DIR}/${ARCHIVE_NAME}"
-                mkdir -p "$ARCHIVE_DIR" 2>/dev/null || true
-                if mv -v "$DESKTOP_PATH" "$ARCHIVE_PATH" 2>/dev/null; then
-                    echo "  Archived previous installer → _archive/$ARCHIVE_NAME"
-                fi
+            [[ "$EXISTING_MD5" == "$NEW_MD5" ]] && continue
+            # Extract the version from the old filename to name the archive correctly.
+            OLD_VERSION=$(basename "$OLD_DESKTOP_PATH" | sed -E 's/^MiracleClaw_(.+)_x64-setup\.exe$/\1/')
+            ARCHIVE_NAME="MiracleClaw_${OLD_VERSION}_${EXISTING_MD5:0:8}_x64-setup.exe"
+            ARCHIVE_DIR="/mnt/c/Users/Adeal/Desktop/_archive"
+            ARCHIVE_PATH="${ARCHIVE_DIR}/${ARCHIVE_NAME}"
+            mkdir -p "$ARCHIVE_DIR" 2>/dev/null || true
+            if mv -v "$OLD_DESKTOP_PATH" "$ARCHIVE_PATH" 2>/dev/null; then
+                echo "  Archived previous installer → _archive/$ARCHIVE_NAME"
             fi
-        fi
+        done
         if cp -v "$LATEST_INSTALLER" "$DESKTOP_PATH" 2>/dev/null; then
             echo "  Desktop installer: $DESKTOP_PATH"
             md5sum "$DESKTOP_PATH" 2>/dev/null

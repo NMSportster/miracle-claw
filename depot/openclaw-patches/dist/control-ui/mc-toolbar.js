@@ -193,6 +193,45 @@
   // Modules: list (Lesson 975 -- query mc_list_installed_modules) + run
   // ---------------------------------------------------------------------------
 
+  // Module ID aliases (Lesson 1136, 2026-10-08, David). MAIC tracks
+  // modules under hyphenated product names (e.g. `email-campaigns-pro`,
+  // `voice-memo`) while the bundled installer registry on disk uses
+  // shorter generic names (`email`, `voice`). They're the same
+  // underlying product, but a naive merge by exact id counted both
+  // and David saw 18 "modules installed" in the Terminal toolbar
+  // badge on 2026-10-08 when the truth is 8.
+  //
+  // Direction: MAIC always wins on overlap because it has live
+  // install state + the rich client_manifest (tools, form_schema,
+  // description, category). The local registry is a fallback / source
+  // for modules that exist on disk but haven't been claimed by MAIC
+  // (e.g. standalone sidecar installs that pre-date MAIC enrollment).
+  //
+  // When adding a new MAIC module, also add its local-bundle id here
+  // (or its MAIC id) so the dropdown and badge count it once.
+  var MODULE_ID_ALIASES = {
+    // MAIC id             -> canonical (local-bundle id)
+    'email-campaigns-pro': 'email',
+    'calendar-companion':  'calendar',
+    'voice-memo':          'voice',
+    'brand-asset-kit':     'brand',
+    'ad-performance':      'ads',
+    'data-analyzer':       'data',
+    'marketing-suite':     'marketing',
+  };
+  function canonicalId(id) {
+    if (!id) return id;
+    if (Object.prototype.hasOwnProperty.call(MODULE_ID_ALIASES, id)) {
+      return MODULE_ID_ALIASES[id];
+    }
+    // Reverse: if `id` is the local side of an alias, return the
+    // MAIC id (so remote-wins deduplication prefers the MAIC record).
+    for (var maic in MODULE_ID_ALIASES) {
+      if (MODULE_ID_ALIASES[maic] === id) return maic;
+    }
+    return id;
+  }
+
   var _modulesCountInflight = false;
 
   async function fetchInstalledModulesMerged() {
@@ -254,15 +293,38 @@
       return [];
     }
 
-    // Both sources responded: merge by id, remote-first.
-    var byId = new Map();
-    local.forEach(function (m) { var n = normalizeLocalModule(m); byId.set(n.id, n); });
-    return remote.map(function (m) {
-      var n = normalizeRemoteModule(m);
-      var l = byId.get(n.id);
-      if (l && !n.version) n.version = l.version;
-      return n;
+    // Both sources responded: merge by canonical id, MAIC-first.
+    // Lesson 1136 (2026-10-08, David): `email-campaigns-pro` (MAIC)
+    // and `email` (local) are the same module; without the canonical
+    // id map, both showed up in the dropdown. Now we collapse them
+    // and prefer the MAIC record (live version + client_manifest).
+    var byCanonical = new Map();
+    local.forEach(function (m) {
+      var n = normalizeLocalModule(m);
+      byCanonical.set(canonicalId(n.id), n);
     });
+    var seenCanonical = new Set();
+    var merged = [];
+    remote.forEach(function (m) {
+      var n = normalizeRemoteModule(m);
+      var canon = canonicalId(n.id);
+      var l = byCanonical.get(canon);
+      if (l && !n.version) n.version = l.version;
+      merged.push(n);
+      seenCanonical.add(canon);
+    });
+    // Local-only modules (no MAIC counterpart) get appended with the
+    // (offline copy) tag so the user can tell them apart from MAIC-
+    // managed modules. These are real installs on disk; hiding them
+    // would lose access to tools the user explicitly installed.
+    local.forEach(function (m) {
+      var n = normalizeLocalModule(m);
+      var canon = canonicalId(n.id);
+      if (seenCanonical.has(canon)) return;
+      n._offline = true;
+      merged.push(n);
+    });
+    return merged;
   }
 
   function normalizeLocalModule(m) {
@@ -734,6 +796,65 @@
           inputs: inputs,
           surface: 'openclaw_chat',
         });
+        // Lesson 1138 (2026-10-08, David): MAIC returns
+        // `{outputs: {client_side: true, message: "..."}}` for
+        // modules that run locally (firecrawl, voice-memo,
+        // calendar-companion, etc. — anything with a sidecar on
+        // disk). The previous code just JSON.stringified the stub
+        // and David read the "This module runs locally..." string as
+        // the tool erroring out. Now we detect client_side and show
+        // a clear "Open in launchpad" CTA in the action row.
+        if (
+          resp &&
+          resp.outputs &&
+          typeof resp.outputs === 'object' &&
+          resp.outputs.client_side === true
+        ) {
+          var csm =
+            (typeof resp.outputs.message === 'string' && resp.outputs.message) ||
+            'This module runs locally on this machine. Open the launchpad and use the Your Tools tile to invoke it.';
+          result.classList.add('is-client-side');
+          result.innerHTML = '';
+          var csHeading = document.createElement('div');
+          csHeading.className = 'mc-oc-modal-result-client-side-heading';
+          csHeading.textContent = '🖥  Runs locally on this machine';
+          var csMsg = document.createElement('p');
+          csMsg.className = 'mc-oc-modal-result-client-side-msg';
+          csMsg.textContent = csm;
+          result.appendChild(csHeading);
+          result.appendChild(csMsg);
+          // Skip the Send-to-Chat / Copy actions (no real output to
+          // send) and replace with an Open-in-launchpad button.
+          var prevActions = form.parentNode.querySelector('.mc-oc-modal-result-actions');
+          if (prevActions) prevActions.remove();
+          var csActions = document.createElement('div');
+          csActions.className = 'mc-oc-modal-result-actions';
+          var openLaunch = document.createElement('button');
+          openLaunch.type = 'button';
+          openLaunch.className = 'mc-oc-modal-button is-primary';
+          openLaunch.textContent = '↗ Open in launchpad';
+          openLaunch.addEventListener('click', function () {
+            try {
+              document.body.removeChild(backdrop);
+              window.location.hash = '#/dashboard-launchpad';
+            } catch (e) {
+              showToast('Could not open launchpad: ' + (e && e.message ? e.message : e), 'error');
+            }
+          });
+          csActions.appendChild(openLaunch);
+          var csClose = document.createElement('button');
+          csClose.type = 'button';
+          csClose.className = 'mc-oc-modal-button';
+          csClose.textContent = 'Close';
+          csClose.addEventListener('click', function () { document.body.removeChild(backdrop); });
+          csActions.appendChild(csClose);
+          form.parentNode.insertBefore(csActions, result.nextSibling);
+          run.textContent = 'Run again';
+          run.disabled = false;
+          run.addEventListener('click', function () { form.requestSubmit(); });
+          showToast('Module runs locally', 'info');
+          return;
+        }
         var outText = '';
         if (resp && typeof resp.outputs !== 'undefined') {
           outText = typeof resp.outputs === 'string' ? resp.outputs : JSON.stringify(resp.outputs, null, 2);

@@ -451,3 +451,30 @@
   background: rgba(30, 100, 50, 0.95);
   border-color: rgba(100, 200, 130, 0.50);
 }
+
+/* Lesson 1138 (2026-10-08, David): "module runs locally" result
+ * panel for client_side responses from MAIC (firecrawl, voice-memo,
+ * calendar-companion, etc.). Neutral info background + emoji heading
+ * + action row with "Open in launchpad" + "Close". Without this the
+ * user saw a raw "This module runs locally..." string and assumed
+ * the tool errored out.
+ */
+.mc-oc-modal-result.is-client-side {
+  background: rgba(52, 152, 219, 0.10);
+  border: 1px solid rgba(52, 152, 219, 0.45);
+  border-radius: 6px;
+  padding: 10px 12px;
+  white-space: normal;
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.mc-oc-modal-result-client-side-heading {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.mc-oc-modal-result-client-side-msg {
+  margin: 0;
+  color: var(--fg-muted, #aaa);
+}

@@ -48,17 +48,22 @@ test("mountModulesMenu merges remote + local lists (remote wins)", () => {
     /listInstalledModules\(\)/,
     "should still call listInstalledModules() for the local list"
   );
-  // The merge should filter local-only items (not in remote):
+  // Lesson 1136 (2026-10-08, David): the merge must use the
+  // canonical id (not raw .id) so MAIC's `email-campaigns-pro` and
+  // the local registry's `email` collapse to a single record. The
+  // previous `!remoteIds.has(m.id)` filter was a strict id match
+  // and counted both — which is how David ended up seeing 18
+  // modules in the Terminal badge.
   assert.match(
     src,
-    /localItems\.filter\(\s*\(m\)\s*=>\s*!remoteIds\.has\(m\.id\)\s*\)/,
-    "should filter local-only items to avoid duplicates"
+    /canonicalId\(m\.id\)/,
+    "should dedup by canonical id (MAIC + local ids may differ)"
   );
   // Remote items come first (they win for overlap):
   assert.match(
     src,
-    /\.\.\.remoteItems,\s*\n\s*\.\.\.localItems\.filter/,
-    "remote items should come first in the merged list"
+    /\.\.\.remoteItems[\s\S]*localItems/,
+    "remote items should come before local-only items in the merged list"
   );
 });
 
@@ -114,7 +119,7 @@ test("defaultRenderItem uses m.icon when present", () => {
   // custom icon (🔥 for firecrawl, etc.) instead of the generic 🧩.
   assert.match(
     src,
-    /icon:\s*m\.icon\s*\|\|\s*["']🧩["']/,
-    "defaultRenderItem should use m.icon || '🧩' (Lesson 975)"
+    /icon:\s*m\.icon\s*\|\|\s*cm\.icon\s*\|\|\s*["']🧩["']/,
+    "defaultRenderItem should use m.icon || cm.icon || '🧩' (Lesson 1137 — matches the Windows toolbar so Firecrawl/etc. get their custom icon)"
   );
 });

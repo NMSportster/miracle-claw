@@ -23,6 +23,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { listInstalledModules, isModuleInstalled, invokeModule } from "./modules-runtime.js";
+// Lesson 1138 (2026-10-08, David): the client-side result panel
+// (renderClientSideResult) navigates to the launchpad when the
+// module runs locally. Static import keeps the dependency graph
+// obvious; modules-menu.dom.test.mjs can still mock navigation if
+// it needs to.
+import { navigate } from "./navigation.js";
 import { toast } from "./toast.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -42,6 +48,45 @@ function escapeHtml(s) {
 function cssEscape(s) {
   if (window.CSS && CSS.escape) return CSS.escape(s);
   return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => `\\${c}`);
+}
+
+// Module ID aliases (Lesson 1136, 2026-10-08, David). MAIC tracks
+// modules under hyphenated product names (e.g. `email-campaigns-pro`,
+// `voice-memo`) while the bundled installer registry on disk uses
+// shorter generic names (`email`, `voice`). They're the same
+// underlying product, but a naive merge by exact id counted both
+// and David saw 18 "modules installed" in the Terminal toolbar
+// badge on 2026-10-08 when the truth is 8.
+//
+// Direction: MAIC always wins on overlap because it has live install
+// state + the rich client_manifest (tools, form_schema, description,
+// category). The local registry is a fallback / source for modules
+// that exist on disk but haven't been claimed by MAIC (e.g. standalone
+// sidecar installs that pre-date MAIC enrollment).
+//
+// When adding a new MAIC module, also add its local-bundle id here
+// (or its MAIC id) so the dropdown and badge count it once.
+const MODULE_ID_ALIASES = {
+  // MAIC id             -> canonical (local-bundle id)
+  "email-campaigns-pro": "email",
+  "calendar-companion":  "calendar",
+  "voice-memo":          "voice",
+  "brand-asset-kit":     "brand",
+  "ad-performance":      "ads",
+  "data-analyzer":       "data",
+  "marketing-suite":     "marketing",
+};
+function canonicalId(id) {
+  if (!id) return id;
+  if (Object.prototype.hasOwnProperty.call(MODULE_ID_ALIASES, id)) {
+    return MODULE_ID_ALIASES[id];
+  }
+  // Reverse: if `id` is the local side of an alias, return the MAIC
+  // id so the merged Set's dedup key matches what MAIC contributes.
+  for (const [maic, local] of Object.entries(MODULE_ID_ALIASES)) {
+    if (local === id) return maic;
+  }
+  return id;
 }
 
 // Lesson 976 (2026-09-11 18:05 MDT, David): shared helper that returns
@@ -64,11 +109,17 @@ export async function getInstalledModulesMerged() {
   try {
     const remote = await invoke("mc_list_installed_modules");
     const remoteItems = (remote?.modules || []).map(normalizeRemoteModule);
-    const remoteIds = new Set(remoteItems.map((m) => m.id));
-    return [
-      ...remoteItems,
-      ...localItems.filter((m) => !remoteIds.has(m.id)),
-    ];
+    // Lesson 1136 (2026-10-08, David): dedup by canonical id so
+    // `email-campaigns-pro` (MAIC) and `email` (local) collapse to a
+    // single entry. MAIC wins on overlap. Local-only modules (no MAIC
+    // counterpart) keep their (offline copy) tag.
+    const remoteCanonicals = new Set(remoteItems.map((m) => canonicalId(m.id)));
+    const merged = [...remoteItems];
+    for (const m of localItems) {
+      if (remoteCanonicals.has(canonicalId(m.id))) continue;
+      merged.push({ ...m, _offline: true });
+    }
+    return merged;
   } catch (e) {
     console.warn("[modules-menu] remote list failed, using local only:", e);
     return localItems;
@@ -418,6 +469,30 @@ export function openModuleModal(module, opts = {}) {
         inputs,
         surface: opts.surface || "tauri",
       });
+      // Lesson 1138 (2026-10-08, David): MAIC returns
+      // `{outputs: {client_side: true, message: "..."}}` for modules
+      // that run locally (firecrawl, voice-memo, calendar-companion,
+      // etc. — anything that has a sidecar on disk instead of a
+      // server-side handler). The old code just JSON.stringified
+      // outputs and showed it as "the result", which David read as
+      // "errors out" because the only text was "This module runs
+      // locally. Please use the Your Tools tile in the launchpad to
+      // invoke it." Now we detect client_side, show a clear "Open in
+      // launchpad" CTA, and skip the raw-output / Send-to-Chat
+      // actions (they'd be useless without an actual result).
+      if (
+        run &&
+        run.outputs &&
+        typeof run.outputs === "object" &&
+        run.outputs.client_side === true
+      ) {
+        const msg =
+          (typeof run.outputs.message === "string" && run.outputs.message) ||
+          "This module runs locally on your machine. Open the launchpad " +
+            "and use the Your Tools tile to invoke it.";
+        renderClientSideResult(result, msg, module, opts);
+        return;
+      }
       const out = String(run.outputs ?? "");
       const stripped = stripFences(out);
       result.textContent = stripped || out || "(no output)";
@@ -449,6 +524,57 @@ export function openModuleModal(module, opts = {}) {
       }
     }
   });
+}
+
+// Lesson 1138 (2026-10-08, David): show a "this module runs
+// locally — open the launchpad" panel when MAIC returns
+// outputs.client_side === true. The previous behavior was to dump
+// the raw MAIC message string into the result area, which David
+// read as "the tool errored out" (it didn't — the run was a stub
+// pointer to the local sidecar). A clear CTA + a single "Open in
+// launchpad" button is the fix.
+function renderClientSideResult(resultEl, message, module, opts) {
+  resultEl.classList.remove("mc-modal-result-error");
+  resultEl.classList.add("mc-modal-result-client-side");
+  resultEl.textContent = "";
+  const heading = document.createElement("div");
+  heading.className = "mc-modal-result-client-side-heading";
+  heading.textContent = "🖥  Runs locally on this machine";
+  const body = document.createElement("p");
+  body.className = "mc-modal-result-client-side-msg";
+  body.textContent = message;
+  const actions = document.createElement("div");
+  actions.className = "mc-modal-result-actions";
+
+  // Open in launchpad button (navigate.js exports `navigate`; if
+  // the navigation system isn't installed yet the call returns
+  // false and we surface the error in a toast).
+  const openBtn = document.createElement("button");
+  openBtn.type = "button";
+  openBtn.className = "mc-primary";
+  openBtn.textContent = "Open in launchpad →";
+  openBtn.addEventListener("click", () => {
+    try {
+      closeModuleModal();
+      const ok = navigate("dashboard-launchpad");
+      if (!ok) {
+        toast("Could not open the launchpad from this page.", { kind: "info" });
+      }
+    } catch (e) {
+      toast(`Could not open launchpad: ${e}`, { kind: "error" });
+    }
+  });
+  actions.appendChild(openBtn);
+
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.textContent = "Close";
+  closeBtn.addEventListener("click", () => closeModuleModal());
+  actions.appendChild(closeBtn);
+
+  resultEl.appendChild(heading);
+  resultEl.appendChild(body);
+  resultEl.appendChild(actions);
 }
 
 // Append the Copy / Send-to-Chat / Close actions to the result area.
@@ -605,6 +731,7 @@ export function mountModulesMenu(buttonEl, opts = {}) {
             <span class="mc-modules-menu-text">
               <span class="mc-modules-menu-name">${escapeHtml(r.name)}</span>
               ${r.subtitle ? `<span class="mc-modules-menu-sub">${escapeHtml(r.subtitle)}</span>` : ""}
+              ${r.meta ? `<span class="mc-modules-menu-meta">${escapeHtml(r.meta)}</span>` : ""}
             </span>
           </button>
         `;
@@ -712,11 +839,65 @@ export function mountModulesMenu(buttonEl, opts = {}) {
   });
 }
 
+// Lesson 1137 (2026-10-08, David): the Terminal dropdown used to
+// show only `icon + name + "vX"` per row, which looked sparse next
+// to the Windows chat toolbar dropdown (which shows description +
+// tool list under each row). David saw the difference on the
+// FireCrawl + Marketing Suite rows and flagged it as a parity bug.
+// Match the Windows shape: name + one-line description + meta line
+// with version, tool count, and tool names (same cap-and-ellipsis
+// rules as mc-toolbar.js so the rows stay scannable).
 function defaultRenderItem(m) {
+  const cm = m.client_manifest || (m._raw && m._raw.client_manifest) || {};
+  // Description: top-level on the merged item (rc57.13 added this
+  // to the Windows normalizer), then MAIC row description, then
+  // client_manifest.description.
+  const raw = m._raw || {};
+  const description =
+    (typeof m.description === "string" ? m.description : "") ||
+    (typeof raw.description === "string" ? raw.description : "") ||
+    (typeof cm.description === "string" ? cm.description : "") ||
+    "";
+  const descTrimmed = description.length > 100
+    ? description.slice(0, 97) + "…"
+    : description;
+
+  // Tools: prefer the merged `tools` (already normalized by the
+  // Windows normalizer), then client_manifest.tools, then commands.
+  const tools = Array.isArray(m.tools)
+    ? m.tools
+    : Array.isArray(cm.tools)
+    ? cm.tools
+    : Array.isArray(m.commands)
+    ? m.commands
+    : [];
+  const toolCount = tools.length;
+  let toolLabel;
+  if (toolCount === 0) {
+    toolLabel = "no tools — open in launchpad";
+  } else if (toolCount === 1) {
+    toolLabel = `1 tool: ${tools[0].name || tools[0].id || "?"}`;
+  } else {
+    const names = tools.map((t) => t.name || t.id || "?").join(", ");
+    toolLabel = `${toolCount} tools: ${names.length > 80 ? names.slice(0, 77) + "…" : names}`;
+  }
+
+  const metaParts = [];
+  if (m.version) metaParts.push(`v${m.version}`);
+  metaParts.push(toolLabel);
+  if (m._offline) metaParts.push("(offline copy)");
+
   return {
-    icon: m.icon || "🧩",
-    name: m.name || m.id,
-    subtitle: m.version ? `v${m.version}` : "",
+    icon: m.icon || cm.icon || "🧩",
+    name: m.name || cm.name || m.id,
+    subtitle: descTrimmed || metaParts.join(" · "),
+    // New: third line shows the meta. The Terminal's
+    // .mc-modules-menu-sub only renders one subtitle, so we put the
+    // description in subtitle and append the meta as a separate
+    // property that the dropdown template below renders as a second
+    // line. If the description is empty, the template falls back to
+    // meta as the sole subtitle (matching the old behavior).
+    meta: descTrimmed ? metaParts.join(" · ") : "",
   };
 }
 

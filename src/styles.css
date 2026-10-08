@@ -6793,6 +6793,26 @@ The new design:
   white-space: normal; /* allow headline + details to flow */
 }
 
+/* Lesson 1138 (2026-10-08, David): "this module runs locally" panel
+ * for modules MAIC reports as client_side (firecrawl, voice-memo,
+ * calendar-companion, etc.). Neutral background + emoji heading +
+ * action row with "Open in launchpad" + "Close".
+ */
+.mc-modal-result-client-side {
+  background: var(--bg-info, rgba(52, 152, 219, 0.06));
+  border-color: var(--info, #3498db);
+  white-space: normal;
+  padding: 10px 12px;
+}
+.mc-modal-result-client-side-heading {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.mc-modal-result-client-side-msg {
+  margin: 0 0 8px 0;
+  color: var(--fg-muted, #666);
+}
+
 .mc-modal-result-detail {
   margin-top: 8px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -6983,6 +7003,20 @@ The new design:
   font-size: 11px;
   color: var(--fg-muted, #888);
   line-height: 1.2;
+}
+
+/* Lesson 1137 (2026-10-08, David): third line in the Terminal
+ * Modules dropdown — shows version + tool count + tool names + an
+ * optional "(offline copy)" tag for local-only modules. Same muted
+ * color as the subtitle but with display:block so the description
+ * (subtitle) and the meta don't wrap onto the same line.
+ */
+.mc-modules-menu-meta {
+  display: block;
+  font-size: 10.5px;
+  color: var(--fg-faint, #999);
+  line-height: 1.25;
+  margin-top: 1px;
 }
 
 /* --- Module result actions -------------------------------------

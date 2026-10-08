@@ -5,6 +5,29 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.0-rc57.14] — 2026-10-08 (Tauri MC chat auto-relogin on JWT 401)
+
+Miracle Claw's silent-relogin-on-401 flow (Lesson 194, v1.7.2 of the earlier Tauri stack; carried over into MC v1.2.0) was wired up only for the **embedded TUI** (`mc-terminal` shell). The Tauri MC chat webview — which is just a WebView2 pointed at the openclaw gateway sidecar (`miracle-claw-launcher --gateway-port 28789`) — was missing the stderr-drain that watches for the MAIC plugin's `[MC-401]` markers. Result: when the user's MAIC JWT hit its 7-day hard cap, the Tauri MC chat window showed `All models failed (3): maic/... 401 status code (no body). Re-authenticate with: openclaw models auth login --provider 'maic' --force` and refused to recover automatically. Only the embedded `mc-terminal` shell (a separate shell process MC spawns) would have auto-relogged-in. This release closes that gap for the chat webview.
+
+**Why this matters**:
+- The user's MAIC JWT (in `MiracleClaw/chat.json` → `models.providers.maic.apiKey`) has a 7-day hard TTL stamped in the `exp` claim. The MAIC server's session row in postgres gets `expires_at` bumped forward by 7 days on every authenticated call (the "sliding-window refresh" from Lesson 194), but **the JWT itself is fixed** — once `exp` passes, every request fails 401 until a new JWT is minted.
+- The Tauri parent has a stderr-drain thread that watches for the MAIC plugin's `[MC-401]` markers and fires `silent_relogin` (which loads cached email+password from the Windows Credential Manager, POSTs to MAIC's `/v1/users/login`, mints a fresh JWT, writes it to `chat.json` + the process env, and respawns the launcher sidecar so the next gateway reads the fresh JWT).
+- That drain was only registered for `shell == "mc-terminal"`. The openclaw gateway sidecar (the chat webview's backend) had a separate stderr handler that just `eprintln!`'d lines to the dev console and wrote them to the log file — no marker detection, no `silent_relogin` callback.
+
+**Changes**:
+- **`scan_stderr_for_mc401()`** (new in `src-tauri/src/lib.rs`): free helper that takes a mutable byte accumulator + new bytes, splits on newlines (with CRLF tolerance), and fires `on_marker` for any complete line that starts with `[MC-401] ` AND ends with `}`. The closing-brace check is a cheap structural sanity guard against split-across-chunks markers (if a marker is fragmented mid-JSON, the first half starts with `[MC-401] ` but doesn't end with `}` — we silently drop the partial instead of firing `silent_relogin` on garbage). Non-marker lines go to `on_non_marker` (so the existing `eprintln!` + log-file tee still works). Trailing partial bytes stay in the accumulator for the next chunk.
+- **`spawn_launcher_and_wait()`** (`src-tauri/src/lib.rs`): added a per-line stderr accumulator + `scan_stderr_for_mc401` invocation in the sidecar's `CommandEvent::Stderr` branch. Marker lines call the existing `handle_mc401_marker()` with a `"[miracle-claw][launcher]"` log prefix (so the relogin-attempt log line is distinguishable from the `[miracle-claw][mc-terminal ...]` ones). Non-marker behavior (print to stderr, write to log file) is unchanged.
+- **Test** (`src-tauri/src/lib.rs::tests::scan_stderr_for_mc401_handles_realistic_chunks`): 6 cases — single-chunk marker, multiple markers, CRLF endings, partial trailing line, truncated-marker defense, mixed marker+non-marker+truncated in one chunk. 1 passed, 0 failed.
+- **All 295 lib tests pass** (no regressions).
+- `package.json` + `src-tauri/Cargo.toml` + `src-tauri/tauri.conf.json` — bumped to 1.2.0-rc57.14
+
+**What you'll see**:
+- When your MAIC JWT hits `exp`, the MAIC plugin emits `[MC-401] {"url":...,"model":...}` to stderr. The Tauri parent now catches it, fires `silent_relogin` (loads your cached creds, mints a fresh JWT), and the next chat turn goes through.
+- You'll see a log line like `[miracle-claw][launcher] MC-401 marker received from MAIC plugin (payload: ...); triggering silent_relogin` in the dev console, followed by `silent_relogin succeeded for <email> (tier=...); gateway will respawn with fresh JWT`.
+- The launcher respawns within ~3-5 seconds, the webview's next request goes through with the fresh JWT, and you don't see the 401 error.
+
+**Related**: Lesson 194 (original auto-relogin), Lesson 1019 (MAIC plugin v0.3.2 marker emitter), Lesson 1135 (this release's predecessor).
+
 ## [v1.2.0-rc57.11] — 2026-10-07 (Email Campaigns Pro in-app instructions + per-field help)
 
 Before adding new stuff, make the existing stuff work fantastically. The Email Campaigns Pro module's form modal was sending users into two unlabeled text fields ("Goal", "Audience") with one short instruction paragraph and no per-field help. This release adds the wiring for rich in-form guidance and ships a fully-written Email Campaigns Pro instruction set so the form is self-explanatory.

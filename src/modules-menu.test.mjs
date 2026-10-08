@@ -148,3 +148,105 @@ test("bridge.json capability lists allow-mc-list-installed-modules (Lesson 980)"
     "bridge.json permits mc_list_installed_modules from the chat origin"
   );
 });
+
+test("module-id alias map dedupes MAIC and local installs (Lesson 1136)", () => {
+  // Lesson 1136 (2026-10-08, David): without canonical id
+  // dedup, the Terminal toolbar badge said "18 modules installed"
+  // (8 MAIC + 11 local + 1 firecrawl in both = 18, with email/voice/
+  // calendar counted twice). The fix collapses MAIC's
+  // `email-campaigns-pro` and the local registry's `email` to one
+  // record, with MAIC winning.
+  assert.match(src, /MODULE_ID_ALIASES\s*=\s*\{/, "alias map exists");
+  assert.match(src, /email-campaigns-pro[\s\S]+?email[^,}]/, "email-campaigns-pro → email");
+  assert.match(src, /calendar-companion[\s\S]+?calendar/, "calendar-companion → calendar");
+  assert.match(src, /voice-memo[\s\S]+?voice[^,}]/, "voice-memo → voice");
+  assert.match(src, /function canonicalId/, "canonicalId helper exists");
+  // The merge in getInstalledModulesMerged must use canonicalId
+  // (not raw .id) to dedup.
+  const mergeFn = src.match(
+    /export async function getInstalledModulesMerged\(\)[\s\S]+?\n\}/
+  );
+  assert.ok(mergeFn, "getInstalledModulesMerged exists");
+  assert.match(
+    mergeFn[0],
+    /canonicalId\(m\.id\)/,
+    "merge uses canonicalId to dedup"
+  );
+});
+
+test("client_side response shows Open-in-launchpad panel, not raw error (Lesson 1138)", () => {
+  // Lesson 1138 (2026-10-08, David): MAIC returns
+  // {outputs: {client_side: true, message: "This module runs
+  // locally..."}} for firecrawl and friends. The old code dumped
+  // that string into the result area, which David read as "the
+  // tool errored out". The fix detects client_side and renders a
+  // dedicated panel with an "Open in launchpad" button.
+  assert.match(
+    src,
+    /outputs\.client_side\s*===\s*true/,
+    "modules-menu.js checks outputs.client_side"
+  );
+  assert.match(
+    src,
+    /function renderClientSideResult/,
+    "renderClientSideResult helper exists"
+  );
+  assert.match(
+    src,
+    /navigate\("dashboard-launchpad"\)/,
+    "client-side panel navigates to dashboard-launchpad"
+  );
+  // mc-toolbar.js (Windows) must do the same.
+  const winSrc = readFileSync(
+    join(__dirname, "..", "depot", "openclaw-patches", "dist", "control-ui", "mc-toolbar.js"),
+    "utf8"
+  );
+  assert.match(
+    winSrc,
+    /resp\.outputs\.client_side\s*===\s*true/,
+    "mc-toolbar.js checks resp.outputs.client_side"
+  );
+  assert.match(
+    winSrc,
+    /Open in launchpad/,
+    "mc-toolbar.js shows Open in launchpad button"
+  );
+});
+
+test("defaultRenderItem shows description + meta line (Lesson 1137)", () => {
+  // Lesson 1137 (2026-10-08, David): the Terminal Modules dropdown
+  // was sparse (icon + name + version only) vs the Windows chat
+  // toolbar dropdown (icon + name + description + tool list). The
+  // fix expands defaultRenderItem to return {icon, name, subtitle
+  // (description), meta (version + tool list)} and the dropdown
+  // template renders both subtitle and meta.
+  assert.match(
+    src,
+    /function defaultRenderItem/,
+    "defaultRenderItem exists"
+  );
+  const renderFn = src.match(
+    /function defaultRenderItem\(m\)[\s\S]+?\n\}/
+  );
+  assert.ok(renderFn, "defaultRenderItem body found");
+  assert.match(
+    renderFn[0],
+    /description/,
+    "defaultRenderItem reads description"
+  );
+  assert.match(
+    renderFn[0],
+    /toolLabel/,
+    "defaultRenderItem builds toolLabel"
+  );
+  // Dropdown template renders the new .mc-modules-menu-meta element.
+  const dropdown = src.match(
+    /menu\.innerHTML = items[\s\S]+?\.join\(""\);/
+  );
+  assert.ok(dropdown, "dropdown template found");
+  assert.match(
+    dropdown[0],
+    /mc-modules-menu-meta/,
+    "dropdown renders .mc-modules-menu-meta"
+  );
+});
