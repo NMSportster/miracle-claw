@@ -594,3 +594,104 @@ test("rc57.12: mc-toolbar.css styles .mc-oc-modal-field + .mc-oc-modal-field-hel
     "css must style .mc-oc-modal-field-help"
   );
 });
+
+test("rc57.13: dropdown item shows module description (not just name) — Lesson 1135", () => {
+  // rc57.13 (2026-10-07): David reported "Marketing Suite and Firecrawl
+  // both didn't update in MC Windows" — the form modal DID update
+  // (rc57.12) but the dropdown card itself still showed only icon +
+  // name + Run button, looking "generic" next to Terminal's rich
+  // launchpad card. Fix: render m._raw.description as a new
+  // .mc-oc-dropdown-item-desc div under the name.
+  assert.match(
+    jsSrc,
+    /mc-oc-dropdown-item-desc/,
+    "should render .mc-oc-dropdown-item-desc for module description"
+  );
+  // Reads from m._raw.description (raw MAIC row) — top-level column,
+  // not client_manifest.description (which is the SAME field but
+  // the raw row version is canonical).
+  assert.match(
+    jsSrc,
+    /rawModule\.description|rawCm\.description/,
+    "should source description from m._raw.description OR client_manifest.description"
+  );
+  // Caps to 100 chars + ellipsis (single-line, dropdown-friendly)
+  assert.match(
+    jsSrc,
+    /\.slice\(0,\s*100\)/,
+    "should cap description at 100 chars + ellipsis"
+  );
+});
+
+test("rc57.13: dropdown meta line lists tool names for multi-tool modules — Lesson 1135", () => {
+  // When the module has 2+ tools, list them in the meta line so the
+  // user sees what they'd run without opening the picker. Single-tool
+  // modules show "1 tool: <name>". Zero-tool modules show the old
+  // "open in launchpad" hint (no change).
+  assert.match(
+    jsSrc,
+    /1 tool:/,
+    "single-tool modules should show '1 tool: <name>'"
+  );
+  assert.match(
+    jsSrc,
+    /toolCount\s*\+\s*['"]\s+tools:\s*['"]/,
+    "multi-tool modules should show 'N tools: <name1>, <name2>...' (toolCount + ' tools: ')"
+  );
+});
+
+test("rc57.13: openModuleInfoModal shows module description + category as subtitle", () => {
+  // Before rc57.13 the info modal showed only "This module does not
+  // expose client-side tools. Open it in the launchpad to run." —
+  // generic for every sidecar. Now it shows the description +
+  // category as the subtitle, followed by the hint after \n\n.
+  assert.match(
+    jsSrc,
+    /category.*?moduleDesc|moduleDesc.*?category/s,
+    "should include both category and module description in the info modal subtitle"
+  );
+  assert.match(
+    jsSrc,
+    /\\n\\n.*open in launchpad|open in launchpad.*\\n\\n/s,
+    "should include a \\n\\n paragraph break before the 'open in launchpad' hint"
+  );
+});
+
+test("rc57.13: css adds .mc-oc-dropdown-item-desc + pre-line on subtitle", () => {
+  // The new description div needs CSS (mirrors mc-oc-dropdown-item-meta
+  // font/size so the two lines look like a unit). The modal subtitle
+  // needs white-space: pre-line so the \n\n paragraph break renders
+  // without us having to split into multiple DOM nodes.
+  assert.match(
+    cssSrc,
+    /\.mc-oc-dropdown-item-desc\s*\{/,
+    "Should define .mc-oc-dropdown-item-desc in CSS"
+  );
+  assert.match(
+    cssSrc,
+    /\.mc-oc-modal-subtitle\s*\{[\s\S]*?white-space:\s*pre-line/,
+    "Should add white-space: pre-line to .mc-oc-modal-subtitle for \\n\\n breaks"
+  );
+});
+
+test("rc57.13: fetchInstalledModulesMerged falls back to local when MAIC returns 0", () => {
+  // David's case: MAIC `/v1/modules/installed` returns [] (his 8
+  // modules are registered in `modules` but he has 0 rows in
+  // `module_installs`). Before rc57.13 the merge function returned
+  // [] in that case, leaving the dropdown empty. The fix: fall
+  // back to local when remote.length === 0, regardless of whether
+  // MAIC succeeded or threw.
+  assert.match(
+    jsSrc,
+    /if\s*\(remote\.length\s*===\s*0\s*&&\s*local\.length\s*>\s*0\)\s*\{/,
+    "should fall back to local when remote is empty (MAIC returned 0 modules)"
+  );
+  // The old bug was: `if (remote.length === 0 && local.length > 0 && !remoteOk)` —
+  // the `!remoteOk` gate excluded David's case. Pin that the gate
+  // is GONE in the rc57.13 source.
+  assert.doesNotMatch(
+    jsSrc,
+    /remote\.length\s*===\s*0\s*&&\s*local\.length\s*>\s*0\s*&&\s*!remoteOk/,
+    "the `!remoteOk` gate should be removed (caused empty dropdown when MAIC returned 0)"
+  );
+});

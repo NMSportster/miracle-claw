@@ -185,6 +185,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* rc57.13: one-line description under the module name so the dropdown
+ * matches the Terminal launchpad card. Mirrors the mc-oc-modal-subtitle
+ * color (muted, 11px) so the dropdown stays scannable. Truncated to a
+ * single line; full text is available in the info modal / run form.
+ * Lesson 1135: previously the toolbar showed only icon + name + run
+ * button which looked "generic" vs the Terminal launchpad card grid. */
+.mc-oc-dropdown-item-desc {
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .mc-oc-dropdown-item-meta {
   font-size: 11px;
   color: rgba(255, 255, 255, 0.55);
@@ -245,6 +260,11 @@
   font-size: 12px;
   color: rgba(255, 255, 255, 0.55);
   margin: 0 0 14px;
+  /* rc57.13: honor \n\n paragraph breaks in the info-modal subtitle so
+   * the description and the "How to use" hint render as separate
+   * paragraphs. textContent converts \n to whitespace by default;
+   * white-space: pre-line preserves user newlines. */
+  white-space: pre-line;
 }
 .mc-oc-modal-section {
   margin-top: 14px;

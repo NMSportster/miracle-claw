@@ -230,10 +230,19 @@
       console.warn('[mc-toolbar] mc_module_list failed:', e);
     }
 
-    if (remote.length === 0 && local.length > 0 && !remoteOk) {
-      // MAIC unreachable — surface the local modules so the
-      // dropdown isn't empty. Tag each with a small "offline copy"
-      // marker in the meta line.
+    if (remote.length === 0 && local.length > 0) {
+      // rc57.13 (2026-10-07, David): the previous version of this
+      // block ONLY fell back to local when !remoteOk, which left
+      // users with bundled/standalone modules but no MAIC
+      // `module_installs` row seeing an empty Modules dropdown
+      // ("No modules installed."). David's account (user 26317)
+      // hits this: MAIC `/v1/modules/installed` returns [] because
+      // his 8 modules are registered but never installed via MAIC.
+      // The bundled registry (mc_module_list) IS the source of truth
+      // for users without a MAIC install record — fall back to it
+      // whenever remote is empty, regardless of whether MAIC returned
+      // 200 or threw. Tag each with `_offline` so the meta line
+      // shows "(offline copy)" for diagnostic clarity.
       return local.map(function (m) {
         var n = normalizeLocalModule(m);
         n._offline = true;
@@ -259,7 +268,13 @@
   function normalizeLocalModule(m) {
     // mc_module_list returns the runtime registry shape. Best-effort
     // mapping; the toolbar uses {id, name, version, icon, tools}.
-    return {
+    // rc57.13: include `description` (top-level + client_manifest fallback)
+    // so the dropdown card can show the same one-line description the
+    // Terminal launchpad card does, even for bundled/local-only modules
+    // where MAIC has no record.
+    var cm = m && m.client_manifest ? m.client_manifest : {};
+    var desc = m.description || cm.description || '';
+    var n = {
       id: m.id || m.module_id || '(unknown)',
       name: m.name || m.title || m.module_id || m.id || '(unknown)',
       version: m.version || '',
@@ -268,6 +283,8 @@
       tools: m.tools || m._raw_tools || [],
       _raw: m,
     };
+    if (desc) n.description = desc;
+    return n;
   }
 
   function normalizeRemoteModule(m) {
@@ -334,19 +351,52 @@
       var nameEl = document.createElement('div');
       nameEl.className = 'mc-oc-dropdown-item-name';
       nameEl.textContent = m.name;
+      // rc57.13 (2026-10-07, David): show the module description under
+      // the name so the dropdown matches the Terminal launchpad card
+      // ("Marketing Suite · Email campaigns, social posts, and ad copy
+      // from a single brief") instead of looking like a generic icon +
+      // Run button row. Description comes from the MAIC row's top-level
+      // `description` column; falls back to client_manifest.description.
+      // For local-only modules (no MAIC record), the normalized form
+      // also copies the description into `m.description`. Capped at
+      // 100 chars + ellipsis to keep the dropdown scannable.
+      var rawModule = m._raw || {};
+      var rawCm = rawModule.client_manifest || {};
+      var moduleDesc = (typeof m.description === 'string' ? m.description : '')
+        || (typeof rawModule.description === 'string' ? rawModule.description : '')
+        || (typeof rawCm.description === 'string' ? rawCm.description : '')
+        || '';
+      if (moduleDesc) {
+        var descEl = document.createElement('div');
+        descEl.className = 'mc-oc-dropdown-item-desc';
+        descEl.textContent = moduleDesc.slice(0, 100) + (moduleDesc.length > 100 ? '…' : '');
+        bodyEl.appendChild(nameEl);
+        bodyEl.appendChild(descEl);
+      } else {
+        bodyEl.appendChild(nameEl);
+      }
       var metaEl = document.createElement('div');
       metaEl.className = 'mc-oc-dropdown-item-meta';
       var toolCount = m.tools.length;
-      var toolLabel = toolCount === 0
-        ? 'no tools -- open in launchpad'
-        : toolCount === 1 ? '1 tool'
-        : toolCount + ' tools';
-      metaEl.textContent = 'v' + (m.version || '?') + ' ? ' + toolLabel + (m._offline ? ' (offline copy)' : '');
-      bodyEl.appendChild(nameEl);
+      // rc57.13: when the module has 2+ tools, list them by name in the
+      // meta line so users can see what they'd run without picking
+      // through a tool picker first. Same cap+ellipsis logic as the
+      // description so the line stays scannable.
+      var toolLabel;
+      if (toolCount === 0) {
+        toolLabel = 'no tools -- open in launchpad';
+      } else if (toolCount === 1) {
+        toolLabel = '1 tool: ' + (m.tools[0].name || '?');
+      } else {
+        var names = m.tools.map(function (t) { return t.name || t.id || '?'; });
+        var joined = names.join(', ');
+        toolLabel = toolCount + ' tools: ' + (joined.length > 80 ? joined.slice(0, 77) + '…' : joined);
+      }
+      metaEl.textContent = 'v' + (m.version || '?') + ' · ' + toolLabel + (m._offline ? ' (offline copy)' : '');
       bodyEl.appendChild(metaEl);
       var runBtn = document.createElement('span');
       runBtn.className = 'mc-oc-dropdown-item-run';
-      runBtn.textContent = toolCount > 0 ? 'Run ?' : 'Info ?';
+      runBtn.textContent = toolCount > 0 ? 'Run →' : 'Info →';
       runBtn.setAttribute('role', 'button');
       item.appendChild(iconEl);
       item.appendChild(bodyEl);
@@ -366,9 +416,28 @@
   }
 
   function openModuleInfoModal(m) {
+    // rc57.13: show the module description as the modal subtitle so the
+    // info modal matches the Terminal launchpad card. Before rc57.13
+    // the toolbar showed a generic "no client-side tools" line for every
+    // sidecar (firecrawl, calendar, etc.) with no other context. Now
+    // users see the module's description + category before the hint.
+    var rawModule = m._raw || {};
+    var rawCm = rawModule.client_manifest || {};
+    var moduleDesc = (typeof m.description === 'string' ? m.description : '')
+      || (typeof rawModule.description === 'string' ? rawModule.description : '')
+      || (typeof rawCm.description === 'string' ? rawCm.description : '')
+      || 'No description provided.';
+    var category = rawModule.category || rawCm.category || m.category || '';
+    var subtitleParts = [];
+    if (category) subtitleParts.push('[' + category + ']');
+    subtitleParts.push(moduleDesc);
+    var subtitle = subtitleParts.join(' ');
+    // Show a single non-clickable hint row so users know what to do.
+    // We render it as a <p> via the existing subtitle channel and pass
+    // empty rows so showModuleModal only shows the Close button.
     showModuleModal(
       m.name + ' (v' + (m.version || '?') + ')',
-      'This module does not expose client-side tools. Open it in the launchpad to run.',
+      subtitle + '\n\nThis module does not expose client-side tools. Open it in the launchpad to run.',
       [],
       null
     );

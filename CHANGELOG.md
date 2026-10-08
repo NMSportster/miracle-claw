@@ -4329,6 +4329,29 @@ The RC55.13/RC55.14 schema migration (Lesson 800) wrote:
 - All 180 lib tests pass (10 schema-migration tests rewritten + 1 new repair test)
 - David's config was manually repaired at 13:19:56 MDT; rc55.15 writer will detect no work to do on first run
 
+## v1.2.0-rc57.13 (2026-10-07)
+
+**Miracle Claw Windows Tools menu dropdown matches Terminal launchpad card** (Lesson 1135, David 2026-10-07 17:50 MDT).
+
+### Problem
+After rc57.12, the MC Windows Tools menu form modal rendered correctly (description + placeholder for each field). But the **dropdown card itself** still looked "generic" — just icon + name + Run button. David: *"All of the cards seemed to update except for the Marketing Suite, and Firecrawl both in the Miracle Claw Windows. Miracle Claw Terminal seems complete."*
+
+Root cause: the toolbar dropdown item (`mc-oc-dropdown-item`) rendered only the module name — no description, no tool list. The Terminal launchpad card (`dashboard_launchpad.js renderYourTools`) renders `m.name + m.description + tool list + instructions`. The two surfaces had drifted apart — Lesson 1134 documented the file-level parity table, but the dropdown's lack of description was the visible symptom.
+
+### Fix
+- **`mc-toolbar.js` `renderDropdownItems()`**: add a `.mc-oc-dropdown-item-desc` div under the name showing the module's description (sourced from `m._raw.description` or `client_manifest.description`, capped at 100 chars + ellipsis). For 2+ tool modules, list tool names in the meta line (`2 tools: draft_email, social_post`). 1-tool modules show `1 tool: sequence`.
+- **`mc-toolbar.js` `openModuleInfoModal()`**: replace the generic "no client-side tools" message with the module's description + category as the modal subtitle, followed by a `\n\n` paragraph break and the "open in launchpad" hint. `white-space: pre-line` on `.mc-oc-modal-subtitle` so the paragraph break renders.
+- **`mc-toolbar.css`**: add `.mc-oc-dropdown-item-desc` (11px, muted, single-line ellipsis). Add `white-space: pre-line` to `.mc-oc-modal-subtitle`.
+
+### Files
+- `depot/openclaw-patches/dist/control-ui/mc-toolbar.js` — dropdown item description + openModuleInfoModal rewrite
+- `depot/openclaw-patches/dist/control-ui/mc-toolbar.css` — `.mc-oc-dropdown-item-desc` + `.mc-oc-modal-subtitle` `white-space: pre-line`
+- `package.json` + `src-tauri/Cargo.toml` + `src-tauri/tauri.conf.json` — bumped to 1.2.0-rc57.13
+
+### Verification
+- mc-toolbar.js form modal (`showRunForm`) already worked correctly (rc57.12 verified 6 patches in installer)
+- New: dropdown card now matches Terminal launchpad card shape (icon + name + description + meta + run button)
+
 ## v1.2.0-rc57.12 (2026-10-07)
 
 **Miracle Claw Windows Tools menu parity with Terminal** (Lesson 1132, David 2026-10-07 17:08 MDT).
