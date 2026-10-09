@@ -33,3 +33,20 @@ const OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN = /^(?:ollama|maic)(?:-|$)/;
 // Equivalent effect for ollama (usage is always reported there), no
 // behavior change for the local path.
 	if (assistant?.stopReason === "stop" && OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN.test(normalizeLowercaseStringOrEmpty(params.provider ?? "")) && assistant.usage && assistant.usage.output === 0) return null;
+
+// MC-PATCH: maic-empty-retry-debug-v3
+	// REPLACE: 	const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant ?? null;
+// Lesson 1138 v3-debug (2026-10-09, David): instrument
+// resolveEmptyResponseRetryInstruction with diagnostic logs at each gate
+// so we can see which gate is returning null for the MAIC incomplete-turn
+// case. The const-line block adds ENTER + GATE1 + GATE2 logs. The
+// if(shouldApply...) block uses an orphan-absorber pattern: the opening
+// line opens an `if (false) { const _dbg_orphan = {` block, the 4 param
+// lines become part of an unused object literal, and the closing line
+// closes the block and adds GATE4 + FINAL logs. REMOVE THIS BLOCK (the v3
+// marker) once the diagnosis is captured.
+const _dbg_a = params.attempt?.currentAttemptAssistant ?? params.attempt?.lastAssistant ?? null; const _dbg_at = (params.attempt?.assistantTexts ?? []).map((t) => sanitizeAssistantVisibleStreamText(t)).filter((t) => t.trim().length > 0); log$1.info(`[MC-DEBUG empty-retry] ENTER provider=${params.provider} modelId=${params.modelId} modelApi=${params.modelApi} contract=${params.executionContract} payloadCount=${params.payloadCount} aborted=${params.aborted} timedOut=${params.timedOut} nonEmptyAssistantTexts=${_dbg_at.length} assistantTextsJoinedLen=${joinAssistantTexts(params.attempt?.assistantTexts).length} stopReason=${_dbg_a?.stopReason ?? "n/a"} contentLen=${Array.isArray(_dbg_a?.content) ? _dbg_a.content.length : "n/a"} phase=${_dbg_a?.phase ?? "n/a"} usage=${_dbg_a?.usage ? JSON.stringify(_dbg_a.usage) : "missing"}`); if (shouldSkipNonVisibleTurnRetry(params)) { log$1.info(`[MC-DEBUG empty-retry] GATE1 SKIP (shouldSkipNonVisibleTurnRetry=true) provider=${params.provider}`); return null; } if (!isEmptyResponseAssistantTurn({ payloadCount: params.payloadCount, attempt: params.attempt })) { log$1.info(`[MC-DEBUG empty-retry] GATE2 SKIP (!isEmptyResponseAssistantTurn) provider=${params.provider} stopReason=${_dbg_a?.stopReason}`); return null; } const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant ?? null;
+	// REPLACE: 	if (shouldApplyNonVisibleTurnRetryGuard({
+if (false) { const _dbg_orphan = {
+	// REPLACE: 	}) || isZeroUsageEmptyStopAssistantTurn(assistant)) return EMPTY_RESPONSE_RETRY_INSTRUCTION;
+}; } const _dbg_guard = shouldApplyNonVisibleTurnRetryGuard({ provider: params.provider, modelId: params.modelId, modelApi: params.modelApi, executionContract: params.executionContract }); const _dbg_zero = isZeroUsageEmptyStopAssistantTurn(assistant); log$1.info(`[MC-DEBUG empty-retry] GATE4 EVAL provider=${params.provider} shouldApplyGuard=${_dbg_guard} isZeroUsageEmptyStop=${_dbg_zero} stopReason=${assistant?.stopReason} usage=${assistant?.usage ? JSON.stringify(assistant.usage) : "missing"} contentLen=${Array.isArray(assistant?.content) ? assistant.content.length : "n/a"} phase=${assistant?.phase ?? "n/a"}`); if (_dbg_guard || _dbg_zero) return EMPTY_RESPONSE_RETRY_INSTRUCTION; log$1.info(`[MC-DEBUG empty-retry] FINAL RETURN NULL provider=${params.provider} — neither guard nor zeroUsage matched, no retry`); return null;

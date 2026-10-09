@@ -448,12 +448,13 @@ while IFS= read -r patch_file; do
             # sentinel/replacement text don't collide.
             mapfile -t replace_blocks < <(awk -v marker="$marker" -v sep=$'\x1f' '
                 function is_blank(s) { return s ~ /^[[:space:]]*$/ }
+                function is_mc_marker(s) { return s ~ /^[[:space:]]*\/\/[[:space:]]*MC-PATCH:/ }
                 BEGIN { n = 0; block_start = 0; pending = 0 }
                 /^[[:space:]]*\/\/[[:space:]]*REPLACE:[[:space:]]/ {
                     if (n > 0) {
                         last_non_blank = 0
                         for (i = NR - 1; i >= block_start; i--) {
-                            if (i in lines && !is_blank(lines[i])) { last_non_blank = i; break }
+                            if (i in lines && !is_blank(lines[i]) && !is_mc_marker(lines[i])) { last_non_blank = i; break }
                         }
                         if (last_non_blank == 0) last_non_blank = block_start
                         printf("%d%s%s%s%s%s%d%s%d\n", n, sep, sentinel_line, sep, lines[last_non_blank], sep, sentinel_lineno, sep, last_non_blank)
@@ -469,7 +470,7 @@ while IFS= read -r patch_file; do
                     if (n > 0) {
                         last_non_blank = 0
                         for (i = NR; i >= block_start; i--) {
-                            if (i in lines && !is_blank(lines[i])) { last_non_blank = i; break }
+                            if (i in lines && !is_blank(lines[i]) && !is_mc_marker(lines[i])) { last_non_blank = i; break }
                         }
                         if (last_non_blank == 0) last_non_blank = block_start
                         printf("%d%s%s%s%s%s%d%s%d\n", n, sep, sentinel_line, sep, lines[last_non_blank], sep, sentinel_lineno, sep, last_non_blank)
