@@ -1,5 +1,5 @@
-// MC-PATCH: maic-incomplete-turn-recovery
-// REPLACE: const OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN = /^ollama(?:-|$)/;
+// MC-PATCH: maic-incomplete-turn-recovery-v2
+	// REPLACE: const OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN = /^ollama(?:-|$)/;
 // Lesson 1127 (2026-10-07, David): MC's main provider is `maic` (MAIC),
 // not `ollama`. The default pattern only matches `ollama` / `ollama-*`,
 // so the embedded-agent retry guards (resolveReasoningOnlyRetryInstruction,
@@ -15,3 +15,21 @@
 // for it. The fix is one regex, additive only — no behavior change for
 // existing `ollama` providers.
 const OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN = /^(?:ollama|maic)(?:-|$)/;
+	// REPLACE: 	if (assistant?.stopReason === "stop" && OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN.test(normalizeLowercaseStringOrEmpty(params.provider ?? "")) && !hasPositiveOutputTokenUsage(assistant)) return null;
+// Lesson 1138 (2026-10-09, David): MAIC proxy does not always populate
+// `usage.output` on the assistant message the way the local Ollama path does.
+// The upstream guard (added in openclaw 2026.7.x) suppresses the
+// empty-response retry whenever `stopReason=stop`, provider matches the
+// ollama/maic pattern, AND `usage.output` is missing or zero — even when the
+// model produced real visible text + reasoning content. Result: every MAIC
+// chat with a real answer falls through to "⚠️ Agent couldn't generate a
+// response" with `payloads=0` (verified live 2026-10-09 09:09 MDT against
+// `chat-nemotron-super`, `milagro-dev`, `milagro-oc-deepseek`,
+// `milagro-m1-t3`, `milagro-oc-minimax`).
+//
+// Fix: only suppress the retry when `usage` is actually reported AND
+// `usage.output === 0`. If `usage` is missing entirely (the MAIC case),
+// let the empty-response retry run as it did before this guard was added.
+// Equivalent effect for ollama (usage is always reported there), no
+// behavior change for the local path.
+	if (assistant?.stopReason === "stop" && OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN.test(normalizeLowercaseStringOrEmpty(params.provider ?? "")) && assistant.usage && assistant.usage.output === 0) return null;

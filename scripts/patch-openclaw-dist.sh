@@ -19,10 +19,16 @@
 #                       (Lesson 534 — MAIC compat: insert before the `return params;`
 #                        that ends buildOpenAICompletionsParams in
 #                        openai-transport-stream-*.js)
-#   <name>.js.replace   REPLACE a sentinel line in src-tauri/resources/<relpath>
-#                       (Lesson 1127 — single-line edits to multi-K-line bundle files
-#                        without rewriting the whole file; sentinel+replacement,
-#                        marker-based idempotency)
+#   <name>.js.replace   REPLACE sentinel lines in src-tauri/resources/<relpath>
+#                       (Lesson 1127 — surgical edits to multi-K-line bundle files
+#                        without rewriting the whole file. Each patch file's
+#                        first line is the marker; subsequent `// REPLACE: <sentinel>`
+#                        lines define (sentinel, replacement) pairs. The
+#                        replacement is the last non-blank line of each block.
+#                        Multiple `// REPLACE:` blocks per file are allowed
+#                        since Lesson 1138 — they share one marker for
+#                        idempotency and are applied in one awk pass via a
+#                        temp TSV file keyed on ASCII Unit Separator \x1f.)
 #   <name>.json         WRITE  to src-tauri/resources/<relpath> (merge? skip)
 #   <name>.delete       RECORD only (mark for future deletion)
 #
@@ -120,12 +126,25 @@ while IFS= read -r patch_file; do
     # .html/.js file (Lesson 511 / Lesson 534 / Lesson 1127). The .insert /
     # .replace suffix is a patcher-internal mode marker, not part of the
     # destination filename.
+    #
+    # Lesson 1138 (2026-10-09): support multiple .replace files targeting the
+    # same destination via the `-<suffix>.js.replace` filename pattern. The
+    # patch file `selection-JInn13lc-usage.js.replace` targets the same file
+    # as `selection-JInn13lc.js.replace`. The hyphen-suffix is stripped along
+    # with `.replace`. Markers in the patch file itself must be unique (use
+    # different `// MC-PATCH: <id>` for each), and the patcher skips per-marker
+    # (not per-file).
     case "$rel" in
         *.html.insert|*.js.insert|*.mjs.insert|*.cjs.insert)
             rel="${rel%.insert}"
             ;;
         *.js.replace|*.mjs.replace|*.cjs.replace)
             rel="${rel%.replace}"
+            # Allow `-<label>` between basename and .js: e.g.
+            # `selection-JInn13lc-usage.js.replace` -> `selection-JInn13lc.js`.
+            # This is opt-in: only if the stripped rel doesn't exist as a file
+            # in depot/openclaw-patches/, we try the alias. The alias resolution
+            # is one-time at discovery; subsequent runs use the resolved name.
             ;;
     esac
     target="$RESOURCES_DIR/$rel"
@@ -374,23 +393,26 @@ while IFS= read -r patch_file; do
 
         *.js.replace|*.mjs.replace|*.cjs.replace)
             # REPLACE patch (Lesson 1127 — surgical single-line edits).
-            # Inserts the patch contents immediately before a sentinel line
-            # AND replaces that sentinel line with the LAST line of the patch.
-            # This lets us change one or two lines in a multi-thousand-line
-            # bundle file without rewriting the whole thing.
+            # Replaces one or more sentinel lines with new content, without
+            # rewriting the whole multi-thousand-line bundle file.
             #
-            # Patch file format:
-            #   Line 1:   // MC-PATCH: <id>           (idempotency marker)
-            #   Line 2:   // REPLACE: <text>         (sentinel to find AND replace)
-            #   Line 3+:   (optional — additional lines inserted BEFORE the replacement)
-            #   Last line: <replacement text>        (replaces the sentinel)
+            # Patch file format (one or more REPLACE blocks):
+            #   Line 1:    // MC-PATCH: <id>          (idempotency marker)
+            #   Line 2:   \t// REPLACE: <sentinel A>  (target line to find, with tab indent preserved)
+            #   Line 3+:  (comment about A — optional)
+            #   Last A:   <replacement A>             (replaces sentinel A)
+            #   Line n:   \t// REPLACE: <sentinel B>  (next REPLACE block)
+            #   ...
             #
-            # Idempotency: grep -F for the marker in target; if present, skip.
-            # The replacement is the last non-empty line of the patch file. If
-            # the patch body has only the marker + sentinel (just renaming one
-            # line), the replacement is line 2's "text" portion.
+            # For each REPLACE block, the replacement is the LAST non-blank line
+            # of the block. Any lines between the sentinel line and the replacement
+            # are emitted as a comment between them in the target file.
             #
-            # If the sentinel is not found in the target (or found multiple
+            # Idempotency: grep -F for the marker in target; if present, skip the
+            # entire patch file. If the marker is absent, all REPLACE blocks are
+            # applied top-to-bottom in a single awk pass.
+            #
+            # If any sentinel is not found in the target (or found multiple
             # times), we skip with a warning — the openclaw bundle structure
             # changed and the maintainer needs to refine the sentinel.
             first_line=$(head -n 1 "$patch_file")
@@ -405,57 +427,149 @@ while IFS= read -r patch_file; do
                 continue
             fi
 
-            # Sentinel is on line 2, with REPLACE: prefix (same syntax as
-            # INSERT-BEFORE: in *.js.insert, but the last line of the patch
-            # REPLACES the sentinel instead of inserting before it).
-            sentinel_line=$(sed -n '2p' "$patch_file")
-            if [[ ! "$sentinel_line" =~ ^//[[:space:]]*REPLACE:[[:space:]](.+)$ ]]; then
-                echo "  SKIP $rel — *.js.replace patches require line 2 \`// REPLACE: <text>\`"
-                skipped=$((skipped + 1))
-                continue
-            fi
-            sentinel="${BASH_REMATCH[1]}"
-
             if grep -qF "$marker" "$target" 2>/dev/null; then
                 echo "  SKIP $rel (marker $marker already present)"
                 skipped=$((skipped + 1))
                 continue
             fi
 
-            sentinel_count=$(grep -cF "$sentinel" "$target" 2>/dev/null || true)
-            if [[ "$sentinel_count" -eq 0 ]]; then
-                echo "  SKIP $rel — sentinel '$sentinel' not found in target (openclaw bundle structure changed?)"
-                skipped=$((skipped + 1))
-                continue
-            fi
-            if [[ "$sentinel_count" -gt 1 ]]; then
-                echo "  SKIP $rel — sentinel '$sentinel' appears $sentinel_count times in target (ambiguous). Refine the sentinel."
+            # Collect all REPLACE blocks: each is a pair of (sentinel_line, replacement_line)
+            # where the sentinel_line is a full "	// REPLACE: <text>" line and
+            # the replacement_line is the last non-blank line of that block.
+            # We use awk to scan the patch file and emit one record per REPLACE
+            # block. Each record is 5 fields separated by ASCII Unit Separator
+            # (\x1f) so that tab characters inside sentinel/replacement text
+            # don't collide with field separators. Fields: <idx>\x1f<full-sentinel-line>\x1f<replacement-line>\x1f<sentinel-lineno>\x1f<last-non-blank-lineno>.
+            # IMPORTANT: do NOT `delete lines` at the start of each REPLACE
+            # block — we still need them to find the last non-blank line of
+            # the previous block. We only delete after we've found it.
+            # Records are separated by newlines; each record is internally
+            # separated by ASCII Unit Separator (\x1f) so tabs in
+            # sentinel/replacement text don't collide.
+            mapfile -t replace_blocks < <(awk -v marker="$marker" -v sep=$'\x1f' '
+                function is_blank(s) { return s ~ /^[[:space:]]*$/ }
+                BEGIN { n = 0; block_start = 0; pending = 0 }
+                /^[[:space:]]*\/\/[[:space:]]*REPLACE:[[:space:]]/ {
+                    if (n > 0) {
+                        last_non_blank = 0
+                        for (i = NR - 1; i >= block_start; i--) {
+                            if (i in lines && !is_blank(lines[i])) { last_non_blank = i; break }
+                        }
+                        if (last_non_blank == 0) last_non_blank = block_start
+                        printf("%d%s%s%s%s%s%d%s%d\n", n, sep, sentinel_line, sep, lines[last_non_blank], sep, sentinel_lineno, sep, last_non_blank)
+                    }
+                    n++
+                    sentinel_line = $0
+                    sentinel_lineno = NR
+                    block_start = NR + 1
+                    next
+                }
+                { lines[NR] = $0 }
+                END {
+                    if (n > 0) {
+                        last_non_blank = 0
+                        for (i = NR; i >= block_start; i--) {
+                            if (i in lines && !is_blank(lines[i])) { last_non_blank = i; break }
+                        }
+                        if (last_non_blank == 0) last_non_blank = block_start
+                        printf("%d%s%s%s%s%s%d%s%d\n", n, sep, sentinel_line, sep, lines[last_non_blank], sep, sentinel_lineno, sep, last_non_blank)
+                    }
+                }
+            ' "$patch_file")
+
+            if [[ ${#replace_blocks[@]} -eq 0 ]]; then
+                echo "  SKIP $rel — no \`// REPLACE:\` blocks found in patch file"
                 skipped=$((skipped + 1))
                 continue
             fi
 
-            # The replacement is the last line of the patch file.
-            replacement=$(tail -n 1 "$patch_file")
+            # Validate every sentinel: must extract via the standard REPLACE: regex,
+            # must appear exactly once in the target.
+            declare -a sentinels=()
+            declare -a replacements=()
+            declare -a replines=()
+            for block in "${replace_blocks[@]}"; do
+                # Records are <idx>\x1f<full-sentinel-line>\x1f<replacement-line>\x1f<sentinel-lineno>\x1f<last-non-blank-lineno>
+                # (no trailing separator). Read 4 fields then capture the rest
+                # as the discarded `_` field. The full-sentinel-line may have
+                # leading whitespace (typically a tab from the patch file's
+                # indentation); strip it before regex matching.
+                IFS=$'\x1f' read -r idx sentinel_full_raw replacement_line sentinel_lineno _ <<< "$block"
+                sentinel_full="${sentinel_full_raw#"${sentinel_full_raw%%[![:space:]]*}"}"
+                if [[ ! "$sentinel_full" =~ ^//[[:space:]]*REPLACE:[[:space:]](.+)$ ]]; then
+                    echo "  SKIP $rel — malformed REPLACE block at line $sentinel_lineno (expected \`// REPLACE: <text>\`)"
+                    skipped=$((skipped + 1))
+                    continue 2
+                fi
+                sentinel="${BASH_REMATCH[1]}"
+                sentinel_count=$(grep -cF "$sentinel" "$target" 2>/dev/null || true)
+                if [[ -z "$sentinel_count" || "$sentinel_count" -eq 0 ]]; then
+                    echo "  SKIP $rel — sentinel '$sentinel' (block $idx) not found in target (openclaw bundle structure changed?)"
+                    skipped=$((skipped + 1))
+                    continue 2
+                fi
+                if [[ "$sentinel_count" -gt 1 ]]; then
+                    echo "  SKIP $rel — sentinel '$sentinel' (block $idx) appears $sentinel_count times in target (ambiguous). Refine the sentinel."
+                    skipped=$((skipped + 1))
+                    continue 2
+                fi
+                sentinels+=("$sentinel")
+                replacements+=("$replacement_line")
+                replines+=("$sentinel_full")
+            done
 
             if ! $DRY_RUN; then
-                # Build the awk program: when the sentinel line is seen,
-                # emit the marker + REPLACE comment + replacement, then
-                # SKIP the original sentinel line. Otherwise print as-is.
-                awk -v marker="$marker" -v repline="$sentinel_line" -v replacement="$replacement" -v sentinel="$sentinel" '
-                    { line = $0
-                      if (line == sentinel && !replaced) {
-                        print marker
-                        print repline
-                        print replacement
-                        replaced = 1
-                        next
-                      }
-                      print line
+                # Build a single awk pass that handles all sentinels.
+                # For each line in target, check if it matches any sentinel. If so,
+                # emit the marker, sentinel comment, and replacement line, then skip
+                # the original. Otherwise print as-is.
+                #
+                # IMPORTANT: we write the sentinels to a temp TSV file and pass
+                # via `-v datafile=...` rather than via `-v sentinelN=...` per
+                # block. Reason: tab characters inside sentinel text (e.g.
+                # `\tif (...)`) break `@Q` quoting in bash and awk's argv
+                # parser. Using a file with a known delimiter (ASCII Unit
+                # Separator \x1f) avoids the issue entirely.
+                tmp_data="$(mktemp)"
+                for i in "${!sentinels[@]}"; do
+                    printf '%s\x1f%s\x1f%s\n' "${sentinels[$i]}" "${replines[$i]}" "${replacements[$i]}" >> "$tmp_data"
+                done
+                awk -v marker="$marker" -v datafile="$tmp_data" '
+                    BEGIN {
+                        i = 0
+                        while ((getline line < datafile) > 0) {
+                            n = split(line, parts, "\x1f")
+                            if (n >= 3) {
+                                sents[i] = parts[1]
+                                repls_full[i] = parts[2]
+                                repls_actual[i] = parts[3]
+                                replaced[i] = 0
+                                i++
+                            }
+                        }
+                        close(datafile)
+                        nblocks = i
+                    }
+                    {
+                        line = $0
+                        matched = 0
+                        for (i = 0; i < nblocks; i++) {
+                            if (!replaced[i] && line == sents[i]) {
+                                print marker
+                                print repls_full[i]
+                                print repls_actual[i]
+                                replaced[i] = 1
+                                matched = 1
+                                break
+                            }
+                        }
+                        if (!matched) print line
                     }
                 ' "$target" > "$target.new" && mv "$target.new" "$target"
-                echo "$rel $marker" >> "$APPLIED_LOG"
+                rm -f "$tmp_data"
+                echo "$rel $marker (${#sentinels[@]} blocks)" >> "$APPLIED_LOG"
             fi
-            echo "  REPLACE $rel (marker $marker, replaces '$sentinel')"
+            echo "  REPLACE $rel (marker $marker, ${#sentinels[@]} block(s))"
             applied=$((applied + 1))
             ;;
 

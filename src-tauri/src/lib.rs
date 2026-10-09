@@ -860,6 +860,75 @@ fn migrate_legacy_mc_config(path: &Path) -> io::Result<bool> {
 // 50K TPM in 3 messages. Tier parameter added — callers without
 // tier context (early setup, login-required bootstrap) should pass
 // `Tier::Free` to be safe per Lesson 176.
+/// Lesson 1136 (NEW 2026-10-09 ~07:30 MDT, David): self-heal model
+/// catalog entries that are missing the `maxTokens` / `contextWindow` /
+/// `reasoning` capability fields. MC's request builder reads these
+/// fields; missing values fall back to the hardcoded default
+/// (`maxTokens: 8192`), which truncates reasoning models like
+/// `chat-nemotron-super` mid-stream → `stopReason=length` → user
+/// sees "Agent couldn't generate a response".
+///
+/// This runs before `merge_known_model_ids_into_provider` so users
+/// upgrading from older binaries (or fresh installs that hit the
+/// existing-entry path) get healed on the next launch. Only entries
+/// that match a known `MODEL_SPEC` row are touched; user-added custom
+/// models are left alone (matches the Lesson 527 "preserve user
+/// customizations" pattern).
+///
+/// Returns `true` if any field was patched, so callers can log it.
+pub fn backfill_model_capability_fields(cfg: &mut Value) -> bool {
+    let mut any_changed = false;
+    let Some(providers) = cfg
+        .get_mut("models")
+        .and_then(|m| m.get_mut("providers"))
+        .and_then(|p| p.as_object_mut())
+    else {
+        return false;
+    };
+    for (_, provider) in providers.iter_mut() {
+        let Some(models) = provider
+            .get_mut("models")
+            .and_then(|m| m.as_array_mut())
+        else {
+            continue;
+        };
+        for entry in models.iter_mut() {
+            let Some(mid) = entry.get("id").and_then(|v| v.as_str()).map(str::to_string) else {
+                continue;
+            };
+            // Skip user-added custom models — only patch known catalog entries.
+            let Some((_, max_tokens, ctx, reasoning)) =
+                MODEL_SPEC.iter().find(|(spec_id, _, _, _)| *spec_id == mid)
+            else {
+                continue;
+            };
+            let entry_obj = match entry.as_object_mut() {
+                Some(o) => o,
+                None => continue,
+            };
+            if !entry_obj.contains_key("maxTokens") {
+                entry_obj.insert(
+                    "maxTokens".to_string(),
+                    Value::Number(serde_json::Number::from(*max_tokens)),
+                );
+                any_changed = true;
+            }
+            if !entry_obj.contains_key("contextWindow") {
+                entry_obj.insert(
+                    "contextWindow".to_string(),
+                    Value::Number(serde_json::Number::from(*ctx)),
+                );
+                any_changed = true;
+            }
+            if !entry_obj.contains_key("reasoning") {
+                entry_obj.insert("reasoning".to_string(), Value::Bool(*reasoning));
+                any_changed = true;
+            }
+        }
+    }
+    any_changed
+}
+
 fn merge_known_model_ids_into_provider(
     cfg: &mut Value,
     provider_id: &str,
@@ -922,10 +991,25 @@ fn merge_known_model_ids_into_provider(
         .collect();
     for id in allowed {
         if present.contains(*id) { continue; }
-        models.push(serde_json::json!({
-            "id": *id,
-            "name": *id,
-        }));
+        // Lesson 1136: include the per-model capability fields so MC's
+        // request builder picks the right `max_completion_tokens` /
+        // `contextWindow` / `reasoning` flags instead of falling back
+        // to its 8192 / 128000 / false defaults.
+        let spec = MODEL_SPEC.iter().find(|(mid, _, _, _)| *mid == *id);
+        let entry = match spec {
+            Some((_, max_tokens, ctx, reasoning)) => serde_json::json!({
+                "id": *id,
+                "name": *id,
+                "maxTokens": *max_tokens,
+                "contextWindow": *ctx,
+                "reasoning": *reasoning,
+            }),
+            None => serde_json::json!({
+                "id": *id,
+                "name": *id,
+            }),
+        };
+        models.push(entry);
     }
     // Lesson 527: also remove any models from the on-disk list that
     // the current tier doesn't allow. This handles the upgrade path
@@ -1236,6 +1320,17 @@ fn ensure_maic_provider_config_for_tier(
             // models the user's current tier is allowed to see.
             merge_known_model_ids_into_provider(&mut cfg, PROVIDER_ID, tier);
 
+            // Lesson 1136: patch any existing model entries that are
+            // missing maxTokens/contextWindow/reasoning. New entries
+            // ship with these fields (from MODEL_SPEC) via the loop
+            // inside merge_known_model_ids_into_provider, but older
+            // entries from previous installs may still have only
+            // {id, name}. Self-heal here so fresh installs of this
+            // binary don't immediately regress to stopReason=length.
+            if backfill_model_capability_fields(&mut cfg) {
+                eprintln!("[miracle-claw] Lesson 1136: backfilled missing model capability fields (maxTokens / contextWindow / reasoning)");
+            }
+
             // Lesson 524: existing-entry early-return path also needs to
             // stamp `params.tool_execution` and `params.tools`. Without
             // this, every login after first install would skip Lesson 513
@@ -1521,11 +1616,29 @@ fn ensure_maic_provider_config_for_tier(
             ("chat-nemotron-ultra",    "Cloud — Nemotron 3 Ultra 550B A55B (NVIDIA MoE, flagship)"),
         ],
     };
+        // Lesson 1136: look up the per-model spec (defined in
+        // merge_known_model_ids_into_provider above) so the seeded
+        // entry ships with correct maxTokens / contextWindow /
+        // reasoning fields. Avoids the "Agent couldn't generate a
+        // response" regression that hits fresh installs when these
+        // fields are missing (MC's request builder defaults to
+        // maxTokens=8192 → Nemotron Super truncates mid-stream).
         for (id, name) in seeds {
-            models.push(serde_json::json!({
-                "id": id,
-                "name": name,
-            }));
+            let spec = MODEL_SPEC.iter().find(|(mid, _, _, _)| *mid == *id);
+            let entry = match spec {
+                Some((_, max_tokens, ctx, reasoning)) => serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "maxTokens": *max_tokens,
+                    "contextWindow": *ctx,
+                    "reasoning": *reasoning,
+                }),
+                None => serde_json::json!({
+                    "id": id,
+                    "name": name,
+                }),
+            };
+            models.push(entry);
         }
     } else {
         // Ensure the default model id is present even if the user added
@@ -1583,13 +1696,37 @@ fn ensure_maic_provider_config_for_tier(
             .iter()
             .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
             .collect();
+        // Lesson 1136: same MODEL_SPEC lookup as the fresh-install path
+        // above. Without this, upgrades that hit the existing-entry
+        // path would still seed bare `{id, name}` entries and trigger
+        // the stopReason=length regression.
         for id in known_ids {
             if present.contains(*id) { continue; }
-            models.push(serde_json::json!({
-                "id": *id,
-                "name": *id,
-            }));
+            let spec = MODEL_SPEC.iter().find(|(mid, _, _, _)| *mid == *id);
+            let entry = match spec {
+                Some((_, max_tokens, ctx, reasoning)) => serde_json::json!({
+                    "id": *id,
+                    "name": *id,
+                    "maxTokens": *max_tokens,
+                    "contextWindow": *ctx,
+                    "reasoning": *reasoning,
+                }),
+                None => serde_json::json!({
+                    "id": *id,
+                    "name": *id,
+                }),
+            };
+            models.push(entry);
         }
+    }
+
+    // Lesson 1136: self-heal any pre-existing entries that are still
+    // missing maxTokens / contextWindow / reasoning (e.g. seeded by a
+    // previous binary version before Lesson 1136). Runs after the
+    // push loops above so newly-added entries are already correct,
+    // and only patches existing entries that are still bare.
+    if backfill_model_capability_fields(&mut cfg) {
+        eprintln!("[miracle-claw] Lesson 1136: backfilled missing model capability fields (maxTokens / contextWindow / reasoning)");
     }
 
     // params: MAIC plugin reads `params.tool_execution` and merges provider-
@@ -7338,6 +7475,57 @@ impl TerminalHandle {
 /// keeps the most-recent N chunks and drops older ones. Protects against
 /// OOM from runaway processes (`yes`, `for ((;;)); do echo x; done`).
 const MAX_BUFFER_LINES: usize = 5_000;
+
+/// Lesson 1136 (NEW 2026-10-09 ~07:30 MDT, David): per-model capability
+/// spec used by every model-list bootstrap path. Missing `maxTokens`
+/// causes MC's request builder to default to 8192, which truncates
+/// reasoning models like `chat-nemotron-super` (native cap 65K) at
+/// ~2K output tokens → `stopReason=length` → "Agent couldn't generate
+/// a response". Shipping only `{id, name}` was fine when MC's gateway
+/// applied per-model defaults, but after the request builder started
+/// honoring `model.maxTokens`, the catalog has to carry the values
+/// explicitly. Source values from Ollama Cloud model cards + the
+/// LiteLLM caps bumped in Lesson 1126 Task 2.
+///
+/// Tuples: (id, maxTokens, contextWindow, reasoning)
+/// - maxTokens:    completion cap MC sends as `max_completion_tokens`.
+///                 Must match LiteLLM's per-model cap on the MAIC side,
+///                 otherwise MAIC's `enforce_min_max_tokens` floor
+///                 raises to a higher value and the model hits the cap.
+/// - contextWindow: total prompt+completion window MC advertises.
+///                 Bigger is fine (over-promising costs nothing);
+///                 smaller triggers "context too long" errors.
+/// - reasoning:    true iff the model emits hidden reasoning_tokens.
+///                 Tells the request builder to track reasoning budget
+///                 separately and to send `reasoning_effort` if set.
+const MODEL_SPEC: &[(&str, u32, u32, bool)] = &[
+    // Local distilled — no reasoning, modest cap, modest context
+    ("milagro-m1-t1", 8192, 32768, false),
+    ("milagro-m1-t2", 8192, 32768, false),
+    ("milagro-m1-t3", 8192, 32768, false),
+    // Local 14B family — bigger context, no reasoning
+    ("milagro-dev",       16384, 131072, false),
+    ("milagro-dev-coder", 16384, 131072, false),
+    // Local base / chat / coder / stock
+    ("milagro-m1",    8192,  32768,  false),
+    ("milagro-chat",  8192,  32768,  false),
+    ("milagro-coder", 16384, 131072, false),
+    ("milagro-stock", 8192,  32768,  false),
+    // Cloud cascade (OpenChat wrappers — all reasoning models)
+    ("milagro-oc-minimax",  32768, 131072, true),
+    ("milagro-oc-glm",      16384, 131072, true),
+    ("milagro-oc-qwen",     32768, 131072, true),
+    ("milagro-oc-deepseek", 65536, 131072, true),
+    ("milagro-oc-kimi",     32768, 131072, true),
+    // Direct chat (matches LiteLLM caps bumped in Lesson 1126 Task 2)
+    ("chat-glm",      16384, 131072, true),
+    ("chat-qwen",     32768, 131072, true),
+    ("chat-deepseek", 65536, 131072, true),
+    // Nemotron 3 family — MoE, supports reasoning, big context
+    ("chat-nemotron-nano",  32768,  131072, true),
+    ("chat-nemotron-super", 65536,  262144, true),
+    ("chat-nemotron-ultra", 65536,  524288, true),
+];
 
 /// Resolve the (cmd, args[]) tuple for a given shell label on this OS.
 fn resolve_shell_cmd(shell: &str) -> Result<(&'static str, Vec<&'static str>), String> {
