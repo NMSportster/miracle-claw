@@ -16,23 +16,26 @@
 // existing `ollama` providers.
 const OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN = /^(?:ollama|maic)(?:-|$)/;
 	// REPLACE: 	if (assistant?.stopReason === "stop" && OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN.test(normalizeLowercaseStringOrEmpty(params.provider ?? "")) && !hasPositiveOutputTokenUsage(assistant)) return null;
-// Lesson 1138 (2026-10-09, David): MAIC proxy does not always populate
-// `usage.output` on the assistant message the way the local Ollama path does.
-// The upstream guard (added in openclaw 2026.7.x) suppresses the
-// empty-response retry whenever `stopReason=stop`, provider matches the
-// ollama/maic pattern, AND `usage.output` is missing or zero — even when the
-// model produced real visible text + reasoning content. Result: every MAIC
-// chat with a real answer falls through to "⚠️ Agent couldn't generate a
-// response" with `payloads=0` (verified live 2026-10-09 09:09 MDT against
-// `chat-nemotron-super`, `milagro-dev`, `milagro-oc-deepseek`,
-// `milagro-m1-t3`, `milagro-oc-minimax`).
+// Lesson 1138 v2-corrected (2026-10-09 23:20 MDT, David): The original
+// `!hasPositiveOutputTokenUsage(assistant)` check was correct for ollama
+// (don't retry when ollama reports 0 output tokens — the model is in
+// reasoning-only mode). But it ALSO fired for MAIC because the embedded
+// agent's transform produces `usage.output = 0` for empty responses — so
+// adding `maic` to the OLLAMA pattern (Lesson 1127) caused this safety
+// guard to incorrectly suppress MAIC's empty-response retry.
 //
-// Fix: only suppress the retry when `usage` is actually reported AND
-// `usage.output === 0`. If `usage` is missing entirely (the MAIC case),
-// let the empty-response retry run as it did before this guard was added.
-// Equivalent effect for ollama (usage is always reported there), no
-// behavior change for the local path.
-	if (assistant?.stopReason === "stop" && OLLAMA_INCOMPLETE_TURN_PROVIDER_ID_PATTERN.test(normalizeLowercaseStringOrEmpty(params.provider ?? "")) && assistant.usage && assistant.usage.output === 0) return null;
+// Verified 2026-10-09 23:20 MDT via Node isolation test of the patched
+// function with the exact params from the sidecar log:
+//   provider=maic, modelId=chat-nemotron-super, stopReason=stop,
+//   usage={output:0,...}, replayMetadata={hadPotentialSideEffects:false}
+//   → GATE3 returned null (suppressed retry) → FINAL RETURN NULL → no retry
+//   → empty response surfaced as "Agent couldn't generate a response"
+//
+// Fix: revert GATE3 to use the ollama-only pattern. The reasoning-model
+// safety guard stays ollama-only (its original design). MAIC's empty
+// responses should be retried (not suppressed) — that's what the user wants
+// for "Hello" prompts where MAIC just returns content=[].
+	if (assistant?.stopReason === "stop" && /^ollama(?:-|$)/.test(normalizeLowercaseStringOrEmpty(params.provider ?? "")) && !hasPositiveOutputTokenUsage(assistant)) return null;
 
 // MC-PATCH: maic-empty-retry-debug-v3
 	// REPLACE: 	const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant ?? null;
