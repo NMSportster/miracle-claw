@@ -228,8 +228,17 @@ function formFieldsFromSchema(schema) {
 function renderField(f) {
   const id = `mc-modal-field-${cssEscape(f.name)}`;
   const req = f.required ? " required" : "";
-  const descHtml = f.description
-    ? `<small class="mc-modal-field-desc">${escapeHtml(f.description)}</small>`
+  // rc57.20: switch from <small class="mc-modal-field-desc"> (un-styled,
+  // no CSS rule exists for .mc-modal-field-desc) to <p class="mc-field-help">
+  // so per-field help text on the toolbar modal matches the launchpad's
+  // dashboard_launchpad.js renderField() (line 749). Capped at 240 chars
+  // + HTML-escaped to match Lesson 1132 rules in mc-toolbar.js. The
+  // existing .mc-field-help CSS rule (styles.css:6717) gives us
+  // font-size:12px, color:var(--fg-muted), line-height:1.4, margin:0
+  // — the right shape for a small muted line under an input.
+  const descText = (f.description || "").trim().slice(0, 240);
+  const descHtml = descText
+    ? `<p class="mc-field-help">${escapeHtml(descText)}</p>`
     : "";
   if (f.type === "boolean") {
     // Hidden "" sent first so unchecked state appears in FormData.
@@ -382,6 +391,18 @@ export function openModuleModal(module, opts = {}) {
   const firstTool = tools[0];
   const fields = formFieldsFromSchema(firstTool.form_schema);
   const fieldsHtml = fields.map(renderField).join("");
+  // rc57.20: surface module-level "How to use" instructions + tool
+  // description in the modal, matching the launchpad's openModuleModal
+  // (dashboard_launchpad.js:511-525). Before this, the toolbar dropdown
+  // modal only showed a one-line fallback in <p class="mc-modal-empty">
+  // when there were no fields, so users with form fields never saw the
+  // tool's description or the expandable instructions panel that
+  // launchpad users got in rc57.11. The data is already in
+  // `module.client_manifest.instructions` (the click handler at line
+  // ~781 unwraps `_raw` which carries the full client_manifest), so we
+  // just need to render it.
+  const instructions =
+    (module.client_manifest && module.client_manifest.instructions) || "";
 
   const modal = document.createElement("div");
   modal.className = "mc-modal";
@@ -392,6 +413,13 @@ export function openModuleModal(module, opts = {}) {
         <h3>${escapeHtml(module.name)} · ${escapeHtml(firstTool.name)}</h3>
         <button class="mc-iconbtn" data-action="modal-close" title="Close">×</button>
       </header>
+      <p class="mc-modal-tool-desc">${escapeHtml(firstTool.description || "")}</p>
+      ${instructions ? `
+        <details class="mc-modal-instructions">
+          <summary>How to use ${escapeHtml(module.name)}</summary>
+          <p>${escapeHtml(instructions)}</p>
+        </details>
+      ` : ""}
       <form class="mc-modal-form" data-module="${escapeHtml(module.module_id)}" data-tool="${escapeHtml(firstTool.name)}">
         ${fieldsHtml || `<p class="mc-modal-empty">${escapeHtml(firstTool.description || "No inputs needed.")}</p>`}
         <footer class="mc-modal-footer">

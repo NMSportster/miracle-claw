@@ -5,6 +5,27 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.0-rc57.20] — 2026-10-19 (Lesson 1144: Toolbar module modal regains "How to use" instructions + tool description)
+
+David reported the toolbar Modules dropdown's modal "lost" the rich instructions content that was supposed to show when a module was selected. The toolbar modal in `src/modules-menu.js` (`openModuleModal`, lines 386-405) had never been updated to match the launchpad's `dashboard_launchpad.js:511-525` modal from rc57.11, so the toolbar surface always rendered only a header + form, with no tool description and no `<details class="mc-modal-instructions">` block reading `client_manifest.instructions`.
+
+**Fixes** (`src/modules-menu.js` only — no schema, no CSS, no Rust changes needed):
+
+1. **Add `<p class="mc-modal-tool-desc">` between header and form**, mirroring `dashboard_launchpad.js:517`. Pulls `firstTool.description` so the tool's one-line purpose is always visible — previously only shown as a `<p class="mc-modal-empty">` fallback when there were no input fields.
+2. **Add `<details class="mc-modal-instructions">` block** when `module.client_manifest.instructions` is non-empty, identical to the launchpad's block. The data was already available — the click handler at `modules-menu.js:781` unwraps `_raw` which carries the full client_manifest. Just needed the render.
+3. **Switch per-field help from `<small class="mc-modal-field-desc">` to `<p class="mc-field-help">`**, matching the launchpad's `renderField()`. The old class had no CSS rule, so the help text rendered with default browser `<small>` styling (tiny, default color, no margin). The new class picks up the existing `.mc-field-help` rule at `styles.css:6717` (12px, muted color, line-height 1.4, no margin). Capped at 240 chars + HTML-escaped to match Lesson 1132 rules in `mc-toolbar.js`.
+
+**Why not modify `mc-toolbar.js` (Windows chat toolbar)**: it already has per-field `.mc-oc-modal-field-help` (rc57.12), but does NOT have a top-level "How to use" block either. Out of scope for this build — David specifically called out the Modules dropdown toolbar, not the chat composer toolbar. A separate pass for `mc-toolbar.js` if needed.
+
+### Tests
+- 10/10 `src/modules-menu.test.mjs` pass (no test touched the changed regions).
+- 27/30 full suite pass. 3 pre-existing failures (Lesson 985 batch — `mc-toolbar.js` parity, MANIFEST indices, chat voice button camelCase) unrelated to this build, also fail on rc57.19 baseline.
+
+### Build
+- `npm run build` clean: 119 modules, 1.82s, 621.10 kB main / 172.19 kB gz / 103.08 kB CSS / 18.71 kB gz.
+- Bumped `package.json` 1.2.0-rc57.19 → 1.2.0-rc57.20.
+- Tauri rebuild required to ship the new `dist/` bundle into the installer.
+
 ## [v1.2.0-rc57.16] — 2026-10-08 (Lesson 1143: relogin deadlock fix + log_to_file visibility)
 
 David installed rc57.15, hit a 401, the detector fired (we saw `MAIC 401 detected on stdout; firing silent_relogin` in `miracle-claw.log`), but `silent_relogin` never produced a result log line. The 3-failover cascade continued. The chat.json apiKey was NOT updated (still expired). The launcher sidecar was NOT killed. Result: user had to re-log in manually again.
