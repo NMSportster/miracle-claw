@@ -7774,36 +7774,25 @@ fn handle_mc401_marker(
     rest: &str,
     log_prefix: &str,
 ) {
+    // Lesson 1146 (2026-10-19, David): the previous behavior was to
+    // fire `silent_relogin` here, which would re-authenticate from
+    // the cached creds in Windows Credential Manager and respawn the
+    // gateway with a fresh JWT. That hid the auth failure from the
+    // user ("looks like my last login was just reconnected") and
+    // made JWT expirations invisible. David wants the 401 to surface
+    // to the chat composer / module list so the user sees the
+    // explicit auth failure and re-logs in via the login form.
+    //
+    // We still TAP the marker (so we know MAIC is talking) and log
+    // it, but we do NOT trigger silent_relogin. The next chat turn
+    // will keep failing until the user opens Settings → Providers
+    // → MAIC → Log out → Log in. That visibility is the whole point.
     eprintln!(
-        "{} MC-401 marker received from MAIC plugin (payload: {}); triggering silent_relogin",
+        "{} MC-401 marker received from MAIC plugin (payload: {}); NOT triggering silent_relogin (Lesson 1146) — user must re-login manually",
         log_prefix,
         rest.chars().take(200).collect::<String>()
     );
-    // Best-effort: if silent_relogin fails (no cached creds, keychain
-    // unavailable, wrong password) we just log and let the 401 surface
-    // to the user. We don't want a marker storm to lock the user out of
-    // a manual re-login flow.
-    let state = app_handle.state::<AppState>();
-    match silent_relogin(state) {
-        Ok(Some(info)) => {
-            eprintln!(
-                "{} silent_relogin succeeded for {} (tier={}); gateway will respawn with fresh JWT",
-                log_prefix, info.email, info.tier
-            );
-        }
-        Ok(None) => {
-            eprintln!(
-                "{} silent_relogin returned None (no cached creds); user must log in manually",
-                log_prefix
-            );
-        }
-        Err(e) => {
-            eprintln!(
-                "{} silent_relogin failed: {}; user must log in manually",
-                log_prefix, e
-            );
-        }
-    }
+    let _ = app_handle; // suppress unused warning; kept in signature for future hooks
 }
 
 /// Drain a chunk of stderr bytes into a line accumulator, calling

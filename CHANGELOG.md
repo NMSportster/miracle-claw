@@ -5,6 +5,33 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.0-rc57.22] — 2026-10-19 (Lesson 1146: Disable auto-relogin on MAIC 401 — force manual re-login)
+
+When the MAIC JWT expires (7-day TTL), the openclaw chat plugin emits a `[MC-401]` marker to stderr. The Tauri parent (`src-tauri/src/lib.rs::handle_mc401_marker`) was set up in Lesson 1140 (rc57.14) to TAP that marker and fire `silent_relogin` — which decrypted cached `email|password` from Windows Credential Manager, POSTed to `/v1/users/login`, minted a fresh JWT, and respawned the gateway silently. The user never saw the 401.
+
+David called this out: the silent re-auth "makes it appear that the last login was reconnected" and hides real auth failures. He wants the explicit auth error to surface so the user knows to re-login via Settings → Providers → MAIC.
+
+**Fix** (`src-tauri/src/lib.rs::handle_mc401_marker`):
+- Removed the `silent_relogin(state)` call + its `Ok`/`Err` logging branches
+- Replaced with a single `eprintln!` that logs the marker but explicitly states "NOT triggering silent_relogin (Lesson 1146) — user must re-login manually"
+- The marker tap stays in place so we still get diagnostic visibility in the log file when MAIC hits 401
+- `app_handle` parameter kept (unused warning suppressed with `let _ = ...`) so the call sites at line 5253 (launcher) and 8110 (mc-terminal) don't need to change
+
+**What the user sees now**:
+- Chat composer: "All models failed (4): ... 401 status code (no body) (auth) | Re-authenticate with: openclaw models auth login --provider 'maic' --force"
+- Settings → Account: "Could not load account: /v1/auth/me: ... status code 401"
+- Modules dropdown: meta line says "no tools -- open in launchpad" (because `mc_list_installed_modules` proxy also 401s) — fix is the same manual re-login
+- Log file (`miracle-claw.log` in app data dir) shows the marker line for diagnosis
+
+**Anti-pattern reminder (Lesson 1146)**:
+- "Smart" error recovery that hides the underlying failure is worse than no recovery. If the user can't see that auth failed, they can't fix it.
+- Silent background tasks should be visible in logs, even if they're silent in the UI.
+- Don't auto-recover from auth errors. The user needs to know their session is gone.
+
+**Files**: `src-tauri/src/lib.rs` (one function), `package.json` + `src-tauri/Cargo.toml` + `src-tauri/tauri.conf.json` (version bump to 1.2.0-rc57.22).
+
+**Tests**: No new tests — this is a behavioral change that's hard to unit-test (would need to mock `silent_relogin` and verify it's not called). The behavior is observable in the log file when a real 401 hits.
+
 ## [v1.2.0-rc57.21] — 2026-10-19 (Lesson 1145: Windows chat toolbar Run modal regains 'How to use' instructions)
 
 Pair fix to rc57.20. That build added the per-module "How to use" `<details>` block + tool description to the Terminal toolbar's `modules-menu.js`, but skipped the Windows chat composer's `mc-toolbar.js` (the toolbar that lives inside the openclaw chat UI at 127.0.0.1:28789). Both surfaces had the same gap; only the Terminal was patched.
