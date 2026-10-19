@@ -1,6 +1,6 @@
 [package]
 name = "miracle-claw"
-version = "1.2.0-rc57.19"
+version = "1.2.0-rc57.21"
 description = "Miracle Claw — Milagro Distribution Corp's desktop chat client for MAIC models"
 authors = ["Milagro Distribution Corp"]
 edition = "2021"

@@ -5,6 +5,28 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.0-rc57.21] — 2026-10-19 (Lesson 1145: Windows chat toolbar Run modal regains 'How to use' instructions)
+
+Pair fix to rc57.20. That build added the per-module "How to use" `<details>` block + tool description to the Terminal toolbar's `modules-menu.js`, but skipped the Windows chat composer's `mc-toolbar.js` (the toolbar that lives inside the openclaw chat UI at 127.0.0.1:28789). Both surfaces had the same gap; only the Terminal was patched.
+
+**Fixes** in two files (and their `depot/openclaw-patches/dist/control-ui/` mirrors):
+
+1. **`src-tauri/resources/dist/control-ui/mc-toolbar.js`** — added a `<details class="mc-oc-modal-instructions">` block to `showRunForm()` (after the `<p class="mc-oc-modal-subtitle">` tool description, before the form). Reads `m._raw.client_manifest.instructions` (the same data path the Terminal uses — dropdown's normalised `m` shape carries `_raw`, and `_raw.client_manifest` has the instructions string MAIC ships with every module). Text is HTML-escaped via the existing `escapeHtml()` helper, capped at 2000 chars to prevent runaway schemas, and rendered with `white-space: pre-line` so blank lines act as paragraph breaks (matches the Terminal's `.mc-modal-instructions p` rule).
+
+2. **`src-tauri/resources/dist/control-ui/mc-toolbar.css`** — added the matching dark-theme `.mc-oc-modal-instructions` rule. Same shape as the launchpad's `.mc-modal-instructions` (styles.css:6532) but with `rgba(255,255,255,0.04)` background, `rgba(255,255,255,0.18)` border, and white/72% text since the openclaw chat composer panel is dark while the launchpad is light. Includes `summary` (cursor: pointer, 600 weight, 💡 ::before glyph, no native marker), and `p` (no margin, muted white, 1.5 line-height, pre-line).
+
+**Files mirrored to `depot/openclaw-patches/dist/control-ui/`** after editing — that path is what `scripts/patch-openclaw-dist.sh` applies to the openclaw dist, so the mirror is required for the patcher to actually install the new code on top of the openclaw build.
+
+**Out of scope**: `openModuleInfoModal()` (the no-tools fallback) was NOT touched. Instructions describe how to use a tool, so they're not relevant when the module has no client-side tools — the info modal already shows description + a hint to open in the launchpad.
+
+### Tests
+- 1 new test in `src/pages/chat_toolbar_openclaw_dist.test.mjs`: pins the `client_manifest.instructions` read, the `<details class="mc-oc-modal-instructions">` element, the "How to use " summary text, and the CSS rule with `background:` and `white-space: pre-line` on the `<p>`.
+- 28/31 full suite pass (was 27/30, +1 new test, same 3 pre-existing Lesson 985-batch failures).
+
+### Build
+- Tauri rebuild required. The two `mc-toolbar.js` and `mc-toolbar.css` files in `src-tauri/resources/dist/control-ui/` get embedded into the installer's `resources/dist/control-ui/` and `miracle-claw.exe`.
+- Bumped `package.json` 1.2.0-rc57.20 → 1.2.0-rc57.21.
+
 ## [v1.2.0-rc57.20] — 2026-10-19 (Lesson 1144: Toolbar module modal regains "How to use" instructions + tool description)
 
 David reported the toolbar Modules dropdown's modal "lost" the rich instructions content that was supposed to show when a module was selected. The toolbar modal in `src/modules-menu.js` (`openModuleModal`, lines 386-405) had never been updated to match the launchpad's `dashboard_launchpad.js:511-525` modal from rc57.11, so the toolbar surface always rendered only a header + form, with no tool description and no `<details class="mc-modal-instructions">` block reading `client_manifest.instructions`.

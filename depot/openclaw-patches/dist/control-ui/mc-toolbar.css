@@ -386,6 +386,43 @@
   padding: 0;
 }
 
+/* rc57.21: "How to use" details block, matching the launchpad's
+ * .mc-modal-instructions (styles.css:6532) and the Terminal toolbar's
+ * .mc-modal-instructions (modules-menu.js, rc57.20). Same shape --
+ * collapsible <details> with a 💡 glyph on the summary and a <p> with
+ * pre-line white-space so blank lines act as paragraph breaks.
+ * Dark theme variants because the openclaw chat composer backdrop is
+ * dark (rgba(0,0,0,0.55+) panel) while the launchpad is light. */
+.mc-oc-modal-instructions {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 0 0 14px 0;
+  font-size: 13px;
+}
+.mc-oc-modal-instructions summary {
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #f5f5f7;
+}
+.mc-oc-modal-instructions summary::before {
+  content: "💡";
+}
+.mc-oc-modal-instructions summary::-webkit-details-marker {
+  display: none;
+}
+.mc-oc-modal-instructions p {
+  margin: 8px 0 0 0;
+  color: rgba(255, 255, 255, 0.72);
+  line-height: 1.5;
+  white-space: pre-line;
+}
+
 /* === Attach dropzone (used inside attach modal) === */
 .mc-oc-attach-dropzone {
   border: 2px dashed rgba(255, 255, 255, 0.30);

@@ -695,3 +695,42 @@ test("rc57.13: fetchInstalledModulesMerged falls back to local when MAIC returns
     "the `!remoteOk` gate should be removed (caused empty dropdown when MAIC returned 0)"
   );
 });
+
+test("rc57.21: chat Run modal shows 'How to use' instructions block (parity with launchpad + Terminal toolbar)", () => {
+  // David reported the toolbar Modules dropdown modal lost its rich
+  // instructions content. We fixed it twice:
+  //   - rc57.20: src/modules-menu.js (Terminal toolbar)
+  //   - rc57.21: src-tauri/resources/dist/control-ui/mc-toolbar.js
+  //     (this file, Windows chat composer toolbar)
+  // Both modals should now read client_manifest.instructions and
+  // render a <details class='mc-oc-modal-instructions'> block with
+  // a 'How to use {name}' summary. Same data path -- the dropdown's
+  // normalised m shape carries _raw, and _raw.client_manifest has
+  // the instructions string MAIC ships with every module.
+  assert.match(
+    jsSrc,
+    /client_manifest[\s\S]{0,80}instructions/,
+    "should read client_manifest.instructions (matches m._raw.client_manifest.instructions)"
+  );
+  assert.match(
+    jsSrc,
+    /className\s*=\s*['"]mc-oc-modal-instructions['"]/,
+    "should create a <details class='mc-oc-modal-instructions'> element"
+  );
+  assert.match(
+    jsSrc,
+    /How to use\s/,
+    "summary should say 'How to use {module.name}'"
+  );
+  // CSS must define the dark-theme variant of the block.
+  assert.match(
+    cssSrc,
+    /\.mc-oc-modal-instructions\s*\{[\s\S]*?background:/,
+    ".mc-oc-modal-instructions rule should set a dark-theme background"
+  );
+  assert.match(
+    cssSrc,
+    /\.mc-oc-modal-instructions\s+p\s*\{[\s\S]*?white-space:\s*pre-line/,
+    ".mc-oc-modal-instructions p should honor newlines (pre-line)"
+  );
+});

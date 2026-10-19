@@ -591,6 +591,23 @@
     // modules-menu use, and on Run show the result in a result area
     // with Send-to-Chat / Copy / Close buttons -- same UX as the
     // Launchpad so users get a consistent experience.
+    // rc57.21: add a <details class="mc-oc-modal-instructions"> block
+    // reading m._raw.client_manifest.instructions, matching the
+    // launchpad (dashboard_launchpad.js:519-523) and the Terminal
+    // toolbar (modules-menu.js, rc57.20). Same data path -- the
+    // dropdown's normalised m shape carries _raw, and _raw.client_manifest
+    // has the instructions string MAIC ships with every module.
+    // The instruction text is HTML-escaped via the same escapeHtml()
+    // helper used everywhere else, capped at 2000 chars to prevent
+    // runaway schemas, and rendered with white-space: pre-line so
+    // blank lines act as paragraph breaks (matches the Terminal's
+    // .mc-modal-instructions p rule).
+    var rawModuleForInstructions = m._raw || {};
+    var rawCmForInstructions = rawModuleForInstructions.client_manifest || {};
+    var instructions = (typeof rawCmForInstructions.instructions === 'string'
+      ? rawCmForInstructions.instructions
+      : '');
+    if (instructions) instructions = instructions.trim().slice(0, 2000);
     var backdrop = document.createElement('div');
     backdrop.className = 'mc-oc-modal-backdrop';
     var panel = document.createElement('div');
@@ -606,6 +623,17 @@
     var desc = (tool.description || '').slice(0, 200);
     sub.textContent = desc || 'Provide inputs and run. The result shows below.';
     panel.appendChild(sub);
+    if (instructions) {
+      var det = document.createElement('details');
+      det.className = 'mc-oc-modal-instructions';
+      var summary = document.createElement('summary');
+      summary.textContent = 'How to use ' + m.name;
+      det.appendChild(summary);
+      var p = document.createElement('p');
+      p.innerHTML = escapeHtml(instructions);
+      det.appendChild(p);
+      panel.appendChild(det);
+    }
 
     var form = document.createElement('form');
     form.className = 'mc-oc-modal-form';
