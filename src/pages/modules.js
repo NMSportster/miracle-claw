@@ -222,7 +222,7 @@ const MODULE_CATALOG = [
   {
     id: "calendar",
     icon: "📅",
-    name: "Calendar Assistant",
+    name: "Miracle Claw Calendar",
     description: "Your own calendar, saved to your MAIC account and waiting on you on every device you sign in on. Add, move and cancel events, set repeating events and reminders, colour-code with categories, and find open times that don't clash. Import from any .ics file. No Google or Outlook connection — everything stays in your MAIC account.",
     publisher: "Miracle Claw",
     version: "0.1.0",
