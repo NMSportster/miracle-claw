@@ -318,11 +318,33 @@ pub fn tier_default_model_id(tier: Tier) -> &'static str {
     match tier {
         // Free tier keeps Lesson 737 + 781 default (local m1-t1, smallest).
         Tier::Free => "milagro-m1-t1",
-        // Lesson 795 (2026-08-30, David): Paid primary is now GLM
-        // (cloud, reliable tool discipline). Kimi preferred OpenClaw
-        // built-ins over plugin tools and hit the 600-token floor;
-        // nemotron-super exhausted the budget; MiniMax-M3 picked
-        // wrong file paths. GLM fires paid-tier tools reliably.
+        // Lesson 795 (2026-08-30, David): Paid primary was
+        // `milagro-oc-glm`, chosen because Kimi preferred OpenClaw
+        // built-ins over plugin tools and GLM fired paid-tier tools
+        // reliably.
+        //
+        // ⚠️ THIS IS NO LONGER WHAT SHIPS. David moved Paid to
+        // `maic/chat-nemotron-super` on 2026-10-07 and reaffirmed it
+        // 2026-10-09: ~42x cheaper and better across the board. That
+        // choice lives in the user's own `chat.json`
+        // (`agents.defaults.model.primary`), NOT here.
+        //
+        // WHY THIS FUNCTION STILL SAYS GLM, AND WHY THAT ISN'T A BUG:
+        // this is the *seeding default* for
+        // `ensure_agents_default_model_for_tier()`, which is
+        // deliberately NON-DESTRUCTIVE — it skips writing when the
+        // user already has `agents.defaults.model`, or has a manual
+        // override that isn't the tier default. So a deliberate
+        // nemotron choice survives normal launches. Verified
+        // 2026-10-21: sidecar logged "agents.defaults.model: already
+        // configured, no change" and the gateway booted on
+        // `maic/chat-nemotron-super`.
+        //
+        // ⚠️ OPEN RISK: if chat.json is ever cleared or re-migrated,
+        // this re-seeds GLM and silently reverts the cost win.
+        // Proper fix = track an "explicitly chosen" flag, or make the
+        // tier default nemotron too. NOT DONE — David hasn't been
+        // asked yet. Tracked in memory/2026-10-21.md Lesson 1422.
         //
         // NOTE: this value is bare. The writer in
         // `ensure_agents_default_model_for_tier` (lib.rs:1576) prefixes
@@ -381,6 +403,13 @@ pub fn tier_default_fallbacks(tier: Tier) -> &'static [&'static str] {
         ],
         // Lesson 795: Paid primary is `milagro-oc-glm`, chain stays
         // MiniMax → kimi → local 14B (bare — writer prefixes).
+        //
+        // Lesson 1422 (2026-10-21, David): this GLM-primary comment
+        // was ~3 months stale and actively misled a later session
+        // into probing `milagro-oc-glm` when the live Paid model is
+        // `chat-nemotron-super`. Functionally unchanged; see
+        // `tier_default_model_id` for why GLM is only a seeding
+        // default and what the revert risk is.
         _ => &[
             "milagro-oc-minimax",
             "milagro-oc-kimi",

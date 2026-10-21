@@ -2021,9 +2021,26 @@ fn replace_secret_ref_with_literal() -> bool {
 // Free  → primary = `maic/milagro-m1-t1`,     fallbacks = [t2, t3, nemotron-nano]
 // Paid  → primary = `maic/milagro-oc-glm`,   fallbacks = [MiniMax, kimi, t3]
 //
+// ⚠️ Lesson 1422 (2026-10-21, David): the Paid line above is the
+// SEEDING DEFAULT, not what David actually runs. He moved Paid to
+// `maic/chat-nemotron-super` on 2026-10-07 (~42x cheaper, better
+// across the board) and reaffirmed it 2026-10-09. That lives in his
+// own `chat.json` under `agents.defaults.model.primary`.
+//
+// This function is non-destructive: it skips writing when the user
+// already has `agents.defaults.model`, so his nemotron choice is
+// preserved across normal launches. Confirmed live 2026-10-21 —
+// sidecar logged "already configured, no change" and the gateway
+// booted on `maic/chat-nemotron-super`.
+//
+// KNOWN GAP: a cleared/re-migrated chat.json would re-seed GLM and
+// silently undo the cost win. Not fixed yet; David hasn't been
+// asked. See memory/2026-10-21.md Lesson 1422.
+//
 // (Lesson 795 / rc55.12, 2026-08-30: Paid primary was switched from
 // `milagro-oc-kimi` → `milagro-oc-glm` because Kimi prefers openclaw
-// built-ins over plugin tools; GLM fires paid-tier tools reliably.)
+// built-ins over plugin tools; GLM fires paid-tier tools reliably.
+// That choice was later superseded by the nemotron switch above.)
 //
 // All entries are emitted with the `maic/` prefix (Lesson 521) so the
 // bundled openclaw gateway dispatches via the `maic` provider regardless
