@@ -160,9 +160,13 @@
     var anchor = dateFromParts({ y: state.viewYear, m: state.viewMonth + 1, d: 1, h: 0, min: 0 }, tz);
     var from = new Date(anchor.getTime() - 7 * DAY_MS);
     var to = new Date(anchor.getTime() + 42 * DAY_MS);
+    // Lesson 1421: the calendar runners use window_start/window_end, NOT
+    // start_at/end_at. Sending start_at here yields
+    //   HTTP 422 {"detail":"window_start is required."}
+    // Verified against the live manifest + runners in the running container.
     return runTool('list_events', {
-      start_at: toIsoTz(from, tz),
-      end_at: toIsoTz(to, tz),
+      window_start: toIsoTz(from, tz),
+      window_end: toIsoTz(to, tz),
     }).then(function (resp) {
       state.events = extractEvents(resp);
       render();
@@ -399,7 +403,13 @@
 
     panel.appendChild(field('Location', locInput));
     panel.appendChild(field('Notes', descInput));
-    panel.appendChild(field('Repeat', rruleInput));
+    // Lesson 1421: update_event does NOT accept rrule (its runner only
+    // forwards title/start_at/end_at/description/location/status/show_as/
+    // all_day/reminder_minutes/category_id). Sending it is a no-op at best
+    // and pollutes the payload, so only offer Repeat when creating.
+    if (ctx.mode === 'create') {
+      panel.appendChild(field('Repeat', rruleInput));
+    }
 
     var status = el('div', 'mc-cal-status');
 
@@ -441,22 +451,34 @@
       status.className = 'mc-cal-status';
       status.textContent = 'Looking for an open time…';
       freeBtn.disabled = true;
-      runTool('find_free_slot', {
-        start_at: toIsoTz(new Date(startDate.value + 'T' + (startTime.value || '09:00') + ':00'), tz),
+      // Lesson 1421: find_free_slot takes window_start/window_end and
+      // returns {slots:[{start_at,end_at},...]}, not a bare start_at.
+      // Search the 3 days after the requested start, business hours.
+      var baseIso = startDate.value + 'T' + (startTime.value || '09:00') + ':00';
+      var base = new Date(baseIso);
+      return runTool('find_free_slot', {
+        window_start: toIsoTz(base, tz),
+        window_end: toIsoTz(new Date(base.getTime() + 3 * DAY_MS), tz),
         duration_minutes: 60,
+        work_start_hour: 9,
+        work_end_hour: 17,
       }).then(function (resp) {
         var o = outputsOf(resp);
-        var s = o.start_at || o.slot_start || o.start;
-        if (!s) throw new Error('no slot returned');
-        var d = new Date(s);
+        var slots = o.slots || [];
+        if (!slots.length) throw new Error('no open slot in the next 3 days');
+        var pick = slots[0];
+        var d = new Date(pick.start_at);
         var dp = partsInTz(d, tz);
         startDate.value = dp.y + '-' + p2(dp.m) + '-' + p2(dp.d);
         startTime.value = p2(dp.h) + ':' + p2(dp.min);
-        var e2 = new Date(d.getTime() + 3600000);
+        var e2 = new Date(pick.end_at || d.getTime() + 3600000);
         var ep2 = partsInTz(e2, tz);
         endDate.value = ep2.y + '-' + p2(ep2.m) + '-' + p2(ep2.d);
         endTime.value = p2(ep2.h) + ':' + p2(ep2.min);
-        status.textContent = 'Filled in the next open hour. Adjust if you like.';
+        status.textContent = slots.length > 1
+          ? ('Picked ' + fmtTime({start_at: pick.start_at, all_day:false}, tz) +
+             ' — ' + (slots.length - 1) + ' other open time(s) in range.')
+          : 'Filled in the next open hour. Adjust if you like.';
       }).catch(function (e) {
         status.className = 'mc-cal-status is-error';
         status.textContent = 'No free slot found: ' + errText(e);
@@ -464,6 +486,9 @@
     });
 
     function readInputs() {
+      // Lesson 1421: update_event ignores rrule (runner doesn't forward it).
+      // Only attach it on create so the edit payload stays honest.
+      var allowRrule = ctx.mode === 'create';
       var sd = startDate.value, st = startTime.value || '00:00';
       var ed2 = endDate.value, et = endTime.value || '00:00';
       if (!sd || !ed2) throw new Error('start and end dates are required');
@@ -479,7 +504,9 @@
         location: locInput.value.trim(),
         description: descInput.value.trim(),
       };
-      if (rruleInput.value.trim()) out.rrule = rruleInput.value.trim();
+      if (allowRrule && rruleInput.value.trim()) {
+        out.rrule = rruleInput.value.trim();
+      }
       return out;
     }
 
