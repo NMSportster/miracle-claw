@@ -1,0 +1,75 @@
+// MC-PATCH: maic-doubled-tool-name-recovery-v1
+// INSERT-BEFORE: 	const segments = normalizeStringEntries(normalizedDelimiter.split("."));
+// Lesson 1423 (2026-10-21, David): David saw this in MC Terminal on the Paid
+// tier ("web_searchweb_search"):
+//   I can't use the tool "web_searchweb_search" here because it isn't available.
+//
+// That sentence is generated verbatim by `rewriteUnknownToolLoopMessage()`
+// (this file, ~line 9977) from the literal string the model emitted. So the
+// model produced the name `web_searchweb_search` — a DOUBLED tool name.
+//
+// WHY DOUBLED NAMES ARE UNRECOVERABLE (verified against the real bundle):
+// `buildStructuredToolNameCandidates()` (this file, ~line 9542) is the only
+// repair path. It splits on `/` and `.` and tries every suffix, so a PREFIXED
+// name is recoverable but a REPEATED name is not:
+//   "functions.web_search"  -> [..., "web_search"]       -> RESOLVES
+//   "openclaw.web_search"   -> [..., "web_search"]       -> RESOLVES
+//   "web_searchweb_search"  -> ["web_searchweb_search"]  -> NO MATCH
+// A doubled name has no delimiter to split on, so it can never be repaired and
+// falls straight through to the "unknown tool" message with the doubled string
+// verbatim. That is exactly what David saw.
+//
+// EVIDENCE THAT THE TOOL LIST ITSELF IS CLEAN (ruled out as the cause):
+//   - MAIC dedups by function name, server wins (api/routes/chat.py:189-195).
+//   - Asked Nemotron Super AND GLM to echo their own tool list, 3x each. Both
+//     reported: get_weather / web_search / get_current_time / calculate.
+//     The model is never shown a doubled name.
+//   - maic-plugin's merge is `model.tools || provider.tools || []` — `||`
+//     short-circuits, so it can never concatenate.
+// So this is NOT a duplicate-registration problem (that would recreate Lesson
+// 1101's registration collision; web_search and web_fetch are already working
+// OpenClaw host built-ins). The defect is purely that the repair path cannot
+// handle a name which is exactly two identical halves.
+//
+// WHAT THIS PATCH DOES — additive only:
+// If `trimmed` is exactly some string concatenated with ITSELF, also try the
+// single half. This flows through the existing allowlist check in
+// `resolveStructuredAllowedToolName()`, so it cannot match anything that isn't
+// already a registered tool — it only makes an otherwise-unmatchable name
+// matchable when the half is a real tool.
+//   "web_searchweb_search" -> candidates [..., "web_search"] -> RESOLVES
+//
+// WHY THIS IS SAFE (verified by replaying 18 names through before/after):
+//   - Purely additive: new candidates appended, none removed or reordered.
+//   - Only fires on an exact self-concatenation (even length, byte-identical
+//     halves), which is not a legal OpenAI/ollama tool name.
+//   - Still gated by the allowlist, so no tool name can be invented. e.g.
+//     "write_fileread_file" stays unknown because "read_file" is not its half.
+//   - Empty and whitespace-only inputs still return no candidates.
+//   - Exactly 1 behavior change across the 18-name suite; 0 regressions.
+//
+// WHY AN INSERT AND NOT A .js.replace:
+// patch-openclaw-dist.sh .js.replace is strictly ONE line in / ONE line out
+// (the awk keeps only the last non-blank line of each block as the whole
+// replacement). This fix needs several statements AND must land OUTSIDE the
+// `for (index...)` loop above — inside the loop it would be dead code,
+// because a doubled name has no delimiter, produces a single segment, and so
+// never enters that loop at all. An earlier attempt using .js.replace silently
+// produced exactly that broken result and node --check still passed. Hence:
+// .js.insert, sentinel = the `const segments = ...` line that opens the suffix
+// loop; that line is unique in the bundle (verified with grep -cF).
+//
+// OPEN RISK — DELIBERATELY NOT ADDRESSED HERE: this repairs the name AFTER the
+// model emits it. It does not explain WHY the model emitted a doubled name
+// (candidate trigger: Nemotron Super under `thinking=medium`, which per
+// memory/2026-10-12 burns 11-12K reasoning tokens and can return
+// `finish_reason=length`). If this patch doesn't fully stop the symptom, that
+// root cause needs a separate look. Patching the symptom is the conservative
+// first move — it cannot regress anything the allowlist already enforced.
+	if (trimmed.length > 1 && trimmed.length % 2 === 0) {
+		const half = trimmed.slice(0, trimmed.length / 2);
+		if (half === trimmed.slice(half.length)) {
+			addCandidate(half);
+			addCandidate(normalizeToolName(half));
+		}
+	}
