@@ -1387,6 +1387,23 @@
     });
     bar.appendChild(voiceBtn);
 
+    // rc57.25: 📅 Calendar — direct action, same family as Attach/Secrets/
+    // Voice (one click = do the thing). Unlike the Modules button, which
+    // stays a list of less-common modules. Targets the real `calendar`
+    // module (NOT `calendar-companion`, which is private-beta and 501s).
+    var calBtn = makeButton('mc-oc-calendar-btn', '📅', 'Open calendar', 'Open calendar');
+    calBtn.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeDropdown();
+      if (window.McCalendar && typeof window.McCalendar.open === 'function') {
+        window.McCalendar.open({ invoke: tauriInvoke });
+      } else {
+        showToast('Calendar is still loading — try again in a moment.', 'error');
+      }
+    });
+    bar.appendChild(calBtn);
+
     var modulesBtn = makeButton('mc-oc-modules-btn', '🧩', 'Installed modules', 'Open modules menu');
     modulesBtn.addEventListener('click', function (ev) {
       ev.preventDefault();

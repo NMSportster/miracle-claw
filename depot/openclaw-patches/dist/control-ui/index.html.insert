@@ -17,3 +17,10 @@
 <script defer src="./mc-back-button.js"></script>
 <script defer src="./mc-toolbar.js"></script>
 <link rel="stylesheet" href="./mc-toolbar.css" />
+<!-- rc57.25: calendar overlay (month grid + event editor). Loaded BEFORE
+     mc-toolbar is fine either way since both are `defer` (execute in
+     document order), so this must stay AFTER mc-toolbar.js only in the
+     sense that the button reads window.McCalendar lazily at click time.
+     Kept last so the toolbar's DOM mounts first. -->
+<script defer src="./mc-calendar.js"></script>
+<link rel="stylesheet" href="./mc-calendar.css" />
