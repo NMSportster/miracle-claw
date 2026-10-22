@@ -112,3 +112,112 @@ requires an MC release.
 That would hide MC's own file/bash tools from the model — the exact regression described in
 MEMORY.md Lesson 169 ("the single highest-leverage thing in MAIC integrations"), which
 reproduced the "I don't have file tools" refusal. The flag is correct; the MAIC branch is not.
+
+## Lesson 1427 — MilagroCloud publish path + "Exec failed" is a render-time string
+
+**Publish path (found 2026-10-22).** mc-lagroCloud serves the installers
+itself — there is no separate CDN or upload script. The route is
+`@router.get("/downloads/")` in `/opt/maic/api/routes/install.py`, reading
+`_DOWNLOADS_DIR = "/app/dist"` (production). Files are **baked into the
+gateway image** by `deploy/Dockerfile` (`COPY dist ./dist`), so publishing is:
+
+```bash
+scp <artifact> root@hetzner-prod:/opt/maic/dist/
+ssh hetzner-prod 'cd /opt/maic && docker compose build gateway && docker compose up -d gateway'
+```
+
+A plain `docker compose restart gateway` does NOT publish — the old bytes
+stay in the image. This is the same restart-vs-rebuild trap as Lesson 1428.
+
+**Why the rc57.27 URL 404'd.** Live downloads had never been updated past
+rc55.25 (files dated Sep 9 in `/opt/maic/dist/`). rc57.27 was built locally,
+verified, installed locally — and never uploaded. Not a routing problem.
+
+**`HEAD` returns 405 on `/downloads/<file>`.** The route only handles GET.
+Verify uploads with a ranged GET (`curl -r 0-2047`), not `curl -I`, or you
+will think a working file is broken.
+
+**Verify integrity end-to-end.** After publishing, pull the artifact back
+through the public URL and compare md5 against the locally verified build.
+rc57.28: `a0362ffc6a66340c822423ea792d456f` matched exactly.
+
+## Lesson 1428 — `docker compose restart` does NOT pick up code changes (bit us twice)
+
+`/opt/maic/api/` and `/opt/maic/dist/` are **baked into the gateway image**.
+Only these are bind-mounted (verified via `docker inspect --format
+"{{range .Mounts}}"`):
+
+- `/opt/maic/static` -> `/app/static`
+- steeler `/home/steeler/milagro_ai_cloud/data` -> `/app/data`
+- steeler `/home/steeler/milagro_ai_cloud/scripts` -> `/app/scripts`
+- `/opt/maic/backups/daily` -> `/app/backups/daily`
+
+So after editing anything under `api/` or `dist/` you MUST
+`docker compose build gateway && docker compose up -d gateway`. A `restart`
+brings the container back **healthy on the old code** and looks like success.
+
+Always verify inside the running container:
+
+```bash
+docker exec milagro_ai_cloud_dev-gateway-1 grep -c "<marker>" /app/api/routes/<file>.py
+```
+
+Prod also spans TWO boxes: `data/` and `scripts/` come from **steeler**.
+`/opt/maic` is not a git checkout — that is how prod drifted 93 lines ahead
+of the repo (reconciled in MAIC commit `b6db39a`).
+
+## Lesson 1429 — AppImage build fails on WSL2: libfuse.so.2 missing
+
+`scripts/build-linux.sh --bundles=appimage` dies with a bare
+`failed to run linuxdeploy` (no underlying error). Real cause:
+
+```
+dlopen(): error loading libfuse.so.2
+AppImages require FUSE to run.
+```
+
+WSL2 has `libfuse3` but not FUSE2, and `linuxdeploy-x86_64.AppImage` is an
+AppImage itself. Fix WITHOUT sudo (installing `libfuse2` needs a password —
+do not prompt, per the 2026-10-16 rule):
+
+```bash
+cd /tmp && rm -rf ldtest && mkdir ldtest && cd ldtest
+/home/adeal/.cache/tauri/linuxdeploy-x86_64.AppImage --appimage-extract
+export PLUGIN_PATH=/tmp/ldtest/squashfs-root/plugins
+/tmp/ldtest/squashfs-root/usr/bin/linuxdeploy \
+  --appdir <repo>/src-tauri/target/release/bundle/appimage/MiracleClaw.AppDir \
+  -o appimage
+# writes MiracleClaw-x86_64.AppImage into $PWD
+```
+
+Gotchas: `--bundles deb,appimage` (space form) is rejected by the script's
+arg parser — use `--bundles=deb,appimage`. The plugin lives at
+`squashfs-root/plugins/linuxdeploy-plugin-appimage/` and supplies
+`appimagetool`; without `PLUGIN_PATH` it errors
+`/usr/bin/appimagetool: No such file`. Output is named
+`MiracleClaw-x86_64.AppImage`, so rename to
+`MiracleClaw_<version>_amd64.AppImage`. Verify with
+`xxd -s 8 -l 2` expecting `4149` ("AI" magic).
+
+`--bundles=rpm` additionally needs the `rpm-build` apt package (sudo) —
+skip it unless an .rpm is actually wanted.
+
+## Lesson 1430 — "Exec failed" is generated at render time, not a loggable string
+
+Searching MC source, `openclaw/dist/`, and the installed bundle for the
+literal `Exec failed` returns **zero hits**. The `⚠️ Exec failed: \`python .main.py\``
+text is composed when a tool result is rendered, from a non-zero exit code.
+
+Consequences:
+- Grepping for it will never find an emitter to patch.
+- The exec's **stderr is not persisted** to `miracle-claw.log` or the session
+  JSONL. MC logs `[tools] <name> failed` only for schema-validation failures
+  (e.g. `Missing required parameter: content`).
+- So diagnosing an exec failure requires re-running the command by hand.
+
+Real 2026-10-22 case: `python .main.py` (model typo — leading dot) →
+`can't open file '...\.main.py': [Errno 2] No such file or directory`, RC 2.
+`python main.py stats` worked fine. The `⚠️` label makes a transient model
+typo look like a tool outage.
+
+**Opportunity:** log exec stderr on failure. Not yet implemented.
