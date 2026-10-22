@@ -2291,6 +2291,65 @@ pub(crate) fn ensure_agents_default_model_for_tier(
         };
     let needs_remove_top_fallbacks = defaults.as_object().map_or(false, |o| o.contains_key("fallbacks"));
 
+    // Lesson 1425 (2026-10-22, rc57.28): seed `agents.defaults.memorySearch`
+    // so MC customers get working memory recall out of the box.
+    //
+    // Symptom (every fresh MC install): memory_search logs
+    // `No API key found for provider "openai"` and recall falls back to
+    // nothing. openclaw's default `memorySearch.provider` is `auto`, which
+    // tries OpenAI embeddings first and hard-fails when the customer has no
+    // OpenAI key. MC customers authenticate against MAIC, not OpenAI — they
+    // will never have that key, so `auto` is permanently broken for them.
+    //
+    // Fix: set `provider: "none"`, which uses openclaw's lexical FTS ranking
+    // with NO embedding provider and NO API key. Memory search then works
+    // immediately for every customer, on every platform, at zero recurring
+    // cost. We deliberately do NOT auto-seed a paid embedding provider:
+    // that would either require per-customer keys (product/security problem)
+    // or bundle a local embedder (~500MB, packaging work). FTS-only is the
+    // honest default; a BYO-embedding opt-in can come later.
+    //
+    // Idempotent: only writes when the key is missing entirely, so a customer
+    // who deliberately configured their own provider (e.g. Ollama +
+    // nomic-embed-text per the roadmap) keeps it across upgrades.
+    //
+    // IMPORTANT (Lesson 1425): this seed must NOT affect the bool this fn
+    // returns. That bool means "the MODEL config changed"; callers use it to
+    // decide whether to log/re-seed the model, and three existing tests
+    // (lesson_517_does_not_overwrite_user_choice, the two lesson_824_* ones)
+    // assert it is false when the user's model choice is already correct.
+    // Seeding memorySearch on such a config would flip that contract.
+    //
+    // So memorySearch is applied only when we are ALREADY rewriting the file
+    // for a model reason. A config that is otherwise correct but missing
+    // memorySearch is backfilled by `ensure_memory_search_default` (below),
+    // which runs on the same startup path with its own independent return
+    // value — keeping the two concerns cleanly separated.
+    let memory_search_missing = !defaults
+        .as_object()
+        .map_or(false, |o| o.contains_key("memorySearch"));
+    if memory_search_missing && (needs_seed || prefix_applied || needs_remove_top_fallbacks) {
+        defaults
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "memorySearch".to_string(),
+                serde_json::json!({
+                    "enabled": true,
+                    // "none" => lexical FTS ranking only. No API key needed.
+                    // See comment above for why we don't default to "auto".
+                    "provider": "none",
+                    "experimental": { "sessionMemory": true },
+                    "sources": ["memory", "sessions"],
+                    "sync": {
+                        "onSessionStart": true,
+                        "onSearch": true,
+                        "watch": true
+                    }
+                }),
+            );
+    }
+
     if !needs_seed && !prefix_applied && !needs_remove_top_fallbacks {
         return Ok(false);
     }
@@ -2412,6 +2471,90 @@ fn maic_model_ids_from_cfg(cfg: &serde_json::Value) -> Vec<String> {
 
 fn normalize_bare_model_id(id: &str) -> String {
     id.trim().trim_start_matches("maic/").trim().to_string()
+}
+
+/// Lesson 1425 (2026-10-22, rc57.28): seed `agents.defaults.memorySearch`
+/// with `provider: "none"` so every MC customer gets working memory recall
+/// with no API key and no recurring cost.
+///
+/// Why this is separate from `ensure_agents_default_model_for_tier`:
+/// that fn's bool return means "the MODEL config changed", and existing
+/// callers/tests depend on that precise meaning. Folding memorySearch into
+/// it would make an already-correct install report "changed" and could
+/// trigger a redundant model re-seed. This fn owns memorySearch alone and
+/// returns whether IT wrote anything.
+///
+/// `provider: "none"` selects openclaw's lexical FTS ranking — no embedding
+/// provider, so no `No API key found for provider "openai"` error. openclaw's
+/// default is `auto`, which tries OpenAI embeddings first; MC customers
+/// authenticate to MAIC and will never hold an OpenAI key, so `auto` is
+/// permanently broken for our install base.
+///
+/// Idempotent, and never clobbers a deliberate BYO provider (e.g. a customer
+/// who set up Ollama + nomic-embed-text) — only seeds when the key is absent.
+pub(crate) fn ensure_memory_search_default() -> io::Result<bool> {
+    let path = openclaw_json_path();
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return Ok(false);
+    };
+    let mut cfg: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return Ok(false),
+    };
+    if !cfg.is_object() {
+        return Ok(false);
+    }
+
+    let agents = cfg
+        .as_object_mut()
+        .unwrap()
+        .entry("agents".to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !agents.is_object() {
+        *agents = Value::Object(Default::default());
+    }
+    let defaults = agents
+        .as_object_mut()
+        .unwrap()
+        .entry("defaults".to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !defaults.is_object() {
+        *defaults = Value::Object(Default::default());
+    }
+
+    // Already configured (by us or by the customer) => nothing to do.
+    if defaults
+        .as_object()
+        .map_or(false, |o| o.contains_key("memorySearch"))
+    {
+        return Ok(false);
+    }
+
+    defaults.as_object_mut().unwrap().insert(
+        "memorySearch".to_string(),
+        serde_json::json!({
+            "enabled": true,
+            "provider": "none",
+            "experimental": { "sessionMemory": true },
+            "sources": ["memory", "sessions"],
+            "sync": {
+                "onSessionStart": true,
+                "onSearch": true,
+                "watch": true
+            }
+        }),
+    );
+
+    // Atomic temp-file + rename, same as the model writer.
+    let serialized = serde_json::to_string_pretty(&cfg)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize: {e}")))?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serialized)?;
+    fs::rename(&tmp, &path)?;
+    Ok(true)
 }
 
 /// Lesson 829 (2026-08-30, rc55.15 hotfix): write a `model` field on
@@ -3759,6 +3902,11 @@ fn maic_login(
             e
         );
     }
+    // Lesson 1425 (rc57.28): make sure memory recall works on first login.
+    // Best-effort — never block login on it.
+    if let Err(e) = ensure_memory_search_default() {
+        eprintln!("[miracle-claw] maic_login: WARNING — failed to seed memorySearch: {}", e);
+    }
 
     // Lesson 458 / v1.0.6: handle "Remember me" checkbox.
     //
@@ -4023,6 +4171,12 @@ fn silent_relogin(
             "[miracle-claw] silent_relogin: WARNING — failed to write tier defaults: {}",
             e
         );
+    }
+    // Lesson 1425 (rc57.28): also backfill memorySearch here — this is the
+    // path that upgrades existing installs, where memorySearch will still be
+    // missing from a config written before rc57.28.
+    if let Err(e) = ensure_memory_search_default() {
+        eprintln!("[miracle-claw] silent_relogin: WARNING — failed to seed memorySearch: {}", e);
     }
 
     eprintln!(
@@ -6974,6 +7128,10 @@ fn mc_refresh_tier() -> Result<crate::auth::tier::TierInfo, String> {
     // upgrades from Free → Pro that happen mid-session without a re-login).
     if let Err(e) = ensure_agents_default_model_for_tier(info.tier) {
         eprintln!("[miracle-claw] mc_refresh_tier: WARNING — failed to write tier defaults: {}", e);
+    }
+    // Lesson 1425 (rc57.28): best-effort memorySearch backfill.
+    if let Err(e) = ensure_memory_search_default() {
+        eprintln!("[miracle-claw] mc_refresh_tier: WARNING — failed to seed memorySearch: {}", e);
     }
     // Lesson 523 (NEW): re-stamp `params.tools` so the model sees the
     // new entitlement immediately on the next chat. Without this, the
@@ -11009,6 +11167,146 @@ mod tests {
         assert!(
             cfg.pointer("/agents/defaults/fallbacks").is_none(),
             "Lesson 829: schema rejects top-level fallbacks"
+        );
+    }
+
+    // ---- Lesson 1425 (rc57.28): memorySearch default seeding ----
+
+    #[test]
+    fn lesson_1425_seeds_memory_search_provider_none() {
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(None, None);
+        ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
+            .expect("writer should succeed");
+        // Also seed via the dedicated fn so this test also covers the
+        // "model already correct, memorySearch only" customer shape.
+        ensure_memory_search_default().expect("seed should succeed");
+
+        let path = openclaw_json_path();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert_eq!(
+            cfg.pointer("/agents/defaults/memorySearch/provider"),
+            Some(&serde_json::json!("none")),
+            "Lesson 1425: must be \"none\" (FTS-only). \"auto\" tries OpenAI \
+             embeddings and hard-fails with 'No API key found for provider \
+             \"openai\"' for every MAIC customer, who will never have one."
+        );
+        assert_eq!(
+            cfg.pointer("/agents/defaults/memorySearch/enabled"),
+            Some(&serde_json::json!(true))
+        );
+        // Session recall + both sources are what make recall useful at all.
+        assert_eq!(
+            cfg.pointer("/agents/defaults/memorySearch/experimental/sessionMemory"),
+            Some(&serde_json::json!(true))
+        );
+        let sources = cfg
+            .pointer("/agents/defaults/memorySearch/sources")
+            .and_then(|v| v.as_array())
+            .expect("sources must be an array");
+        assert!(
+            sources.iter().any(|v| v == "memory"),
+            "must index MEMORY.md"
+        );
+        assert!(
+            sources.iter().any(|v| v == "sessions"),
+            "must index session transcripts"
+        );
+    }
+
+    #[test]
+    fn lesson_1425_preserves_custom_memory_search_provider() {
+        // A customer who deliberately configured their own embedding provider
+        // (e.g. Ollama + nomic-embed-text) must KEEP it across an upgrade.
+        // The seed is missing-key-only, never overwrite.
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(None, None);
+        {
+            let path = openclaw_json_path();
+            let mut cfg: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            cfg["agents"]["defaults"] = serde_json::json!({
+                "model": { "primary": "maic/milagro-m1-t1" },
+                "memorySearch": { "enabled": true, "provider": "ollama" }
+            });
+            std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+        }
+        let seeded = ensure_memory_search_default().expect("seed should succeed");
+        assert!(
+            !seeded,
+            "must NOT overwrite a customer who deliberately chose ollama"
+        );
+
+        let path = openclaw_json_path();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            cfg.pointer("/agents/defaults/memorySearch/provider"),
+            Some(&serde_json::json!("ollama")),
+            "Lesson 1425: never clobber a customer's deliberate BYO provider"
+        );
+    }
+
+    #[test]
+    fn lesson_1425_memory_search_seed_is_idempotent() {
+        // Second run must be a no-op for memorySearch: value identical,
+        // no duplicate keys, provider still "none".
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(None, None);
+        ensure_memory_search_default().unwrap();
+        let path = openclaw_json_path();
+        let first: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        let second_wrote = ensure_memory_search_default().expect("second run should succeed");
+        let second: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert_eq!(
+            first.pointer("/agents/defaults/memorySearch"),
+            second.pointer("/agents/defaults/memorySearch"),
+            "memorySearch must be byte-stable across repeated seeding"
+        );
+        assert_eq!(
+            second.pointer("/agents/defaults/memorySearch/provider"),
+            Some(&serde_json::json!("none"))
+        );
+        assert!(!second_wrote, "second run must be a no-op (already configured)");
+    }
+
+    #[test]
+    fn lesson_1425_seed_rides_along_and_never_manufactures_a_write() {
+        // The model writer's bool return means "the MODEL config changed".
+        // memorySearch must never flip it: an install whose model choice is
+        // already correct must still report "already correct", so callers
+        // don't re-seed the model on every login. memorySearch is backfilled
+        // by `ensure_memory_search_default` instead.
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(Some("maic/milagro-m1-t1"), None);
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
+            .expect("writer should succeed");
+        assert!(
+            !wrote,
+            "model already correct => must report no write, even though \
+             memorySearch is also missing"
+        );
+
+        // ...and the dedicated fn is what actually seeds it, on its own.
+        let seeded = ensure_memory_search_default().expect("memorySearch seed should succeed");
+        assert!(seeded, "dedicated fn seeds memorySearch independently");
+        let path = openclaw_json_path();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            cfg.pointer("/agents/defaults/memorySearch/provider"),
+            Some(&serde_json::json!("none"))
+        );
+        // Model was untouched by that write.
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary"),
+            Some(&serde_json::json!("maic/milagro-m1-t1"))
         );
     }
 

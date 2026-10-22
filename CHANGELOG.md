@@ -4574,3 +4574,12 @@ email-campaigns-pro was already updated in rc57.11 — no changes this build.
   upstream validator already supported an `allowEmpty` flag on required-param groups; it
   was never enabled for the `write` group. Enabled it. `content` absent/null and empty
   `path` are still rejected; `read` and `edit` validators are unchanged.
+- **Lesson 1425** — memory search now works on every install with no API key and no
+  recurring cost. openclaw's default `agents.defaults.memorySearch.provider` is `auto`,
+  which tries OpenAI embeddings first and hard-fails with
+  `No API key found for provider "openai"`. MC customers authenticate to MAIC and will
+  never hold an OpenAI key, so recall was broken for the entire install base. MC now
+  seeds `provider: "none"` (lexical FTS ranking, no embedding provider) on login,
+  silent relogin, and tier refresh. A customer who deliberately configured their own
+  embedding provider (e.g. Ollama + `nomic-embed-text`) keeps it across upgrades — the
+  seed only fires when the key is absent.
