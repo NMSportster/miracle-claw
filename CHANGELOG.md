@@ -4564,3 +4564,13 @@ email-campaigns-pro was already updated in rc57.11 — no changes this build.
 
 ### Build
 - Full Tauri rebuild required (`mc-toolbar.js` and `.css` get embedded into the installer's `resources/dist/control-ui/` and `miracle-claw.exe`).
+
+## v1.2.0-rc57.28
+
+### Fixed
+- **Lesson 1424** — `write` tool no longer rejects empty-string content. The model was
+  correctly creating empty files (e.g. `email_assistant/__init__.py`) and MC failed with
+  `Missing required parameter: content (received: path, content=<empty-string>)`. The
+  upstream validator already supported an `allowEmpty` flag on required-param groups; it
+  was never enabled for the `write` group. Enabled it. `content` absent/null and empty
+  `path` are still rejected; `read` and `edit` validators are unchanged.

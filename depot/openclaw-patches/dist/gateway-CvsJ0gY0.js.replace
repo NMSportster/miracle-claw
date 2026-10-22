@@ -1,0 +1,31 @@
+// MC-PATCH: write-empty-content-allowed-v1
+	// REPLACE: 		label: "content"
+	// Lesson 1424 (2026-10-22, David): MC's `write` tool rejected empty-string
+	// content with "Missing required parameter: content (received: path,
+	// content=<empty-string>)". Reproduced verbatim in the rc57.27 sidecar log
+	// while the model was scaffolding a Python package:
+	//   email_assistant/__init__.py  content:""
+	// An empty file is a legitimate request (empty __init__.py, a placeholder,
+	// a template stub). The model was CORRECT; the validator was wrong.
+	//
+	// Why this is the right fix, not a workaround: the upstream framework
+	// ALREADY has an `allowEmpty` flag on required-param groups, honored in
+	// three places in this same bundle:
+	//   1. assertRequiredParams()  -> `if (group.allowEmpty) return true;`
+	//   2. formatReceivedParamHint() -> suppresses the `<empty-string>` hint
+	//   3. describeReceivedParamValue(value, allowEmpty)
+	// It was simply never set for the `write` group. So this is a one-flag
+	// opt-in, not new logic.
+	//
+	// Blast radius (verified by extracting the real functions from the bundle
+	// and running 11 assertions, all passing):
+	//   - content:"" / "\n" / "# docstring"  -> now ACCEPTED (the fix)
+	//   - content missing / content:null    -> still REJECTED
+	//   - path missing / path:""             -> still REJECTED (unchanged)
+	//   - read + edit tools                  -> completely unchanged
+	// `path` is deliberately NOT allowEmpty — an empty path is never valid.
+	//
+	// Related but separate: the "Tool loop did not produce an answer" 3-retry
+	// failure in the same log is a DIFFERENT bug (Lesson 1423 / MAIC
+	// tool_execution body) and is NOT addressed here.
+		label: "content", allowEmpty: !0
