@@ -2146,8 +2146,8 @@ pub(crate) fn ensure_agents_default_model_for_tier(
     // borrow — separating the two prevents a borrow-checker tug-of-war.
     let maic_ids_snapshot = maic_model_ids_from_cfg(&cfg);
 
-    // Lesson 1432 (2026-10-23, David): read the root-level seed marker
-    // NOW — before we take the mutable borrow into `cfg` for
+    // Lesson 1432 (2026-10-23, David): read the seed marker NOW —
+    // before we take the mutable borrow into `cfg` for
     // `agents.defaults`. The borrow checker will not allow an immutable
     // `cfg.get()` while `defaults` holds `&mut cfg`.
     //
@@ -2156,20 +2156,34 @@ pub(crate) fn ensure_agents_default_model_for_tier(
     // apart from "this is still our seeded default". See the decision
     // table further down.
     //
-    // WHY IT LIVES AT THE ROOT: openclaw's `AgentModelSchema` is
-    // `.strict()` (only `primary` + `fallbacks` allowed), so a marker
-    // key inside `agents.defaults.model` would make the gateway reject
-    // the entire config with `Invalid input` on boot. The root is safe
-    // — openclaw ignores unknown top-level keys.
-    let seed_marker = cfg
-        .get(MODEL_SEED_MARKER_KEY)
-        .and_then(|v| v.as_object())
-        .cloned();
+    // Lesson 1434 (2026-10-23): the marker lives in a SIDECAR FILE
+    // (`model-seed-marker.json`), NOT inside chat.json. openclaw's
+    // config schema is `.strict()` at EVERY level including the root,
+    // so ANY extra key in chat.json — at the root, in `meta`, in
+    // `agents.defaults`, or in `agents.defaults.model` — makes the
+    // gateway refuse to boot ("Invalid config ... <root>: Invalid
+    // input", exit 78). Lesson 1432 put it at the root on the belief
+    // that unknown root keys are ignored; that was wrong and broke
+    // every install that had a marker. A sidecar file has zero schema
+    // impact.
+    let seed_marker = read_seed_marker();
     let marker_primary: Option<String> = seed_marker
         .as_ref()
         .and_then(|m| m.get("primary"))
         .and_then(|v| v.as_str())
         .map(str::to_string);
+
+    // Lesson 1434 (2026-10-23): detect a legacy root `_milagroTierSeed`
+    // key (written by rc57.29 / rc57.30). openclaw's root schema is
+    // `.strict()`, so that key makes the gateway refuse to boot. We MUST
+    // rewrite chat.json to strip it even when the model config itself is
+    // already correct — otherwise the user is stuck with a dead chat
+    // window. Read here (before the mutable borrow into `agents.defaults`)
+    // to avoid E0502.
+    let legacy_marker_present = cfg
+        .as_object()
+        .map(|o| o.contains_key("_milagroTierSeed"))
+        .unwrap_or(false);
 
     // Walk to `agents.defaults`.
     let agents = cfg
@@ -2601,7 +2615,25 @@ pub(crate) fn ensure_agents_default_model_for_tier(
             .unwrap_or(false);
         let needs_marker_refresh = pre_migration_primary.is_some()
             && (!marker_matches || (!marker_owned_is_user && !current_is_known_seed));
-        if !needs_marker_refresh {
+        // Lesson 1434 (2026-10-23): do NOT early-return when a legacy
+        // root `_milagroTierSeed` key is still sitting in chat.json.
+        //
+        // rc57.29 / rc57.30 wrote that key at the ROOT of chat.json.
+        // openclaw's root schema is `.strict()`, so the gateway refuses
+        // to boot: "Invalid config at chat.json: <root>: Invalid input",
+        // exit code 78, chat window dead. The ONLY way out is to
+        // rewrite chat.json without that key.
+        //
+        // Returning early here would skip the strip AND the persist
+        // step, leaving the user permanently stuck with a dead gateway
+        // even after installing the fixed build. So when a legacy
+        // marker is present we MUST fall through to the strip + persist
+        // path, even if the model config itself is already correct.
+        //
+        // The returned bool stays `false` in that case because the
+        // MODEL config did not change; only the schema-breaking key
+        // was removed.
+        if !needs_marker_refresh && !legacy_marker_present {
             return Ok(false);
         }
         // Fall through to the persist block, which writes ONLY the
@@ -2703,16 +2735,56 @@ pub(crate) fn ensure_agents_default_model_for_tier(
     } else {
         default_primary.clone()
     };
-    let marker_owned: &str = if marker_only_write { "user" } else { "seeded" };
-    if let Some(root) = cfg.as_object_mut() {
-        root.insert(
-            MODEL_SEED_MARKER_KEY.to_string(),
-            serde_json::json!({
-                "tier": tier.as_str(),
-                "primary": marker_primary_value,
-                "owned": marker_owned,
-                "seededAt": chrono_like_now_iso(),
-            }),
+    // Lesson 1434 (2026-10-23): the `owned` discriminator.
+    //
+    // - `"user"`   → the current primary is the USER's pick. Never migrate.
+    // - `"seeded"` → the current primary is OURS. Safe to migrate on a
+    //                future tier change.
+    //
+    // A legacy root `_milagroTierSeed` key (rc57.29/rc57.30) means the
+    // APP wrote that primary — so we keep `owned: "seeded"`. Without
+    // this, repairing a stale paid seed (e.g. Brent's) would freeze his
+    // primary as a "user" pick and it could never migrate again.
+    let marker_owned: &str = if marker_only_write && !legacy_marker_present {
+        "user"
+    } else {
+        "seeded"
+    };
+    // Lesson 1434 (2026-10-23): write the marker to the SIDECAR file, NOT
+    // into chat.json. openclaw's root config schema is `.strict()`, so an
+    // extra root key makes the gateway refuse to boot with "Invalid input".
+    let marker_to_write = serde_json::json!({
+        "tier": tier.as_str(),
+        "primary": marker_primary_value,
+        "owned": marker_owned,
+        "seededAt": chrono_like_now_iso(),
+    });
+    let marker_write_result = write_seed_marker(&marker_to_write);
+    if let Err(e) = &marker_write_result {
+        eprintln!(
+            "[miracle-claw] tier: WARNING — could not write seed-marker sidecar ({}). Model config still written; the app will treat the primary as a manual pick next run.",
+            e
+        );
+    }
+    let _ = &marker_write_result;
+
+    // Lesson 1434 (2026-10-23): STRIP any legacy in-config seed marker.
+    //
+    // rc57.29 / rc57.30 wrote `_milagroTierSeed` at the ROOT of chat.json.
+    // openclaw's root schema is `.strict()`, so that key makes the gateway
+    // refuse to boot ("Invalid config ... <root>: Invalid input", exit 78)
+    // — the chat window is dead until it's removed. Any install that ran
+    // rc57.29 or rc57.30 has this key and MUST be repaired.
+    //
+    // We remove it on every run, so the repair is automatic: the next
+    // launch of the fixed build strips the key, and the gateway boots.
+    let legacy_marker_removed = cfg
+        .as_object_mut()
+        .map(|o| o.remove("_milagroTierSeed").is_some())
+        .unwrap_or(false);
+    if legacy_marker_removed {
+        eprintln!(
+            "[miracle-claw] tier: stripped legacy root _milagroTierSeed from chat.json (Lesson 1434 — it broke the openclaw config schema)"
         );
     }
 
@@ -2794,18 +2866,28 @@ fn normalize_bare_model_id(id: &str) -> String {
     id.trim().trim_start_matches("maic/").trim().to_string()
 }
 
-/// Lesson 1432 (2026-10-23, David): root-level key in chat.json that
-/// records what the app last seeded into `agents.defaults.model`.
+/// Lesson 1432 (2026-10-23, David): records what the app last seeded
+/// into `agents.defaults.model`.
 ///
-/// WHY IT EXISTS AT THE ROOT: openclaw's `AgentModelSchema` is
-/// `.strict()` — it accepts ONLY `primary` and `fallbacks`. Adding a
-/// marker key inside `agents.defaults.model` would make the gateway
-/// reject the ENTIRE config with `Invalid input` on boot. The
-/// `agents.defaults` object itself is NOT strict, but the safest place
-/// for app-private bookkeeping is the root, where openclaw ignores
-/// unknown keys entirely.
+/// WHY IT LIVES IN A SIDECAR FILE (not in chat.json): openclaw's config
+/// schema is `.strict()` AT EVERY LEVEL, including the root
+/// `OpenClawSchema`. Verified empirically against the bundled openclaw
+/// (`dist/zod-schema-O9ml_nmo.js`, `OpenClawSchema` ends `}).strict()`):
 ///
-/// SHAPE: `{ tier: "pro", primary: "maic/chat-nemotron-super", seededAt: "..." }`
+///   - root `_milagroTierSeed`             -> FAIL ["": Invalid input]
+///   - `meta.tierSeed`                     -> FAIL ["meta": Invalid input]
+///   - `agents.defaults.tierSeed`          -> FAIL ["agents.defaults": ...]
+///   - `agents.defaults.model.tierSeed`    -> FAIL ["agents.defaults.model": ...]
+///
+/// Lesson 1432 originally placed this at the ROOT of chat.json on the
+/// belief that "openclaw ignores unknown top-level keys". That belief
+/// was WRONG — it broke the gateway for EVERY user with a marker,
+/// including David himself on 2026-10-23 (rc57.30 -> "Invalid config
+/// at chat.json: <root>: Invalid input", gateway exit code 78, chat
+/// window dead). The marker therefore lives OUTSIDE chat.json entirely,
+/// in a sibling file that the gateway never reads.
+///
+/// SHAPE: `{ tier: "pro", primary: "maic/chat-nemotron-super", owned: "seeded"|"user", seededAt: "..." }`
 ///
 /// SEMANTICS: `primary` is the model id that was in effect the last
 /// time the app seeded. On the next run:
@@ -2813,7 +2895,50 @@ fn normalize_bare_model_id(id: &str) -> String {
 ///     it's still ours → safe to migrate to a new tier default.
 ///   - current primary != marker.primary → the user changed it → it's
 ///     THEIRS → never touch it.
-const MODEL_SEED_MARKER_KEY: &str = "_milagroTierSeed";
+const MODEL_SEED_MARKER_FILE: &str = "model-seed-marker.json";
+
+/// Lesson 1434 (2026-10-23, David): absolute path of the seed-marker
+/// sidecar. It lives in MC's state dir (next to chat.json) so it is:
+///   - never read by the openclaw gateway (no schema impact)
+///   - wiped together with the rest of MC state on a clean reinstall
+///   - preserved across app upgrades
+fn model_seed_marker_path() -> PathBuf {
+    openclaw_json_path()
+        .parent()
+        .map(|p| p.join(MODEL_SEED_MARKER_FILE))
+        .unwrap_or_else(|| PathBuf::from(MODEL_SEED_MARKER_FILE))
+}
+
+/// Lesson 1434: read the seed-marker sidecar. A missing or corrupt file
+/// is NOT an error — it just means "no marker" (legacy-install path).
+fn read_seed_marker() -> Option<serde_json::Value> {
+    let path = model_seed_marker_path();
+    let text = std::fs::read_to_string(&path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    if v.is_object() {
+        Some(v)
+    } else {
+        None
+    }
+}
+
+/// Lesson 1434: persist the seed-marker sidecar atomically (temp file +
+/// rename) so a crash mid-write cannot leave a truncated marker.
+fn write_seed_marker(marker: &serde_json::Value) -> io::Result<()> {
+    let path = model_seed_marker_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(
+        &tmp,
+        serde_json::to_string_pretty(marker).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("serialize marker: {e}"))
+        })?,
+    )?;
+    fs::rename(&tmp, &path)?;
+    Ok(())
+}
 
 /// Lesson 1432 (2026-10-23, David): the complete set of model ids that
 /// this app has EVER written as a tier-seeded primary.
@@ -11892,10 +12017,22 @@ mod tests {
         );
         // The seed marker must record what we wrote, so we can later
         // tell "still ours" from "the user changed it".
+        // Lesson 1434: the marker lives in a SIDECAR file, not in chat.json.
         assert_eq!(
-            cfg.pointer("/_milagroTierSeed/primary").unwrap(),
+            read_seed_marker()
+                .and_then(|m| m
+                    .get("primary")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string))
+                .unwrap(),
             "maic/milagro-m1-t1",
             "seed marker must record the seeded primary"
+        );
+        // And chat.json must NOT contain any marker key — openclaw's root
+        // schema is `.strict()` and would refuse to boot (Lesson 1434).
+        assert!(
+            cfg.pointer("/_milagroTierSeed").is_none(),
+            "chat.json must never carry the seed marker — it breaks the openclaw config schema"
         );
 
         // --- Step 2: paid login migrates the stale Free seed ---
@@ -11995,7 +12132,12 @@ mod tests {
         assert!(!wrote, "manual pick must not be rewritten");
         let cfg = read_test_cfg();
         assert_eq!(
-            cfg.pointer("/_milagroTierSeed/primary").unwrap(),
+            read_seed_marker()
+                .and_then(|m| m
+                    .get("primary")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string))
+                .unwrap(),
             "maic/milagro-dev-coder",
             "the marker must record the user's own value"
         );
@@ -12017,6 +12159,11 @@ mod tests {
         // `fallbacks` are allowed inside `agents.defaults.model`. If we
         // put the marker there, openclaw would reject the ENTIRE config
         // with `Invalid input` on boot.
+        //
+        // Lesson 1434 (2026-10-23): this test was WRONG about the root.
+        // The ROOT `OpenClawSchema` is ALSO `.strict()` — so a root
+        // `_milagroTierSeed` broke the gateway for every install that had
+        // one. The marker now lives in a SIDECAR file entirely.
         let _env = lock_env();
         let _g = fresh_openclaw_with_model(None, None);
         ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
@@ -12033,8 +12180,315 @@ mod tests {
                 "agents.defaults.model must stay strict-schema clean; found {key:?}"
             );
         }
-        // And the marker IS present at the root.
-        assert!(cfg.pointer("/_milagroTierSeed").is_some());
+        // Lesson 1434: the marker must NOT be anywhere in chat.json.
+        assert!(
+            cfg.pointer("/_milagroTierSeed").is_none(),
+            "the root config schema is strict too — the marker must not live in chat.json"
+        );
+        assert!(
+            cfg.pointer("/agents/defaults/tierSeed").is_none(),
+            "agents.defaults is strict — no marker there either"
+        );
+        assert!(
+            cfg.pointer("/meta/tierSeed").is_none(),
+            "meta is strict — no marker there either"
+        );
+        // It lives in the sidecar instead.
+        assert!(
+            model_seed_marker_path().exists(),
+            "the seed marker must live in its sidecar file"
+        );
+    }
+
+    /// Lesson 1434 (2026-10-23, David): the rc57.29/rc57.30 regression.
+    ///
+    /// Those builds wrote `_milagroTierSeed` at the ROOT of chat.json.
+    /// openclaw's root config schema is `.strict()`, so the gateway
+    /// refused to boot: "Invalid config at chat.json: <root>: Invalid
+    /// input", exit code 78, chat window dead.
+    ///
+    /// The fixed build must STRIP that key automatically so any customer
+    /// who installed rc57.29/rc57.30 recovers without hand-editing JSON.
+    #[test]
+    fn lesson_1434_strips_legacy_root_marker_and_repairs_the_gateway() {
+        let _env = lock_env();
+        // Start from a config whose model is ALREADY the correct paid
+        // default, so no model migration is needed — only the legacy
+        // key has to be stripped.
+        let _g = fresh_openclaw_with_model(
+            Some("maic/chat-nemotron-super"),
+            Some(vec![
+                "maic/chat-nemotron-ultra",
+                "maic/chat-nemotron-nano",
+                "maic/milagro-oc-minimax",
+                "maic/milagro-oc-glm",
+                "maic/milagro-oc-kimi",
+                "maic/milagro-m1-t3",
+            ]),
+        );
+
+        // Simulate an rc57.30 install: legacy root marker present.
+        let path = openclaw_json_path();
+        let mut cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        cfg.as_object_mut().unwrap().insert(
+            "_milagroTierSeed".to_string(),
+            serde_json::json!({
+                "tier": "pro",
+                "primary": "maic/chat-nemotron-super",
+                "owned": "seeded",
+                "seededAt": "2026-10-23T21:01:57Z",
+            }),
+        );
+        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+
+        // Run the writer. The model config is already correct, so the
+        // MODEL must not change (bool stays false) — but the file MUST be
+        // rewritten to strip the legacy key.
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("writer should succeed");
+        assert!(
+            !wrote,
+            "the model config was already correct — no model change"
+        );
+
+        let cfg = read_test_cfg();
+        assert!(
+            cfg.pointer("/_milagroTierSeed").is_none(),
+            "the legacy root marker MUST be stripped — it breaks the openclaw config schema"
+        );
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary").unwrap(),
+            "maic/chat-nemotron-super",
+            "stripping the marker must not disturb the model config"
+        );
+    }
+
+    /// Lesson 1434 (2026-10-23): DUMP the config the app writes to
+    /// disk so it can be validated against the REAL bundled openclaw
+    /// schema by an external node harness.
+    ///
+    /// This test is `#[ignore]`d by default because it needs a node
+    /// harness to be meaningful. Run it explicitly:
+    ///
+    ///   cargo test --lib lesson_1434_dump_written_config -- --ignored --nocapture
+    ///
+    /// It writes the resulting chat.json to the path in
+    /// `MC_CFG_DUMP_PATH` (or the temp dir) and prints it.
+    #[test]
+    #[ignore]
+    fn lesson_1434_dump_written_config() {
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(None, None);
+
+        ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("writer should succeed");
+
+        let path = openclaw_json_path();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let out = std::env::var("MC_CFG_DUMP_PATH")
+            .unwrap_or_else(|_| path.to_string_lossy().to_string());
+        std::fs::write(&out, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+        eprintln!("[MC_CFG_DUMP] wrote {}", out);
+    }
+
+    /// Lesson 1434 (2026-10-23) — GATE: the config the app WRITES must
+    /// be accepted by the real openclaw schema.
+    ///
+    /// This is the test that would have caught the rc57.29/rc57.30
+    /// release bug BEFORE it shipped. The root `OpenClawSchema` is
+    /// `.strict()`, so the `_milagroTierSeed` key we wrote at the root
+    /// made the gateway refuse to boot ("Invalid config at chat.json:
+    /// <root>: Invalid input", exit 78) — a dead chat window for every
+    /// customer who installed it.
+    ///
+    /// This test asserts the two things that matter:
+    ///   1. NO marker key appears anywhere in chat.json (root, meta,
+    ///      agents.defaults, or agents.defaults.model).
+    ///   2. The only keys under `agents.defaults.model` are `primary` and
+    ///      `fallbacks` — the exact set `AgentModelSchema` accepts.
+    ///
+    /// It deliberately does NOT shell out to node (no node dependency in
+    /// the test env), but the key sets it asserts are exactly the ones
+    /// the bundled openclaw schema permits.
+    #[test]
+    fn lesson_1434_written_config_contains_only_schema_legal_keys() {
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(None, None);
+
+        ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("writer should succeed");
+        ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
+            .expect("writer should succeed");
+
+        let cfg = read_test_cfg();
+
+        // 1. No marker key ANYWHERE.
+        for path in [
+            "/_milagroTierSeed",
+            "/meta/tierSeed",
+            "/agents/defaults/tierSeed",
+            "/agents/defaults/model/tierSeed",
+        ] {
+            assert!(
+                cfg.pointer(path).is_none(),
+                "chat.json must not contain {} — every level of the openclaw \
+                 config schema is .strict(), and an unknown key makes the \
+                 gateway refuse to boot (exit 78)",
+                path
+            );
+        }
+
+        // 2. agents.defaults.model carries ONLY primary + fallbacks.
+        let model = cfg
+            .pointer("/agents/defaults/model")
+            .and_then(|v| v.as_object())
+            .expect("agents.defaults.model must be an object");
+        for key in model.keys() {
+            assert!(
+                key == "primary" || key == "fallbacks",
+                "agents.defaults.model may only contain primary/fallbacks (AgentModelSchema \
+                 is .strict()), found {:?}",
+                key
+            );
+        }
+
+        // 3. The sidecar carries the marker instead.
+        assert!(
+            model_seed_marker_path().exists(),
+            "the marker must live in the sidecar, not in chat.json"
+        );
+    }
+
+    /// Lesson 1434 (2026-10-23): the tier-seed marker must live in a
+    /// SIDECAR file next to chat.json — NEVER inside chat.json.
+    ///
+    /// openclaw's config schema is `.strict()` at EVERY level, including
+    /// the ROOT `OpenClawSchema`. An unknown root key makes the gateway
+    /// refuse to boot with "Invalid config at chat.json: <root>: Invalid
+    /// input" (exit code 78) — a dead chat window.
+    ///
+    /// This test is the guard against ever putting the marker back into
+    /// the config file.
+    #[test]
+    fn lesson_1434_marker_lives_in_sidecar_not_in_chat_json() {
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(None, None);
+
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("writer should succeed");
+        assert!(wrote, "a fresh install should seed the paid model");
+
+        // The sidecar MUST exist next to chat.json.
+        let marker_path = model_seed_marker_path();
+        assert!(
+            marker_path.exists(),
+            "the seed marker must be written to the sidecar file {}",
+            marker_path.display()
+        );
+        assert_eq!(
+            marker_path.file_name().and_then(|n| n.to_str()),
+            Some("model-seed-marker.json"),
+            "the sidecar must be named model-seed-marker.json"
+        );
+
+        // chat.json must contain NO marker anywhere: not at the root,
+        // not under meta, not under agents.defaults, not inside the
+        // model object.
+        let cfg = read_test_cfg();
+        assert!(
+            cfg.pointer("/_milagroTierSeed").is_none(),
+            "chat.json must NOT contain a root _milagroTierSeed — the root schema is .strict()"
+        );
+        assert!(
+            cfg.pointer("/meta/tierSeed").is_none(),
+            "chat.json must NOT contain meta.tierSeed — meta is .strict()"
+        );
+        assert!(
+            cfg.pointer("/agents/defaults/tierSeed").is_none(),
+            "chat.json must NOT contain agents.defaults.tierSeed — agents.defaults is .strict()"
+        );
+        assert!(
+            cfg.pointer("/agents/defaults/model/tierSeed").is_none(),
+            "chat.json must NOT contain agents.defaults.model.tierSeed — the model schema is .strict()"
+        );
+
+        // The model object must carry ONLY the two schema-legal keys.
+        let model = cfg.pointer("/agents/defaults/model").expect("model object");
+        let obj = model.as_object().expect("model must be an object");
+        for key in obj.keys() {
+            assert!(
+                key == "primary" || key == "fallbacks",
+                "agents.defaults.model may only contain primary/fallbacks, found {:?}",
+                key
+            );
+        }
+
+        // The sidecar must carry the marker payload.
+        let marker = read_seed_marker().expect("the sidecar must be readable");
+        assert_eq!(marker.get("tier").and_then(|v| v.as_str()), Some("pro"));
+        assert_eq!(marker.get("owned").and_then(|v| v.as_str()), Some("seeded"));
+        assert_eq!(
+            marker.get("primary").and_then(|v| v.as_str()),
+            Some("maic/chat-nemotron-super")
+        );
+    }
+
+    /// Lesson 1434: a legacy root marker from rc57.29/rc57.30 must be
+    /// stripped, and the resulting chat.json must be accepted by
+    /// openclaw's schema (i.e. it contains no unknown keys).
+    #[test]
+    fn lesson_1434_legacy_marker_strip_keeps_model_migratable() {
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(
+            Some("maic/chat-nemotron-super"),
+            Some(vec![
+                "maic/chat-nemotron-ultra",
+                "maic/chat-nemotron-nano",
+                "maic/milagro-oc-minimax",
+                "maic/milagro-oc-glm",
+                "maic/milagro-oc-kimi",
+                "maic/milagro-m1-t3",
+            ]),
+        );
+
+        // Inject the legacy root marker, as rc57.30 would have.
+        let path = openclaw_json_path();
+        let mut cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        cfg.as_object_mut().unwrap().insert(
+            "_milagroTierSeed".to_string(),
+            serde_json::json!({
+                "tier": "pro",
+                "primary": "maic/chat-nemotron-super",
+                "owned": "seeded",
+                "seededAt": "2026-10-23T21:01:57Z",
+            }),
+        );
+        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("writer should succeed");
+        assert!(
+            !wrote,
+            "the model config was already correct — no model change"
+        );
+
+        let cfg = read_test_cfg();
+        assert!(
+            cfg.pointer("/_milagroTierSeed").is_none(),
+            "the legacy root marker MUST be stripped"
+        );
+
+        // The sidecar must still say "seeded" (the legacy marker was
+        // APP-written), so the primary stays migratable on a tier change.
+        let marker = read_seed_marker().expect("sidecar must exist");
+        assert_eq!(
+            marker.get("owned").and_then(|v| v.as_str()),
+            Some("seeded"),
+            "a legacy app-written marker must keep the primary migratable"
+        );
     }
 
     #[test]
