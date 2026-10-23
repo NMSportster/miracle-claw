@@ -6066,6 +6066,42 @@ fn spawn_launcher_and_wait(
     wait_for_gateway_ready(port, timeout)
 }
 
+/// How long `start_gateway_after_login` waits for an in-flight login to
+/// publish `MAIC_API_KEY` before declaring the user genuinely logged out.
+///
+/// Lesson 1435 (2026-10-23, David): the auto-login + chat-tile-click race.
+/// A login round-trip against maicserver.com takes ~1-3s, so 20s is a
+/// generous ceiling that still fails fast for the real "not logged in"
+/// case (the launchpad shows a clean error rather than hanging).
+const LOGIN_KEY_WAIT_TIMEOUT_MS: u64 = 20_000;
+
+/// Poll for `MAIC_API_KEY` to become non-empty in the process env.
+///
+/// Lesson 1435 (2026-10-23, David): `maic_login` sets the env var when the
+/// HTTP POST returns. Until then the env var is empty even though a login
+/// is in progress. Callers that need the key (notably
+/// `start_gateway_after_login`) must WAIT for it rather than assume its
+/// absence is permanent.
+///
+/// Returns true as soon as a non-empty key is present; false if the
+/// timeout expires with no key.
+fn wait_for_maic_api_key(timeout_ms: u64) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    loop {
+        let present = std::env::var(ENV_VAR_NAME)
+            .ok()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if present {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// Tauri command: start_gateway_after_login (Lesson 449).
 ///
 /// Called by the frontend AFTER `maic_login` returns success. Spawns the
@@ -6083,16 +6119,31 @@ fn start_gateway_after_login(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    // Sanity: maic_login must have been called first. We check both the env
-    // var and the openclaw.json entry so we don't accidentally start a
-    // gateway that's about to crash.
-    let key_present = std::env::var(ENV_VAR_NAME)
-        .ok()
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
+    // Lesson 1435 (2026-10-23, David): maic_login may still be IN FLIGHT
+    // when the user clicks the chat tile.
+    //
+    // Symptom David hit on rc57.31 (2026-10-23 21:55:17 MDT):
+    //   start_gateway_after_login: rejected — MAIC_API_KEY not set
+    //   openclaw_open_window: cache_buster v=1792792517888
+    // → the launchpad swallowed the rejection (console.warn) and went
+    //   straight to openclaw_open_window, which then found the gateway
+    //   not serving and surfaced "OpenClaw gateway is not responding on
+    //   port 28789". The app looked hung. Reopening the app worked
+    //   because by then the auto-login had completed.
+    //
+    // Root cause is a RACE, not a missing login: the frontend fires the
+    // auto-login and the user can click the tile before it resolves. The
+    // old code treated "key not set YET" as "key will NEVER be set" and
+    // hard-failed, which turned a 2-second race into a broken app.
+    //
+    // Fix: wait (bounded) for the in-flight login to land the key before
+    // deciding it is missing. Only reject if the key is STILL absent
+    // after the wait expires — that is the genuine "user never logged
+    // in" case, which really is an error.
+    let key_present = wait_for_maic_api_key(LOGIN_KEY_WAIT_TIMEOUT_MS);
     if !key_present {
         log_to_file(
-            "start_gateway_after_login: rejected — MAIC_API_KEY not set (frontend called before maic_login)",
+            "start_gateway_after_login: rejected — MAIC_API_KEY still not set after waiting for an in-flight login (frontend called before maic_login, and it never completed)",
         );
         return Err(
             "start_gateway_after_login called before MAIC_API_KEY was set; \
@@ -12358,6 +12409,127 @@ mod tests {
         assert!(
             model_seed_marker_path().exists(),
             "the marker must live in the sidecar, not in chat.json"
+        );
+    }
+
+    /// Lesson 1435 (2026-10-23, David): `start_gateway_after_login` must
+    /// WAIT for an in-flight login to publish `MAIC_API_KEY` instead of
+    /// hard-failing the instant it is absent.
+    ///
+    /// Symptom: on rc57.31 the user clicked the "Miracle Claw · Windows"
+    /// tile while the auto-login was still resolving. The old code logged
+    /// "rejected — MAIC_API_KEY not set", the launchpad swallowed that
+    /// error, and `openclaw_open_window` then reported "gateway is not
+    /// responding on port 28789" — the app looked hung.
+    #[test]
+    fn lesson_1435_waits_for_inflight_login_before_rejecting() {
+        let _env = lock_env();
+
+        // No key present at all -> the wait expires and we report failure.
+        // Use a short timeout so the test stays fast.
+        std::env::remove_var(ENV_VAR_NAME);
+        let t0 = std::time::Instant::now();
+        assert!(
+            !wait_for_maic_api_key(300),
+            "with no key and no login in flight, the wait must time out and report false"
+        );
+        assert!(
+            t0.elapsed() >= std::time::Duration::from_millis(250),
+            "the wait must actually block for its timeout, not return immediately"
+        );
+
+        // Key already present -> returns true immediately.
+        std::env::set_var(ENV_VAR_NAME, "test-key-123");
+        let t1 = std::time::Instant::now();
+        assert!(
+            wait_for_maic_api_key(5_000),
+            "an already-present key must be detected immediately"
+        );
+        assert!(
+            t1.elapsed() < std::time::Duration::from_millis(500),
+            "an already-present key must not wait for the full timeout"
+        );
+
+        // A whitespace-only key is NOT a valid key (it would make the
+        // gateway fail with a confusing secret-resolution error).
+        std::env::set_var(ENV_VAR_NAME, "   ");
+        assert!(
+            !wait_for_maic_api_key(200),
+            "a blank/whitespace key must not count as present"
+        );
+
+        std::env::remove_var(ENV_VAR_NAME);
+    }
+
+    /// Lesson 1435 (2026-10-23, David): a key that lands WHILE we are
+    /// waiting must be picked up — that is the whole point of the fix.
+    ///
+    /// This simulates the real race: the user clicks the chat tile, the
+    /// click handler starts waiting, and the in-flight auto-login
+    /// publishes the key a moment later.
+    #[test]
+    fn lesson_1435_picks_up_a_key_that_lands_mid_wait() {
+        let _env = lock_env();
+        std::env::remove_var(ENV_VAR_NAME);
+
+        let handle = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            std::env::set_var(ENV_VAR_NAME, "late-key-abc");
+        });
+
+        let present = wait_for_maic_api_key(10_000);
+        handle.join().unwrap();
+
+        assert!(
+            present,
+            "a key that arrives during the wait must be detected (this is the \
+             auto-login race the fix exists for)"
+        );
+        std::env::remove_var(ENV_VAR_NAME);
+    }
+
+    /// Lesson 1435 (2026-10-23, David): the launchpad must NOT swallow a
+    /// `start_gateway_after_login` failure and then call
+    /// `openclaw_open_window` anyway.
+    ///
+    /// Guard is on the frontend source, because this is a frontend bug
+    /// (the Rust side now waits, but the frontend must still fail
+    /// cleanly if the gateway genuinely cannot start).
+    #[test]
+    fn lesson_1435_launchpad_does_not_open_window_after_gateway_failure() {
+        let src_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("src")
+            .join("pages")
+            .join("dashboard_launchpad.js");
+        let src = std::fs::read_to_string(&src_path).unwrap_or_else(|e| {
+            panic!("could not read {}: {}", src_path.display(), e);
+        });
+
+        // Find the launch-chat case block.
+        let case_idx = src
+            .find("case \"launch-chat\":")
+            .expect("launch-chat case must exist in dashboard_launchpad.js");
+        let block = &src[case_idx..];
+        let block = &block[..block.len().min(2000)];
+
+        assert!(
+            !block.contains(
+                "console.warn(\"[launchpad] start_gateway_after_login failed (gateway may already be up):\", err);"
+            ),
+            "the launchpad must not swallow start_gateway_after_login failures — \
+             Lesson 1435: swallowing them produced the misleading 'gateway is \
+             not responding on port 28789' hang"
+        );
+        assert!(
+            block.contains("gatewayReady = false"),
+            "the launchpad must track gateway readiness and skip \
+             openclaw_open_window when the gateway failed to start"
+        );
+        assert!(
+            block.contains("if (!gatewayReady)"),
+            "the launchpad must bail out before opening the chat window when \
+             the gateway did not start"
         );
     }
 

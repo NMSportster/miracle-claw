@@ -896,10 +896,26 @@ async function _onClick(ev) {
       // window approach instead so the runtime and UI share one
       // transcript store.) Start the gateway first (idempotent if
       // already running) and then open the window.
+      // Lesson 1435 (2026-10-23, David): the old code swallowed the
+      // start_gateway_after_login error and went on to call
+      // openclaw_open_window anyway. When the start failed because the
+      // auto-login had not finished yet, that produced a second, much
+      // more confusing error ("gateway is not responding on port
+      // 28789") and the app looked hung.
+      //
+      // Now: if we genuinely cannot start the gateway, say so plainly
+      // and stop. openclaw_open_window is only worth calling when the
+      // gateway is actually up.
+      let gatewayReady = true;
       try {
         await invoke("start_gateway_after_login");
       } catch (err) {
-        console.warn("[launchpad] start_gateway_after_login failed (gateway may already be up):", err);
+        console.warn("[launchpad] start_gateway_after_login failed:", err);
+        gatewayReady = false;
+      }
+      if (!gatewayReady) {
+        toast("Could not start the OpenClaw gateway. Please wait a moment and try again.", { kind: "error" });
+        break;
       }
       try {
         await invoke("openclaw_open_window");
