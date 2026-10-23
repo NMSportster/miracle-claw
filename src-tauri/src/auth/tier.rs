@@ -232,6 +232,63 @@ pub fn fetch_tier_fresh(jwt: &str, maic_base: &str) -> Result<TierInfo, String> 
     Ok(info)
 }
 
+/// Is there a cached tier in this process?
+///
+/// Lesson 1438 (2026-10-23, David): `current_tier()` returns `Tier::Free`
+/// both for a genuinely-cached Free tier and for an EMPTY cache, so
+/// callers can't tell them apart. `resolve_tier_at_startup` needs to know
+/// whether it actually has an answer.
+pub fn has_cached_tier() -> bool {
+    TIER_CACHE.lock().unwrap().is_some()
+}
+
+/// Fetch the tier with an explicit, caller-supplied timeout.
+///
+/// Lesson 1438 (2026-10-23, David): the startup path must not stall boot
+/// on a slow or absent network. `fetch_tier_fresh` hardcodes a 10s timeout,
+/// which is far too long for the startup path — the gateway should come up
+/// immediately and the tier can be corrected a moment later.
+///
+/// This variant uses `ureq`'s per-call timeout override so the caller
+/// chooses the budget. On failure the tier cache is left untouched.
+pub fn fetch_tier_with_timeout(
+    jwt: &str,
+    maic_base: &str,
+    timeout: std::time::Duration,
+) -> Result<TierInfo, String> {
+    let url = format!("{}/v1/auth/me", normalize_api_base(maic_base));
+    let resp = ureq::get(&url)
+        .set("Authorization", &format!("Bearer {}", jwt))
+        .set("Accept", "application/json")
+        .timeout(timeout)
+        .call();
+    let parsed: AuthMeResponse = match resp {
+        Ok(r) => r
+            .into_json()
+            .map_err(|e| format!("parse /v1/auth/me: {}", e))?,
+        Err(e) => return Err(format!("/v1/auth/me: {}", e)),
+    };
+    let tier = Tier::from_str(&parsed.tier);
+    let mut cache = TIER_CACHE.lock().unwrap();
+    let tier_changed = match cache.as_ref() {
+        Some(prev) if prev.last_published != tier && prev.last_published > tier => true,
+        _ => false,
+    };
+    let info = TierInfo {
+        tier,
+        plan_code: parsed.plan_code,
+        email: parsed.name.or(parsed.email),
+        from_cache: false,
+        tier_changed,
+    };
+    *cache = Some(CachedTier {
+        info: info.clone(),
+        fetched_at: Instant::now(),
+        last_published: tier,
+    });
+    Ok(info)
+}
+
 /// Fetch with cache. Returns the cached value if it's less than 5 min old
 /// AND was fetched with the same JWT. Different JWT (different user) =>
 /// fresh fetch.
