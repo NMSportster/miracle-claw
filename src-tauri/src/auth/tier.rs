@@ -388,16 +388,41 @@ pub fn tier_default_model_id(tier: Tier) -> &'static str {
 ///   2. `chat-nemotron-nano` — the small/cheap Nemotron MoE (30B/3.5B
 ///      active, usage level 1). Cheap insurance before we leave the
 ///      Nemotron family.
-///   3. `milagro-m1-t3` — local 14B-distilled. Last resort when ALL
-///      cloud routes fail. Slow, but never returns a network error.
+///   3. `milagro-oc-minimax` — cloud MiniMax M3. First non-Nemotron
+///      hop; keeps the chain in the cloud rather than dropping to a
+///      slow local model.
+///   4. `milagro-oc-glm` — cloud OpenChat GLM.
+///   5. `milagro-oc-kimi` — cloud OpenChat Kimi. Last cloud hop.
+///   6. `milagro-m1-t3` — local 14B-distilled. Final backstop when
+///      ALL cloud routes fail. Slow, but never returns a network error.
 ///
-/// Rationale for keeping the chain inside the Nemotron family first:
-/// the whole point of the Nemotron switch was a ~42x cost reduction
-/// over the old GLM/Kimi cloud chain. Leaving `milagro-oc-glm` or
-/// `milagro-oc-kimi` at the head of the paid fallback chain would
-/// silently reintroduce the expensive routes the first failed request
-/// triggers — exactly when the user is least able to notice and most
-/// likely to be surprised by the bill.
+/// Lesson 1433 (2026-10-23, David): David asked for the paid chain to
+/// be "super - ultra - nano - minimax - glm - kimi" so every paid tier
+/// has a ROBUST CLOUD FALLBACK. The three cloud cascade models
+/// (`milagro-oc-minimax`, `milagro-oc-glm`, `milagro-oc-kimi`) are
+/// restored to the chain, positioned AFTER the Nemotron family.
+///
+/// The ordering rationale: the Nemotron models are the cheap, fast,
+/// high-quality path we actually want to bill for. The cloud cascade
+/// models are the RESILIENCE layer — they only get hit when Nemotron
+/// itself is unavailable (provider outage, rate limit, capacity
+/// exhaustion). Putting them after Nano means a single transient
+/// Nemotron failure does NOT immediately trigger an expensive cloud
+/// route, but a sustained Nemotron outage DOES get served from the
+/// cloud instead of degrading to a slow local model.
+///
+/// This supersedes the Lesson 1432 decision to drop the cloud cascade
+/// from the paid chain entirely. That decision was made on a ~42x
+/// cost-reduction argument, but it traded away outage resilience: a
+/// Nemotron provider blip would have dropped a paid user onto a local
+/// 14B model. Paid users paying for a cloud tier should get cloud
+/// fallbacks.
+///
+/// COST NOTE: the fallback ORDER is what determines billing. Nemotron
+/// Ultra/Nano come first, so the expensive GLM/Kimi routes only fire
+/// after BOTH Nemotron models fail. If that exposure is a concern, the
+/// fix is to move the cloud cascade earlier in the chain, not to
+/// remove it.
 ///
 /// Free chain (Lesson 569, 2026-08-24 22:57 MDT, David):
 ///   1. `milagro-m1-t2` — local Qwen7B-distilled, higher quality for
@@ -421,15 +446,25 @@ pub fn tier_default_fallbacks(tier: Tier) -> &'static [&'static str] {
     match tier {
         // Lesson 521: writer prefixes `maic/`, so we return bare.
         Tier::Free => &["milagro-m1-t2", "milagro-m1-t3", "chat-nemotron-nano"],
-        // Lesson 1432 (2026-10-23, David): Nemotron-first paid chain.
-        // See the function doc comment for why GLM/Kimi/MiniMax were
-        // dropped from the head of the paid chain.
+        // Lesson 1433 (2026-10-23, David): paid chain is
+        // Nemotron-first, then the cloud cascade for robustness.
+        // See the function doc comment for the full ordering rationale.
         //
         // (History: Lesson 795, 2026-08-30 — paid chain was
         // MiniMax → Kimi → local 14B with a GLM primary. Lesson 1422,
         // 2026-10-21 — that comment went stale and misled a later
-        // session. Both are now superseded by Lesson 1432.)
-        _ => &["chat-nemotron-ultra", "chat-nemotron-nano", "milagro-m1-t3"],
+        // session. Lesson 1432, 2026-10-23 — Nemotron-only chain, which
+        // dropped cloud resilience. Lesson 1433, 2026-10-23 — David
+        // restored the cloud cascade as the resilience layer, ordered
+        // AFTER the Nemotron family.)
+        _ => &[
+            "chat-nemotron-ultra",
+            "chat-nemotron-nano",
+            "milagro-oc-minimax",
+            "milagro-oc-glm",
+            "milagro-oc-kimi",
+            "milagro-m1-t3",
+        ],
     }
 }
 
@@ -865,17 +900,19 @@ mod tests {
     }
 
     #[test]
-    fn paid_fallbacks_are_ordered_nemotron_first() {
-        // Lesson 1432 (2026-10-23, David): the paid fallback chain is
-        // Nemotron-first — ultra → nano → local 14B.
+    fn paid_fallbacks_are_ordered_nemotron_first_then_cloud_cascade() {
+        // Lesson 1433 (2026-10-23, David): the paid fallback chain is
+        // Nemotron-first, then the cloud cascade as a resilience layer:
         //
-        // Rationale (why GLM/Kimi/MiniMax are NOT at the head): the
-        // whole point of the Nemotron switch was a ~42x cost reduction
-        // over the old GLM/Kimi cloud chain. Leaving `milagro-oc-glm` or
-        // `milagro-oc-kimi` at the head of the paid fallback chain would
-        // silently reintroduce the expensive routes on the FIRST failed
-        // request — exactly when the user is least likely to notice and
-        // most likely to be surprised by the bill.
+        //   super (primary) → ultra → nano → minimax → glm → kimi → m1-t3
+        //
+        // Rationale: Nemotron Ultra/Nano are the cheap, fast path we
+        // actually want to bill for. The cloud cascade models only get
+        // hit when Nemotron itself is unavailable (provider outage, rate
+        // limit, capacity exhaustion) — so a single transient failure
+        // doesn't trigger an expensive route, but a sustained outage is
+        // still served from the cloud instead of degrading to a slow
+        // local model.
         //
         // Lesson 798: writer at lib.rs prefixes `maic/` — bare values here.
         for tier in [
@@ -887,7 +924,12 @@ mod tests {
             Tier::Enterprise,
         ] {
             let f = tier_default_fallbacks(tier);
-            assert_eq!(f.len(), 3, "{:?} should have exactly 3 fallbacks", tier);
+            assert_eq!(
+                f.len(),
+                6,
+                "{:?} should have exactly 6 fallbacks (Lesson 1433)",
+                tier
+            );
             assert_eq!(
                 f[0], "chat-nemotron-ultra",
                 "{:?} fallback[0] must be Nemotron Ultra",
@@ -899,19 +941,36 @@ mod tests {
                 tier
             );
             assert_eq!(
-                f[2], "milagro-m1-t3",
-                "{:?} fallback[2] must be local 14B-distilled",
+                f[2], "milagro-oc-minimax",
+                "{:?} fallback[2] must be cloud MiniMax",
+                tier
+            );
+            assert_eq!(
+                f[3], "milagro-oc-glm",
+                "{:?} fallback[3] must be cloud GLM",
+                tier
+            );
+            assert_eq!(
+                f[4], "milagro-oc-kimi",
+                "{:?} fallback[4] must be cloud Kimi",
+                tier
+            );
+            assert_eq!(
+                f[5], "milagro-m1-t3",
+                "{:?} fallback[5] must be local 14B-distilled (final backstop)",
                 tier
             );
         }
     }
 
     #[test]
-    fn paid_chain_excludes_expensive_cascade_models() {
-        // Lesson 1432 (2026-10-23, David): none of the old paid cascade
-        // models may appear in the paid fallback chain. They'd only be
-        // reachable as an expensive last resort, which is precisely the
-        // bill-surprise the Nemotron switch was meant to eliminate.
+    fn paid_chain_has_cloud_resilience_before_local_backstop() {
+        // Lesson 1433 (2026-10-23, David): a paid user must be served
+        // from the CLOUD before the chain degrades to a local model. The
+        // local 14B-distilled is the last resort only.
+        //
+        // Also asserts the cloud cascade is present at all — Lesson 1432
+        // removed it entirely, which traded away outage resilience.
         for tier in [
             Tier::Starter,
             Tier::StarterPlus,
@@ -920,13 +979,45 @@ mod tests {
             Tier::Team,
             Tier::Enterprise,
         ] {
-            for forbidden in [
-                "milagro-oc-glm",
-                "milagro-oc-kimi",
-                "milagro-oc-minimax",
-                "milagro-oc-qwen",
-                "milagro-oc-deepseek",
-            ] {
+            let f = tier_default_fallbacks(tier);
+            for expected in ["milagro-oc-minimax", "milagro-oc-glm", "milagro-oc-kimi"] {
+                assert!(
+                    f.contains(&expected),
+                    "{:?} paid fallback chain must contain {expected} for cloud resilience",
+                    tier,
+                );
+            }
+            let local_idx = f
+                .iter()
+                .position(|m| *m == "milagro-m1-t3")
+                .expect("local backstop must be present");
+            let last_cloud_idx = f
+                .iter()
+                .rposition(|m| m.starts_with("milagro-oc-"))
+                .expect("at least one cloud cascade model must be present");
+            assert!(
+                last_cloud_idx < local_idx,
+                "{:?} must reach a cloud route before the local backstop (Lesson 1433)",
+                tier,
+            );
+        }
+    }
+
+    #[test]
+    fn paid_chain_still_excludes_deepseek_and_qwen_cascade() {
+        // Lesson 1433 (2026-10-23, David): David asked specifically for
+        // minimax → glm → kimi. The deepseek and qwen cascade models stay
+        // OUT of the paid chain — they were never part of the requested
+        // robustness set and are usage level 3+.
+        for tier in [
+            Tier::Starter,
+            Tier::StarterPlus,
+            Tier::Pro,
+            Tier::ProPlus,
+            Tier::Team,
+            Tier::Enterprise,
+        ] {
+            for forbidden in ["milagro-oc-qwen", "milagro-oc-deepseek"] {
                 assert!(
                     !tier_default_fallbacks(tier).contains(&forbidden),
                     "{:?} paid fallback chain must not contain {forbidden}",

@@ -2855,6 +2855,18 @@ fn is_known_tier_seed_model(id: &str) -> bool {
         "milagro-oc-kimi",
         "milagro-oc-glm",
         "chat-nemotron-super",
+        // Lesson 1433 (2026-10-23, David): `milagro-oc-minimax` joined
+        // the paid fallback chain. A legacy install whose primary is
+        // minimax (it was a paid-chain member back in Lesson 795) must
+        // still be recognized as an APP-SEED and migrate to Nemotron —
+        // not be mistaken for a deliberate user choice.
+        //
+        // NOTE: `chat-nemotron-ultra` is deliberately NOT here. It was
+        // only ever a FALLBACK, never a seeded PRIMARY, so a user who
+        // picked it by hand must keep it. Lesson 1432's
+        // `lesson_1432_preserves_genuine_manual_selection` test pins
+        // exactly that.
+        "milagro-oc-minimax",
         // Cheap Nemotron + local fallbacks (belt-and-suspenders).
         "chat-nemotron-nano",
         "milagro-m1-t2",
@@ -11813,12 +11825,16 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
-        // Lesson 1432: chain is Nemotron ultra → Nemotron nano → local 14B.
+        // Lesson 1433: chain is Nemotron ultra → Nemotron nano → cloud
+        // minimax → cloud glm → cloud kimi → local 14B.
         assert_eq!(
             fallbacks,
             vec![
                 "maic/chat-nemotron-ultra",
                 "maic/chat-nemotron-nano",
+                "maic/milagro-oc-minimax",
+                "maic/milagro-oc-glm",
+                "maic/milagro-oc-kimi",
                 "maic/milagro-m1-t3"
             ]
         );
@@ -11908,6 +11924,9 @@ mod tests {
             vec![
                 "maic/chat-nemotron-ultra",
                 "maic/chat-nemotron-nano",
+                "maic/milagro-oc-minimax",
+                "maic/milagro-oc-glm",
+                "maic/milagro-oc-kimi",
                 "maic/milagro-m1-t3"
             ],
             "the whole fallback chain must follow the paid tier"
@@ -12096,10 +12115,13 @@ mod tests {
                 .iter()
                 .map(|v| v.as_str().unwrap().to_string())
                 .collect();
-            assert_eq!(fallbacks.len(), 3, "{:?} should have 3 fallbacks", tier);
+            assert_eq!(fallbacks.len(), 6, "{:?} should have 6 fallbacks", tier);
             assert_eq!(fallbacks[0], "maic/chat-nemotron-ultra");
             assert_eq!(fallbacks[1], "maic/chat-nemotron-nano");
-            assert_eq!(fallbacks[2], "maic/milagro-m1-t3");
+            assert_eq!(fallbacks[2], "maic/milagro-oc-minimax");
+            assert_eq!(fallbacks[3], "maic/milagro-oc-glm");
+            assert_eq!(fallbacks[4], "maic/milagro-oc-kimi");
+            assert_eq!(fallbacks[5], "maic/milagro-m1-t3");
         }
     }
 
