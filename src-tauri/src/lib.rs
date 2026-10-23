@@ -91,8 +91,8 @@ pub mod pairing_state;
 // call `build_pairing_state()` directly. The GUI still calls it from
 // `lib.rs::run`. Exposing the module doesn't leak the JWT or endpoint
 // resolution — those are still encapsulated in `build_pairing_state()`.
-pub mod pairing_init;
 pub mod pairing_commands;
+pub mod pairing_init;
 // Phase 2.3: tiny_http listener for phone-side pairing (POST /pair/initiate, GET /pair/health).
 // Spawned from setup(); heartbeat thread reads bound_port() to advertise the endpoint to MAIC.
 // Spec: docs/specs/mobile-desktop-pairing.md.
@@ -167,8 +167,7 @@ pub(crate) const ENV_VAR_NAME: &str = "MAIC_API_KEY";
 pub(crate) struct AppState {
     /// Handle to the launcher sidecar child process (if started).
     /// Mutex because RunEvent handlers + setup() cross thread boundaries.
-    launcher_child:
-        Mutex<Option<tauri_plugin_shell::process::CommandChild>>,
+    launcher_child: Mutex<Option<tauri_plugin_shell::process::CommandChild>>,
     /// v1.0.9-rc36: registry of active PTY terminal sessions.
     /// Map from session id to an Arc-wrapped TerminalHandle. The Arc
     /// is shared between reader threads (which we spawn at start
@@ -236,7 +235,8 @@ pub(crate) struct AppState {
     /// are kept until the user explicitly kills them or the app exits
     /// (RunEvent::Exit handler cleans up). Keyed by UUID so multiple
     /// workflows can run concurrently.
-    prose_sessions: Mutex<std::collections::HashMap<String, std::sync::Arc<crate::prose_host::ProseHandle>>>,
+    prose_sessions:
+        Mutex<std::collections::HashMap<String, std::sync::Arc<crate::prose_host::ProseHandle>>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -286,12 +286,7 @@ fn voice_first_run_report() -> (bool, String, bool) {
     use std::process::Command;
     fn read_reg_dword(name: &str) -> bool {
         Command::new("reg")
-            .args([
-                "query",
-                r"HKLM\SOFTWARE\MiracleClaw",
-                "/v",
-                name,
-            ])
+            .args(["query", r"HKLM\SOFTWARE\MiracleClaw", "/v", name])
             .output()
             .ok()
             .map(|o| {
@@ -303,12 +298,7 @@ fn voice_first_run_report() -> (bool, String, bool) {
     }
     fn read_reg_str(name: &str) -> String {
         Command::new("reg")
-            .args([
-                "query",
-                r"HKLM\SOFTWARE\MiracleClaw",
-                "/v",
-                name,
-            ])
+            .args(["query", r"HKLM\SOFTWARE\MiracleClaw", "/v", name])
             .output()
             .ok()
             .map(|o| {
@@ -352,7 +342,9 @@ fn resources_dir(_app: &tauri::AppHandle) -> PathBuf {
         return PathBuf::from(p);
     }
     // Dev fallback: try walking up from current_exe to find src-tauri/resources.
-    let mut cursor = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from));
+    let mut cursor = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(PathBuf::from));
     while let Some(dir) = cursor {
         let candidate = dir.join("resources");
         if candidate.join("miracle-claw-gateway.mjs").is_file() {
@@ -494,9 +486,7 @@ enum CopyResult {
     SourceMissing,
 }
 
-fn copy_maic_plugin_if_needed(
-    resources: &Path,
-) -> io::Result<(CopyResult, PathBuf)> {
+fn copy_maic_plugin_if_needed(resources: &Path) -> io::Result<(CopyResult, PathBuf)> {
     let src_dir = bundled_maic_plugin_dir(resources);
     if !src_dir.is_dir() {
         return Ok((CopyResult::SourceMissing, PathBuf::new()));
@@ -547,8 +537,12 @@ fn ensure_maic_manifest_compat(target: &Path) -> io::Result<()> {
         "additionalProperties": true,
         "properties": {}
     });
-    let serialized = serde_json::to_string_pretty(&parsed)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize manifest: {e}")))?;
+    let serialized = serde_json::to_string_pretty(&parsed).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("serialize manifest: {e}"),
+        )
+    })?;
     fs::write(&manifest, serialized)
 }
 
@@ -693,8 +687,9 @@ fn ensure_openclaw_json_minimal() -> io::Result<()> {
             }
         }
     });
-    let serialized = serde_json::to_string_pretty(&minimal)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize config: {e}")))?;
+    let serialized = serde_json::to_string_pretty(&minimal).map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("serialize config: {e}"))
+    })?;
     fs::write(&path, serialized)?;
     eprintln!(
         "[miracle-claw] wrote minimal config to {} (first-run bootstrap)",
@@ -770,8 +765,9 @@ fn migrate_legacy_mc_config(path: &Path) -> io::Result<bool> {
         if auth_value.is_string() {
             let mode = auth_value.as_str().unwrap_or("none");
             gateway.insert("auth".to_string(), serde_json::json!({ "mode": mode }));
-            let serialized = serde_json::to_string_pretty(&parsed)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize: {e}")))?;
+            let serialized = serde_json::to_string_pretty(&parsed).map_err(|e| {
+                io::Error::new(io::ErrorKind::InvalidData, format!("serialize: {e}"))
+            })?;
             fs::write(path, serialized)?;
             return Ok(true);
         }
@@ -886,10 +882,7 @@ pub fn backfill_model_capability_fields(cfg: &mut Value) -> bool {
         return false;
     };
     for (_, provider) in providers.iter_mut() {
-        let Some(models) = provider
-            .get_mut("models")
-            .and_then(|m| m.as_array_mut())
-        else {
+        let Some(models) = provider.get_mut("models").and_then(|m| m.as_array_mut()) else {
             continue;
         };
         for entry in models.iter_mut() {
@@ -937,12 +930,23 @@ fn merge_known_model_ids_into_provider(
     // Full catalog (20 models). Free users see only the ones in
     // FREE_MODEL_IDS; paid users see all 20.
     const ALL_MODEL_IDS: &[&str] = &[
-        "milagro-dev", "milagro-dev-coder", "milagro-m1",
-        "milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3",
-        "milagro-chat", "milagro-coder", "milagro-stock",
-        "milagro-oc-minimax", "milagro-oc-glm", "milagro-oc-qwen",
-        "milagro-oc-deepseek", "milagro-oc-kimi",
-        "chat-glm", "chat-deepseek", "chat-qwen",
+        "milagro-dev",
+        "milagro-dev-coder",
+        "milagro-m1",
+        "milagro-m1-t1",
+        "milagro-m1-t2",
+        "milagro-m1-t3",
+        "milagro-chat",
+        "milagro-coder",
+        "milagro-stock",
+        "milagro-oc-minimax",
+        "milagro-oc-glm",
+        "milagro-oc-qwen",
+        "milagro-oc-deepseek",
+        "milagro-oc-kimi",
+        "chat-glm",
+        "chat-deepseek",
+        "chat-qwen",
         // Lesson 567 (2026-08-24 22:25 MDT, David): add 3 Nemotron
         // models — NVIDIA's open-weights MoE family. Available on
         // Ollama Cloud (we already pay flat subscription via
@@ -990,7 +994,9 @@ fn merge_known_model_ids_into_provider(
         .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
         .collect();
     for id in allowed {
-        if present.contains(*id) { continue; }
+        if present.contains(*id) {
+            continue;
+        }
         // Lesson 1136: include the per-model capability fields so MC's
         // request builder picks the right `max_completion_tokens` /
         // `contextWindow` / `reasoning` flags instead of falling back
@@ -1110,7 +1116,9 @@ fn ensure_maic_provider_config_for_tier(
             })
             .map(|e| {
                 let key = "params".to_string();
-                let entry = e.entry(key).or_insert_with(|| Value::Object(Default::default()));
+                let entry = e
+                    .entry(key)
+                    .or_insert_with(|| Value::Object(Default::default()));
                 if !entry.is_object() {
                     *entry = Value::Object(Default::default());
                 }
@@ -1205,9 +1213,7 @@ fn ensure_maic_provider_config_for_tier(
             // last wrote the array; user edits after stamping are preserved.
             let needs_tools_stamp = match params.get("tools") {
                 None => true,
-                Some(Value::Array(a)) => {
-                    a.is_empty() || stamp_version < CURRENT_STAMP_VERSION
-                },
+                Some(Value::Array(a)) => a.is_empty() || stamp_version < CURRENT_STAMP_VERSION,
                 Some(_) => false, // non-empty, non-array — leave alone
             };
             if needs_tools_stamp {
@@ -1218,8 +1224,7 @@ fn ensure_maic_provider_config_for_tier(
                     .filter(|t| tool_names.contains(&t.name))
                     .map(|t| (*t).clone())
                     .collect();
-                let tools_arr =
-                    crate::tools::schemas::local_tools_to_openai_array(&filtered);
+                let tools_arr = crate::tools::schemas::local_tools_to_openai_array(&filtered);
                 params.insert("tools".to_string(), tools_arr);
                 // Lesson 842: stamp the version so future boots can detect
                 // user-removed tools (length != stamp) vs build-removed
@@ -1474,9 +1479,7 @@ fn ensure_maic_provider_config_for_tier(
     if matches!(key_source, MaicKeySource::LoginRequired) {
         let resolved_url = env_url
             .clone()
-            .or_else(|| {
-                read_system_openclaw_maic_base_url().ok().flatten()
-            })
+            .or_else(|| read_system_openclaw_maic_base_url().ok().flatten())
             .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
         eprintln!(
             "[miracle-claw] MAIC provider login required (no key in env, system openclaw, or SecretRef) — chat panel will block on login modal"
@@ -1509,7 +1512,9 @@ fn ensure_maic_provider_config_for_tier(
     }
     let entry_obj = provider_entry.as_object_mut().unwrap();
 
-    entry_obj.entry("baseUrl".to_string()).or_insert(Value::String(normalize_maic_base_url(&resolved_url)));
+    entry_obj
+        .entry("baseUrl".to_string())
+        .or_insert(Value::String(normalize_maic_base_url(&resolved_url)));
     // Lesson 450: ensure the openai-completions baseUrl we stamp carries the
     // `/v1` suffix that openclaw's OpenAI SDK appends `/chat/completions` to.
     // Without `/v1`, openclaw POSTs to `{origin}/chat/completions` and MAIC
@@ -1554,7 +1559,9 @@ fn ensure_maic_provider_config_for_tier(
             }
         }
     }
-    entry_obj.entry("api".to_string()).or_insert(Value::String(DEFAULT_API.to_string()));
+    entry_obj
+        .entry("api".to_string())
+        .or_insert(Value::String(DEFAULT_API.to_string()));
 
     // Models list — preserve any user additions, default to milagro-dev.
     let models_arr = entry_obj
@@ -1574,48 +1581,72 @@ fn ensure_maic_provider_config_for_tier(
         //
         // See MEMORY.md "MAIC Deployed Model Inventory" for the
         // verified list (2026-08-14 12:06 MDT).
-    // Lesson 527 (NEW 2026-08-21 13:57 MDT, revised 2026-08-24
-    // Lesson 567): tier-gated model list.
-    // Free gets m1-t1 + m1-t2 + m1-t3 + chat-nemotron-nano
-    // (chat-only fast tier + cheap NVIDIA MoE).
-    // Paid gets the full 20-model catalog (Lesson 567 added 3 Nemotron
-    // models on 2026-08-24). The `seeds` array drives the
-    // first-install write path (when models list is empty); for
-    // upgrades the `else` branch below does the same tier gating.
-    // Lesson 565 (2026-08-24 18:41 MDT, David): add m1-t3 to Free
-    // seeds (not just the upgrade merge path) so first-install Free
-    // users also get t3. Cost-neutral: local 14B-distilled, fewer
-    // cloud fallbacks.
-    let seeds: &[(&str, &str)] = match tier {
-        crate::auth::tier::Tier::Free => &[
-            ("milagro-m1-t1",      "MAIC m1-t1 — 3B LoRA-distilled (fast)"),
-            ("milagro-m1-t2",      "MAIC m1-t2 — 7B LoRA-distilled (mid)"),
-            ("milagro-m1-t3",      "MAIC m1-t3 — 14B LoRA-distilled (top of t-series)"),
-            ("chat-nemotron-nano", "Cloud Nemotron 3 Nano 30B (NVIDIA MoE, 1.7s)"),
-        ],
-        _ => &[
-            ("milagro-dev",            "MAIC default (miracle-claw) — 14B local generalist"),
-            ("milagro-dev-coder",      "MAIC coder — 14B local code-tuned"),
-            ("milagro-m1",             "MAIC m1 — base"),
-            ("milagro-m1-t1",          "MAIC m1-t1 — 3B LoRA-distilled (fast)"),
-            ("milagro-m1-t2",          "MAIC m1-t2 — 7B LoRA-distilled (mid)"),
-            ("milagro-m1-t3",          "MAIC m1-t3 — 14B LoRA-distilled (top of t-series)"),
-            ("milagro-chat",           "MAIC chat — small general baseline"),
-            ("milagro-coder",          "MAIC coder — small-mid code baseline"),
-            ("milagro-stock",          "MAIC stock — stock-specific small"),
-            ("milagro-oc-minimax",     "Cloud cascade — MiniMax M3 (MiniMax-M3)"),
-            ("milagro-oc-glm",         "Cloud cascade — OpenChat GLM"),
-            ("milagro-oc-qwen",        "Cloud cascade — OpenChat Qwen"),
-            ("milagro-oc-deepseek",    "Cloud cascade — OpenChat DeepSeek"),
-            ("milagro-oc-kimi",        "Cloud cascade — OpenChat Kimi"),
-            ("chat-glm",               "Cloud — GLM (direct)"),
-            ("chat-deepseek",          "Cloud — DeepSeek (direct)"),
-            ("chat-qwen",              "Cloud — Qwen (direct)"),
-            ("chat-nemotron-nano",     "Cloud — Nemotron 3 Nano 30B A3B (NVIDIA MoE, 1.7s) — Free tier cloud fallback"),
-            ("chat-nemotron-super",    "Cloud — Nemotron 3 Super 120B A12B (NVIDIA MoE, 1.8s)"),
-            ("chat-nemotron-ultra",    "Cloud — Nemotron 3 Ultra 550B A55B (NVIDIA MoE, flagship)"),
-        ],
-    };
+        // Lesson 527 (NEW 2026-08-21 13:57 MDT, revised 2026-08-24
+        // Lesson 567): tier-gated model list.
+        // Free gets m1-t1 + m1-t2 + m1-t3 + chat-nemotron-nano
+        // (chat-only fast tier + cheap NVIDIA MoE).
+        // Paid gets the full 20-model catalog (Lesson 567 added 3 Nemotron
+        // models on 2026-08-24). The `seeds` array drives the
+        // first-install write path (when models list is empty); for
+        // upgrades the `else` branch below does the same tier gating.
+        // Lesson 565 (2026-08-24 18:41 MDT, David): add m1-t3 to Free
+        // seeds (not just the upgrade merge path) so first-install Free
+        // users also get t3. Cost-neutral: local 14B-distilled, fewer
+        // cloud fallbacks.
+        let seeds: &[(&str, &str)] = match tier {
+            crate::auth::tier::Tier::Free => &[
+                ("milagro-m1-t1", "MAIC m1-t1 — 3B LoRA-distilled (fast)"),
+                ("milagro-m1-t2", "MAIC m1-t2 — 7B LoRA-distilled (mid)"),
+                (
+                    "milagro-m1-t3",
+                    "MAIC m1-t3 — 14B LoRA-distilled (top of t-series)",
+                ),
+                (
+                    "chat-nemotron-nano",
+                    "Cloud Nemotron 3 Nano 30B (NVIDIA MoE, 1.7s)",
+                ),
+            ],
+            _ => &[
+                (
+                    "milagro-dev",
+                    "MAIC default (miracle-claw) — 14B local generalist",
+                ),
+                ("milagro-dev-coder", "MAIC coder — 14B local code-tuned"),
+                ("milagro-m1", "MAIC m1 — base"),
+                ("milagro-m1-t1", "MAIC m1-t1 — 3B LoRA-distilled (fast)"),
+                ("milagro-m1-t2", "MAIC m1-t2 — 7B LoRA-distilled (mid)"),
+                (
+                    "milagro-m1-t3",
+                    "MAIC m1-t3 — 14B LoRA-distilled (top of t-series)",
+                ),
+                ("milagro-chat", "MAIC chat — small general baseline"),
+                ("milagro-coder", "MAIC coder — small-mid code baseline"),
+                ("milagro-stock", "MAIC stock — stock-specific small"),
+                (
+                    "milagro-oc-minimax",
+                    "Cloud cascade — MiniMax M3 (MiniMax-M3)",
+                ),
+                ("milagro-oc-glm", "Cloud cascade — OpenChat GLM"),
+                ("milagro-oc-qwen", "Cloud cascade — OpenChat Qwen"),
+                ("milagro-oc-deepseek", "Cloud cascade — OpenChat DeepSeek"),
+                ("milagro-oc-kimi", "Cloud cascade — OpenChat Kimi"),
+                ("chat-glm", "Cloud — GLM (direct)"),
+                ("chat-deepseek", "Cloud — DeepSeek (direct)"),
+                ("chat-qwen", "Cloud — Qwen (direct)"),
+                (
+                    "chat-nemotron-nano",
+                    "Cloud — Nemotron 3 Nano 30B A3B (NVIDIA MoE, 1.7s) — Free tier cloud fallback",
+                ),
+                (
+                    "chat-nemotron-super",
+                    "Cloud — Nemotron 3 Super 120B A12B (NVIDIA MoE, 1.8s)",
+                ),
+                (
+                    "chat-nemotron-ultra",
+                    "Cloud — Nemotron 3 Ultra 550B A55B (NVIDIA MoE, flagship)",
+                ),
+            ],
+        };
         // Lesson 1136: look up the per-model spec (defined in
         // merge_known_model_ids_into_provider above) so the seeded
         // entry ships with correct maxTokens / contextWindow /
@@ -1676,12 +1707,23 @@ fn ensure_maic_provider_config_for_tier(
                 "chat-nemotron-nano",
             ],
             _ => &[
-                "milagro-dev", "milagro-dev-coder", "milagro-m1",
-                "milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3",
-                "milagro-chat", "milagro-coder", "milagro-stock",
-                "milagro-oc-minimax", "milagro-oc-glm", "milagro-oc-qwen",
-                "milagro-oc-deepseek", "milagro-oc-kimi",
-                "chat-glm", "chat-deepseek", "chat-qwen",
+                "milagro-dev",
+                "milagro-dev-coder",
+                "milagro-m1",
+                "milagro-m1-t1",
+                "milagro-m1-t2",
+                "milagro-m1-t3",
+                "milagro-chat",
+                "milagro-coder",
+                "milagro-stock",
+                "milagro-oc-minimax",
+                "milagro-oc-glm",
+                "milagro-oc-qwen",
+                "milagro-oc-deepseek",
+                "milagro-oc-kimi",
+                "chat-glm",
+                "chat-deepseek",
+                "chat-qwen",
                 // Lesson 567 (2026-08-24 22:25 MDT, David): 3 NVIDIA Nemotron
                 // models — open MoE family available on Ollama Cloud via
                 // existing OLLAMA_API_KEY_1/2/3 subscriptions. Brings the
@@ -1701,7 +1743,9 @@ fn ensure_maic_provider_config_for_tier(
         // path would still seed bare `{id, name}` entries and trigger
         // the stopReason=length regression.
         for id in known_ids {
-            if present.contains(*id) { continue; }
+            if present.contains(*id) {
+                continue;
+            }
             let spec = MODEL_SPEC.iter().find(|(mid, _, _, _)| *mid == *id);
             let entry = match spec {
                 Some((_, max_tokens, ctx, reasoning)) => serde_json::json!({
@@ -1740,7 +1784,9 @@ fn ensure_maic_provider_config_for_tier(
         *params_obj = Value::Object(Default::default());
     }
     let params = params_obj.as_object_mut().unwrap();
-    params.entry("tool_execution".to_string()).or_insert(Value::String("client".to_string()));
+    params
+        .entry("tool_execution".to_string())
+        .or_insert(Value::String("client".to_string()));
 
     // v1.0.7 / Lesson 513 + Lesson 523 (NEW 2026-08-20): tier-gated tool
     // injection. The `entry_obj` is the in-memory entry being constructed
@@ -2019,28 +2065,28 @@ fn replace_secret_ref_with_literal() -> bool {
 // fallback walker has the chain it needs when the primary fails.
 //
 // Free  → primary = `maic/milagro-m1-t1`,     fallbacks = [t2, t3, nemotron-nano]
-// Paid  → primary = `maic/milagro-oc-glm`,   fallbacks = [MiniMax, kimi, t3]
+// Paid  → primary = `maic/chat-nemotron-super`, fallbacks = [nemotron-ultra, nemotron-nano, t3]
 //
-// ⚠️ Lesson 1422 (2026-10-21, David): the Paid line above is the
-// SEEDING DEFAULT, not what David actually runs. He moved Paid to
-// `maic/chat-nemotron-super` on 2026-10-07 (~42x cheaper, better
-// across the board) and reaffirmed it 2026-10-09. That lives in his
-// own `chat.json` under `agents.defaults.model.primary`.
+// ✅ Lesson 1432 (2026-10-23, David): the Paid seeding default is now
+// `maic/chat-nemotron-super` for EVERY paid tier — Starter,
+// StarterPlus, Pro, ProPlus, Team, Enterprise. This closes the gap
+// Lesson 1422 flagged: previously a cleared/re-migrated chat.json
+// re-seeded `milagro-oc-glm` and silently undid the Nemotron cost win.
 //
-// This function is non-destructive: it skips writing when the user
-// already has `agents.defaults.model`, so his nemotron choice is
-// preserved across normal launches. Confirmed live 2026-10-21 —
-// sidecar logged "already configured, no change" and the gateway
-// booted on `maic/chat-nemotron-super`.
+// WHY EVERY PAID TIER: Nemotron Super is 120B-class, ~1.8s, and
+// ~42x cheaper than the MiniMax/Kimi cascade it replaces. There is no
+// tier in the paid lineup where GLM/Kimi is the better primary.
 //
-// KNOWN GAP: a cleared/re-migrated chat.json would re-seed GLM and
-// silently undo the cost win. Not fixed yet; David hasn't been
-// asked. See memory/2026-10-21.md Lesson 1422.
+// The three legacy paid seeds (`milagro-oc-glm`, `milagro-oc-kimi`,
+// `milagro-dev`) and the Free seed (`milagro-m1-t1`) are recognized as
+// APP-SEEDED values and are MIGRATED to the current tier default on
+// the next run. A value that is NOT one of those is treated as a
+// deliberate manual pick and is NEVER overwritten. See Lesson 1432's
+// seed-marker implementation below (`_milagroTierSeed`).
 //
 // (Lesson 795 / rc55.12, 2026-08-30: Paid primary was switched from
 // `milagro-oc-kimi` → `milagro-oc-glm` because Kimi prefers openclaw
-// built-ins over plugin tools; GLM fires paid-tier tools reliably.
-// That choice was later superseded by the nemotron switch above.)
+// built-ins over plugin tools. Lesson 1432 supersedes that choice.)
 //
 // All entries are emitted with the `maic/` prefix (Lesson 521) so the
 // bundled openclaw gateway dispatches via the `maic` provider regardless
@@ -2059,7 +2105,7 @@ fn replace_secret_ref_with_literal() -> bool {
 pub(crate) fn ensure_agents_default_model_for_tier(
     tier: crate::auth::tier::Tier,
 ) -> io::Result<bool> {
-    use crate::auth::tier::{tier_default_model_id, tier_default_fallbacks};
+    use crate::auth::tier::{tier_default_fallbacks, tier_default_model_id};
 
     // Lesson 521: openclaw's gateway resolves a bare model id via
     // `inferUniqueProviderFromCatalog`, which only succeeds when the id is
@@ -2099,6 +2145,31 @@ pub(crate) fn ensure_agents_default_model_for_tier(
     // mutable borrow conflicts with the catalog lookup's immutable
     // borrow — separating the two prevents a borrow-checker tug-of-war.
     let maic_ids_snapshot = maic_model_ids_from_cfg(&cfg);
+
+    // Lesson 1432 (2026-10-23, David): read the root-level seed marker
+    // NOW — before we take the mutable borrow into `cfg` for
+    // `agents.defaults`. The borrow checker will not allow an immutable
+    // `cfg.get()` while `defaults` holds `&mut cfg`.
+    //
+    // The marker records what the app last seeded into
+    // `agents.defaults.model`, so we can tell "the user changed this"
+    // apart from "this is still our seeded default". See the decision
+    // table further down.
+    //
+    // WHY IT LIVES AT THE ROOT: openclaw's `AgentModelSchema` is
+    // `.strict()` (only `primary` + `fallbacks` allowed), so a marker
+    // key inside `agents.defaults.model` would make the gateway reject
+    // the entire config with `Invalid input` on boot. The root is safe
+    // — openclaw ignores unknown top-level keys.
+    let seed_marker = cfg
+        .get(MODEL_SEED_MARKER_KEY)
+        .and_then(|v| v.as_object())
+        .cloned();
+    let marker_primary: Option<String> = seed_marker
+        .as_ref()
+        .and_then(|m| m.get("primary"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
 
     // Walk to `agents.defaults`.
     let agents = cfg
@@ -2252,44 +2323,197 @@ pub(crate) fn ensure_agents_default_model_for_tier(
         prefix_applied = true;
     }
     if let Some(fb) = prefixed_fallbacks.as_ref() {
-        write_model_field(defaults, pre_migration_is_object_form, None, Some(fb.clone()));
+        write_model_field(
+            defaults,
+            pre_migration_is_object_form,
+            None,
+            Some(fb.clone()),
+        );
         prefix_applied = true;
     }
+    // NOTE (Lesson 1432): the prefix writes above are applied to the
+    // USER's model — they only add the `maic/` provider prefix, they
+    // never change WHICH model it is. If we're going to migrate a
+    // stale seeded primary to the tier default below, that migration
+    // write will replace the whole model object anyway, so the prefix
+    // write above is harmless (it gets overwritten with the already
+    // prefixed tier default).
 
     // Decide whether we need to seed defaults.
-    let needs_seed = pre_migration_primary.is_none();
+    //
+    // Lesson 1432 (2026-10-23, David): THIS WAS THE BUG THAT KEPT
+    // CUSTOMERS ON THE WRONG MODEL.
+    //
+    // The old logic was:
+    //     let needs_seed = pre_migration_primary.is_none();
+    //
+    // i.e. "only seed if there is no primary at all". That silently
+    // assumed ANY existing primary is a deliberate user choice. But the
+    // app seeds a Free-tier primary on FIRST LAUNCH — before the user
+    // has ever logged in (see the `Tier::Free` startup call). So for
+    // every customer the sequence was:
+    //
+    //   1. App start  → seeds `maic/milagro-m1-t1` (Free)
+    //   2. Login      → wants `maic/chat-nemotron-super` (Paid), but
+    //                   `needs_seed` is false → writes NOTHING
+    //   3. Chat panel → pre-selects catalog entry #0 (`milagro-dev`)
+    //                   → request body says `"model": "milagro-dev"`
+    //
+    // The startup comment even PROMISED this would work — "paid users
+    // will get their tier's chain overwritten on first login" — but the
+    // `needs_seed` guard made that promise false.
+    //
+    // Production symptom (2026-10-23): Brent
+    // (`brentwill42@gmail.com`, effective tier `pro` via org) ran 543
+    // requests over 3 days on `milagro-dev`. Logout/login did nothing,
+    // because logout doesn't clear `chat.json` and login's seed was a
+    // no-op. `championnm@yahoo.com` (same org, same effective tier) used
+    // `chat-nemotron-super` correctly — same entitlement, different
+    // `chat.json`. Proof this was client-state, not server routing.
+    //
+    // THE FIX: distinguish a SEEDED primary from a USER-CHOSEN one.
+    //
+    // We record what the app last seeded in a top-level marker key
+    // (`_milagroTierSeed`) holding `{ tier, primary }`. The marker lives
+    // at the ROOT of chat.json, NOT inside `agents.defaults.model` —
+    // `AgentModelSchema` is `.strict()` (only `primary` + `fallbacks`
+    // are allowed), so an extra key there would make the gateway reject
+    // the whole config with `Invalid input`.
+    //
+    // Decision table on every run:
+    //
+    //   current primary == marker.primary
+    //       → still the app's seeded value (user didn't change it)
+    //       → SAFE to migrate to the current tier's default
+    //
+    //   current primary != marker.primary
+    //       → the user changed it → PRESERVE, never touch
+    //
+    //   no marker (legacy install) + primary present
+    //       → ambiguous. Could be a pre-Lesson-1432 seed, or a manual
+    //         pick from before we tracked anything.
+    //       → We treat a KNOWN STALE TIER SEED as migratable, and any
+    //         other value as a manual pick (preserve). The set of
+    //         "known stale seeds" is every model id this app has ever
+    //         seeded as a tier default:
+    //           Free:  milagro-m1-t1
+    //           Paid:  milagro-oc-glm (Lesson 795),
+    //                  milagro-oc-kimi (Lesson 793),
+    //                  milagro-dev (Lesson 566 / catalog index 0)
+    //         A value NOT in that list is treated as a manual choice.
+    //
+    // This makes the original startup promise TRUE: a stale seeded
+    // primary migrates to the current tier default on login, while a
+    // genuine manual selection is never stomped.
+    //
+    // (`seed_marker` / `marker_primary` were read earlier, before the
+    // mutable borrow into `cfg` for `agents.defaults`.)
+
+    // Is the existing primary a value the APP seeded (as opposed to one
+    // the user picked)? See the decision table above.
+    //
+    // Lesson 1432: the marker carries an `owned` discriminator:
+    //   - `"seeded"` → the marker value is one WE wrote. If the current
+    //     primary still matches it, the user hasn't touched it → safe
+    //     to migrate to the new tier default.
+    //   - `"user"`   → the marker value is one the USER picked. We
+    //     recorded it so we know to leave it alone forever. Even
+    //     though it matches the marker, it is NOT migratable — the
+    //     equality here means "unchanged since we last saw it", not
+    //     "ours to change".
+    //
+    // A marker with no `owned` field (or an unknown value) is treated
+    // as `"seeded"` — that's the original Lesson-1432 semantics and
+    // the safe default for the legacy-install path.
+    let marker_owned_is_user = seed_marker
+        .as_ref()
+        .and_then(|m| m.get("owned"))
+        .and_then(|v| v.as_str())
+        .map(|s| s == "user")
+        .unwrap_or(false);
+
+    let existing_primary_is_app_seeded = match pre_migration_primary.as_deref() {
+        None => false,
+        Some(p) => {
+            if marker_owned_is_user {
+                // The marker explicitly says the user owns the current
+                // value. Never migrate, regardless of what it equals.
+                false
+            } else {
+                match marker_primary.as_deref() {
+                    // Marker present: the user still has exactly what we
+                    // seeded → migratable.
+                    Some(mp) => normalize_bare_model_id(p) == normalize_bare_model_id(mp),
+                    // No marker (legacy install): only migrate if the
+                    // value is one we know we seeded.
+                    None => is_known_tier_seed_model(p),
+                }
+            }
+        }
+    };
+
+    // `needs_seed` is true when there is no primary at all, OR when the
+    // primary is a stale app-seeded value that should follow the tier.
+    //
+    // Lesson 1432 (2026-10-23): a stale app-seeded value that ALREADY
+    // equals this tier's default is NOT a migration — it's already
+    // correct. We must not report a write in that case (the bool means
+    // "the MODEL config changed"), or every login on an already-correct
+    // install would look like a config change and re-seed downstream
+    // state. This is the `lesson_1425` contract.
+    let primary_already_matches_tier = pre_migration_primary
+        .as_deref()
+        .map(|p| normalize_bare_model_id(p) == normalize_bare_model_id(&default_primary))
+        .unwrap_or(false);
+
+    let needs_seed = pre_migration_primary.is_none()
+        || (existing_primary_is_app_seeded && !primary_already_matches_tier);
+    // When we're migrating a stale seeded primary we also want to
+    // refresh the fallback chain to match the tier.
+    let migrating_stale_seed = pre_migration_primary.is_some()
+        && existing_primary_is_app_seeded
+        && !primary_already_matches_tier;
+    // Lesson 1432: true when this run writes ONLY the root-level seed
+    // marker (the model itself is untouched). The fn's bool return means
+    // "the MODEL config changed", so a marker-only write must still
+    // return `false`.
+    let mut marker_only_write = false;
     // Decide whether we need to remove the top-level `fallbacks` key (it
     // would be rejected by the schema). When we remove it, we ALSO need
     // to lift those fallbacks into `model.fallbacks` (object form) so
     // the user doesn't silently lose them — rcher they were being
     // saved as preferences, even if rc55.14 stored them in the wrong
     // place.
-    let top_fallbacks_to_preserve: Option<Vec<String>> =
-        if defaults.as_object().map_or(false, |o| o.contains_key("fallbacks")) {
-            // Decide which fallbacks to lift:
-            // - if any are already inside model.fallbacks, merge them
-            //   (preserve user's old set + new top-level set).
-            // - if model is empty (None), use top-level as the seed.
-            // - if model has its own fallbacks, leave those alone (they
-            //   were valid) and drop top-level (user clearly had both
-            //   — they're not empty in two places by accident).
-            let existing_in_obj = pre_migration_in_object_fallbacks.clone();
-            let top = pre_migration_top_level_fallbacks_to_preserve.clone();
-            if existing_in_obj.is_empty() {
-                if top.is_empty() {
-                    None
-                } else {
-                    Some(top)
-                }
+    let top_fallbacks_to_preserve: Option<Vec<String>> = if defaults
+        .as_object()
+        .map_or(false, |o| o.contains_key("fallbacks"))
+    {
+        // Decide which fallbacks to lift:
+        // - if any are already inside model.fallbacks, merge them
+        //   (preserve user's old set + new top-level set).
+        // - if model is empty (None), use top-level as the seed.
+        // - if model has its own fallbacks, leave those alone (they
+        //   were valid) and drop top-level (user clearly had both
+        //   — they're not empty in two places by accident).
+        let existing_in_obj = pre_migration_in_object_fallbacks.clone();
+        let top = pre_migration_top_level_fallbacks_to_preserve.clone();
+        if existing_in_obj.is_empty() {
+            if top.is_empty() {
+                None
             } else {
-                // User already has in-object fallbacks. Just don't
-                // lift the stale top-level (it would dup).
-                Some(existing_in_obj)
+                Some(top)
             }
         } else {
-            None
-        };
-    let needs_remove_top_fallbacks = defaults.as_object().map_or(false, |o| o.contains_key("fallbacks"));
+            // User already has in-object fallbacks. Just don't
+            // lift the stale top-level (it would dup).
+            Some(existing_in_obj)
+        }
+    } else {
+        None
+    };
+    let needs_remove_top_fallbacks = defaults
+        .as_object()
+        .map_or(false, |o| o.contains_key("fallbacks"));
 
     // Lesson 1425 (2026-10-22, rc57.28): seed `agents.defaults.memorySearch`
     // so MC customers get working memory recall out of the box.
@@ -2329,33 +2553,73 @@ pub(crate) fn ensure_agents_default_model_for_tier(
         .as_object()
         .map_or(false, |o| o.contains_key("memorySearch"));
     if memory_search_missing && (needs_seed || prefix_applied || needs_remove_top_fallbacks) {
-        defaults
-            .as_object_mut()
-            .unwrap()
-            .insert(
-                "memorySearch".to_string(),
-                serde_json::json!({
-                    "enabled": true,
-                    // "none" => lexical FTS ranking only. No API key needed.
-                    // See comment above for why we don't default to "auto".
-                    "provider": "none",
-                    "experimental": { "sessionMemory": true },
-                    "sources": ["memory", "sessions"],
-                    "sync": {
-                        "onSessionStart": true,
-                        "onSearch": true,
-                        "watch": true
-                    }
-                }),
-            );
+        defaults.as_object_mut().unwrap().insert(
+            "memorySearch".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                // "none" => lexical FTS ranking only. No API key needed.
+                // See comment above for why we don't default to "auto".
+                "provider": "none",
+                "experimental": { "sessionMemory": true },
+                "sources": ["memory", "sessions"],
+                "sync": {
+                    "onSessionStart": true,
+                    "onSearch": true,
+                    "watch": true
+                }
+            }),
+        );
     }
 
     if !needs_seed && !prefix_applied && !needs_remove_top_fallbacks {
-        return Ok(false);
+        // Nothing to write for the model itself. But we may still need to
+        // refresh the seed marker so that a FUTURE run knows the current
+        // primary belongs to the user (and must be preserved) rather
+        // than being one of ours (and therefore migratable).
+        //
+        // Lesson 1432: without this, a manual pick would keep matching a
+        // stale marker and get stomped on the next tier change.
+        //
+        // The marker write is deferred to the persist step below so we
+        // don't need to re-borrow `cfg` while `defaults` holds it.
+        //
+        // A marker-only refresh is needed when EITHER:
+        //   - the marker is missing entirely (first run on this install),
+        //   - the marker disagrees with the current primary (the user
+        //     changed it since we last saw it), OR
+        //   - the marker says "seeded" but the current value is NOT a
+        //     known app seed — i.e. the user picked it. We must flip
+        //     the marker to "user" so a future tier change leaves it
+        //     alone.
+        let marker_matches = match (pre_migration_primary.as_deref(), marker_primary.as_deref()) {
+            (Some(p), Some(mp)) => normalize_bare_model_id(p) == normalize_bare_model_id(mp),
+            _ => false,
+        };
+        let current_is_known_seed = pre_migration_primary
+            .as_deref()
+            .map(is_known_tier_seed_model)
+            .unwrap_or(false);
+        let needs_marker_refresh = pre_migration_primary.is_some()
+            && (!marker_matches || (!marker_owned_is_user && !current_is_known_seed));
+        if !needs_marker_refresh {
+            return Ok(false);
+        }
+        // Fall through to the persist block, which writes ONLY the
+        // marker (no model change). The returned bool stays `false`
+        // because the MODEL config did not change.
+        marker_only_write = true;
     }
 
     if needs_seed {
         // Seed the OBJECT form: `model = {primary, fallbacks}`.
+        //
+        // Lesson 1432: when `migrating_stale_seed` is true we are
+        // REPLACING a stale app-seeded primary (e.g. the Free-seeded
+        // `milagro-m1-t1`, or the old paid `milagro-oc-glm`) with the
+        // current tier's default. We rewrite the whole object so the
+        // fallback chain matches the tier too. The user's manual picks
+        // never reach this branch — they're filtered out by
+        // `existing_primary_is_app_seeded`.
         let mut model_obj = serde_json::Map::new();
         model_obj.insert(
             "primary".to_string(),
@@ -2372,6 +2636,17 @@ pub(crate) fn ensure_agents_default_model_for_tier(
             .as_object_mut()
             .unwrap()
             .insert("model".to_string(), Value::Object(model_obj));
+    } else if migrating_stale_seed {
+        // The primary was a stale app-seeded value and we are NOT in the
+        // `needs_seed` branch only because... (defensive; currently
+        // `migrating_stale_seed` implies `needs_seed`). Keep this arm
+        // explicit so the intent survives future edits to the guard.
+        write_model_field(
+            defaults,
+            pre_migration_is_object_form,
+            Some(default_primary.as_str()),
+            Some(default_fallbacks.clone()),
+        );
     }
 
     // Lesson 829: if the user has top-level fallbacks (rc55.14 bad
@@ -2389,8 +2664,7 @@ pub(crate) fn ensure_agents_default_model_for_tier(
                     .and_then(|v| v.as_object_mut())
                 {
                     if !fb.is_empty() {
-                        let arr: Vec<Value> =
-                            fb.iter().map(|s| Value::String(s.clone())).collect();
+                        let arr: Vec<Value> = fb.iter().map(|s| Value::String(s.clone())).collect();
                         model_obj.insert("fallbacks".to_string(), Value::Array(arr));
                     }
                 }
@@ -2407,6 +2681,41 @@ pub(crate) fn ensure_agents_default_model_for_tier(
         defaults.as_object_mut().unwrap().remove("fallbacks");
     }
 
+    // Lesson 1432 (2026-10-23): the `defaults` borrow of `cfg` ends
+    // here, so we can write the root-level seed marker. The marker
+    // records what the app last seeded so a later run can tell "the
+    // user changed this" from "this is still our seeded default".
+    //
+    // NOTE: `defaults` is a `&mut serde_json::Value`, so `drop(defaults)`
+    // would be a no-op (it drops the reference, not the borrow). The
+    // borrow ends naturally at the end of the enclosing scope — which
+    // is why the marker write is in its own block below.
+
+    // Compute the marker value:
+    //   - If we just seeded/migrated → the marker records the value we
+    //     wrote, owned by the APP. Future runs know it's ours and
+    //     migratable.
+    //   - If we only refreshed the marker → the current primary is the
+    //     USER's pick. The marker records it, owned by the USER, so a
+    //     future tier change leaves it alone.
+    let marker_primary_value: String = if marker_only_write {
+        pre_migration_primary.clone().unwrap_or_default()
+    } else {
+        default_primary.clone()
+    };
+    let marker_owned: &str = if marker_only_write { "user" } else { "seeded" };
+    if let Some(root) = cfg.as_object_mut() {
+        root.insert(
+            MODEL_SEED_MARKER_KEY.to_string(),
+            serde_json::json!({
+                "tier": tier.as_str(),
+                "primary": marker_primary_value,
+                "owned": marker_owned,
+                "seededAt": chrono_like_now_iso(),
+            }),
+        );
+    }
+
     // Persist. Use atomic temp-file + rename so a crash mid-write doesn't
     // leave the user with a half-written openclaw.json.
     let serialized = serde_json::to_string_pretty(&cfg)
@@ -2418,9 +2727,19 @@ pub(crate) fn ensure_agents_default_model_for_tier(
     fs::write(&tmp, serialized)?;
     fs::rename(&tmp, &path)?;
 
+    if marker_only_write {
+        // Only the marker changed — the MODEL config is untouched, so
+        // the bool must stay `false` (callers interpret it as "the model
+        // config changed").
+        eprintln!(
+            "[miracle-claw] tier: recorded user-owned model selection (primary={marker_primary_value}) — preserving on future tier changes",
+        );
+        return Ok(false);
+    }
+
     eprintln!(
-        "[miracle-claw] tier: wrote agents.defaults.model primary={} fallbacks={:?} (tier={}, prefix_applied={})",
-        default_primary, default_fallbacks, tier.as_str(), prefix_applied
+        "[miracle-claw] tier: wrote agents.defaults.model primary={} fallbacks={:?} (tier={}, prefix_applied={}, migrating_stale_seed={})",
+        default_primary, default_fallbacks, tier.as_str(), prefix_applied, migrating_stale_seed
     );
     Ok(true)
 }
@@ -2436,7 +2755,9 @@ pub(crate) fn ensure_agents_default_model_for_tier(
 /// form (`milagro-oc-kimi` or `maic/milagro-oc-kimi`).
 #[allow(dead_code)]
 fn maic_provider_has_model_id(cfg: &serde_json::Value, id: &str) -> bool {
-    maic_model_ids_from_cfg(cfg).iter().any(|m| m == &normalize_bare_model_id(id))
+    maic_model_ids_from_cfg(cfg)
+        .iter()
+        .any(|m| m == &normalize_bare_model_id(id))
 }
 
 /// Lesson 824 helper: extract the set of bare model ids declared under
@@ -2471,6 +2792,102 @@ fn maic_model_ids_from_cfg(cfg: &serde_json::Value) -> Vec<String> {
 
 fn normalize_bare_model_id(id: &str) -> String {
     id.trim().trim_start_matches("maic/").trim().to_string()
+}
+
+/// Lesson 1432 (2026-10-23, David): root-level key in chat.json that
+/// records what the app last seeded into `agents.defaults.model`.
+///
+/// WHY IT EXISTS AT THE ROOT: openclaw's `AgentModelSchema` is
+/// `.strict()` — it accepts ONLY `primary` and `fallbacks`. Adding a
+/// marker key inside `agents.defaults.model` would make the gateway
+/// reject the ENTIRE config with `Invalid input` on boot. The
+/// `agents.defaults` object itself is NOT strict, but the safest place
+/// for app-private bookkeeping is the root, where openclaw ignores
+/// unknown keys entirely.
+///
+/// SHAPE: `{ tier: "pro", primary: "maic/chat-nemotron-super", seededAt: "..." }`
+///
+/// SEMANTICS: `primary` is the model id that was in effect the last
+/// time the app seeded. On the next run:
+///   - current primary == marker.primary → the user hasn't touched it →
+///     it's still ours → safe to migrate to a new tier default.
+///   - current primary != marker.primary → the user changed it → it's
+///     THEIRS → never touch it.
+const MODEL_SEED_MARKER_KEY: &str = "_milagroTierSeed";
+
+/// Lesson 1432 (2026-10-23, David): the complete set of model ids that
+/// this app has EVER written as a tier-seeded primary.
+///
+/// Used for the legacy-install case (a `chat.json` that predates the
+/// seed marker). Without a marker we can't tell whether an existing
+/// primary is ours or the user's, so we use a whitelist: if the value is
+/// one we seeded, treat it as ours and migrate it; if it's anything else,
+/// treat it as a manual pick and preserve it.
+///
+/// The history:
+///   - `milagro-dev`       — Lesson 566 / catalog index 0 (the default
+///                           `DEFAULT_MODEL_ID` the chat panel
+///                           pre-selects). This is the value Brent was
+///                           stuck on.
+///   - `milagro-oc-kimi`   — Lesson 793, paid default before GLM.
+///   - `milagro-oc-glm`    — Lesson 795, paid default until Lesson 1432.
+///   - `milagro-m1-t1`     — Lesson 569, the Free default that the
+///                           pre-login startup seed writes. THE most
+///                           common stale seed, because every install
+///                           writes it before login.
+///   - `milagro-m1-t2` /   — never seeded as a primary, but cheap to
+///     `milagro-m1-t3`       include as belt-and-suspenders.
+///   - `chat-nemotron-super` — the current paid default (Lesson 1432).
+///     Listing it means a paid user on the correct model is treated as
+///     "ours" and stays correct across tier changes.
+///   - `chat-nemotron-nano` — cheap Nemotron; include for safety.
+///
+/// NOTE: we deliberately do NOT include every model in the catalog. Only
+/// models we have actually shipped as an automatic default belong here.
+/// Adding a popular model to this list would make the app overwrite a
+/// customer's deliberate choice of it.
+fn is_known_tier_seed_model(id: &str) -> bool {
+    const KNOWN: &[&str] = &[
+        // Free seed (Lesson 569) — the pre-login startup seed.
+        "milagro-m1-t1",
+        // Paid seeds (Lessons 793, 795, 1432).
+        "milagro-dev",
+        "milagro-oc-kimi",
+        "milagro-oc-glm",
+        "chat-nemotron-super",
+        // Cheap Nemotron + local fallbacks (belt-and-suspenders).
+        "chat-nemotron-nano",
+        "milagro-m1-t2",
+        "milagro-m1-t3",
+    ];
+    let bare = normalize_bare_model_id(id);
+    KNOWN.iter().any(|k| *k == bare)
+}
+
+/// Lesson 1432: minimal UTC ISO-8601 timestamp for the seed marker.
+/// Hand-rolled (no chrono dependency) — we only need a sortable,
+/// human-readable stamp, not date math.
+fn chrono_like_now_iso() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // days -> y/m/d (civil-from-days, Howard Hinnant's algorithm)
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
 }
 
 /// Lesson 1425 (2026-10-22, rc57.28): seed `agents.defaults.memorySearch`
@@ -2674,9 +3091,7 @@ fn restore_maic_provider_secret_ref() -> bool {
         );
         if let Ok(serialized) = serde_json::to_string_pretty(&cfg) {
             if std::fs::write(&path, serialized).is_ok() {
-                eprintln!(
-                    "[miracle-claw] maic_logout: restored SecretRef in openclaw.json"
-                );
+                eprintln!("[miracle-claw] maic_logout: restored SecretRef in openclaw.json");
                 return true;
             }
         }
@@ -2736,9 +3151,7 @@ fn ensure_secrets_default_env_provider(cfg: &mut Value, env_var: &str, alias: &s
             .entry("allowlist".to_string())
             .or_insert_with(|| Value::Array(Vec::new()));
         if let Some(arr) = allowlist.as_array_mut() {
-            let already = arr
-                .iter()
-                .any(|v| v.as_str() == Some(env_var));
+            let already = arr.iter().any(|v| v.as_str() == Some(env_var));
             if !already {
                 arr.push(Value::String(env_var.to_string()));
             }
@@ -2832,10 +3245,7 @@ fn normalize_maic_base_url(value: &str) -> String {
         return value.to_string();
     }
     // Already has /v1? Leave alone.
-    if trimmed.ends_with("/v1")
-        || trimmed.contains("/v1/")
-        || trimmed.contains("/v1?")
-    {
+    if trimmed.ends_with("/v1") || trimmed.contains("/v1/") || trimmed.contains("/v1?") {
         return trimmed.to_string();
     }
     format!("{}/v1", trimmed)
@@ -2880,7 +3290,10 @@ fn url_origin_path(url: &str) -> Option<UrlOriginPath> {
     let slash = after_scheme.find('/').unwrap_or(after_scheme.len());
     let host = &after_scheme[..slash];
     let path_with_slash = &after_scheme[slash..];
-    let path = path_with_slash.trim_start_matches('/').trim_end_matches('/').to_string();
+    let path = path_with_slash
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .to_string();
     Some(UrlOriginPath {
         origin: format!("{}://{}", &url[..scheme_end], host),
         path,
@@ -2958,8 +3371,8 @@ fn read_system_openclaw_maic_key() -> io::Result<Option<String>> {
         return Ok(None);
     }
     let raw = fs::read_to_string(&path)?;
-    let parsed: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse: {e}")))?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse: {e}")))?;
     let key = parsed
         .get("models")
         .and_then(|m| m.get("providers"))
@@ -2979,8 +3392,8 @@ fn read_system_openclaw_maic_base_url() -> io::Result<Option<String>> {
         return Ok(None);
     }
     let raw = fs::read_to_string(&path)?;
-    let parsed: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse: {e}")))?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse: {e}")))?;
     let url = parsed
         .get("models")
         .and_then(|m| m.get("providers"))
@@ -3094,14 +3507,12 @@ fn wait_for_gateway_ready(port: u16, timeout: Duration) -> Result<(), String> {
 #[tauri::command]
 fn first_run_report(state: tauri::State<'_, AppState>) -> FirstRunReport {
     let launcher_spawned = state.launcher_child.lock().unwrap().is_some();
-    let gateway_ready =
-        TcpStream::connect(format!("127.0.0.1:{}", OPENCLAW_PORT)).is_ok();
+    let gateway_ready = TcpStream::connect(format!("127.0.0.1:{}", OPENCLAW_PORT)).is_ok();
     // Lesson TBD (2026-08-27): cheap registry read for installer-set flags.
     // On non-Windows this returns (false, "", false). PowerShell probe
     // for detailed voice status lives in the separate `voice_diagnostics`
     // command so we don't slow down boot.
-    let (voice_stack_installed, voice_stack_build, voice_clarity_opt_in) =
-        voice_first_run_report();
+    let (voice_stack_installed, voice_stack_build, voice_clarity_opt_in) = voice_first_run_report();
     // Read back what ensure_maic_provider_config() wrote so the chat panel
     // can show whether MAIC is wired. Default to "not configured" if the
     // config file is missing or unparseable.
@@ -3245,7 +3656,7 @@ struct VoiceDiagnostics {
 #[tauri::command]
 fn voice_diagnostics() -> VoiceDiagnostics {
     use std::process::Command;
-    
+
     // Single PowerShell invocation that gathers everything in one shot.
     // Output is a JSON object that we parse. Why one PS call instead of many:
     //   - One process spawn ~50ms, ten spawns ~500ms
@@ -3322,11 +3733,17 @@ if (-not $out.default_mic_name) {
 
 $out | ConvertTo-Json -Depth 5 -Compress
 "#;
-    
+
     let output = Command::new("powershell")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script])
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            ps_script,
+        ])
         .output();
-    
+
     let mut diag = VoiceDiagnostics {
         windows_build: String::new(),
         windows_build_number: 0,
@@ -3339,7 +3756,7 @@ $out | ConvertTo-Json -Depth 5 -Compress
         default_mic_name: String::new(),
         recommendations: Vec::new(),
     };
-    
+
     if let Ok(out) = output {
         let raw = String::from_utf8_lossy(&out.stdout).to_string();
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
@@ -3360,8 +3777,16 @@ $out | ConvertTo-Json -Depth 5 -Compress
             }
             if let Some(arr) = v.get("speech_fod_status").and_then(|x| x.as_array()) {
                 for entry in arr {
-                    let lang = entry.get("lang").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    let state = entry.get("state").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let lang = entry
+                        .get("lang")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let state = entry
+                        .get("state")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     diag.speech_fod_status.push((lang, state));
                 }
             }
@@ -3376,7 +3801,7 @@ $out | ConvertTo-Json -Depth 5 -Compress
             }
         }
     }
-    
+
     // Build recommendations list. Order matters — most important first.
     if !diag.mc_voice_stack_installed {
         diag.recommendations.push(
@@ -3406,7 +3831,7 @@ $out | ConvertTo-Json -Depth 5 -Compress
             "You're on Windows 10. Windows 11 24H2+ has Voice Clarity. Consider upgrading for the best voice experience.".to_string()
         );
     }
-    
+
     diag
 }
 
@@ -3529,7 +3954,9 @@ fn find_voice_native_capture_script() -> std::path::PathBuf {
     // dir at install time — see installer.nsi line 132.)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            let candidate = parent.join("installer-assets").join("mc-voice-native-capture.ps1");
+            let candidate = parent
+                .join("installer-assets")
+                .join("mc-voice-native-capture.ps1");
             if candidate.exists() {
                 return candidate;
             }
@@ -3587,16 +4014,20 @@ fn mc_voice_native_capture(
         .args([
             "-NoProfile",
             "-NonInteractive",
-            "-ExecutionPolicy", "Bypass",
-            "-File", script.to_string_lossy().as_ref(),
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            script.to_string_lossy().as_ref(),
             &timeout.to_string(),
         ])
         .output()
-        .map_err(|e| format!(
-            "Could not launch PowerShell for native voice capture: {e}. \
+        .map_err(|e| {
+            format!(
+                "Could not launch PowerShell for native voice capture: {e}. \
              PowerShell is required for SAPI 5 — verify it's installed \
              (it ships with every Windows 10/11 by default)."
-        ))?;
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -3620,11 +4051,8 @@ fn mc_voice_native_capture(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let trimmed = stdout.trim();
-    serde_json::from_str::<VoiceNativeCaptureResult>(trimmed).map_err(|e| {
-        format!(
-            "Could not parse native voice capture output: {e}. Raw: {trimmed}"
-        )
-    })
+    serde_json::from_str::<VoiceNativeCaptureResult>(trimmed)
+        .map_err(|e| format!("Could not parse native voice capture output: {e}. Raw: {trimmed}"))
 }
 
 #[cfg(not(windows))]
@@ -3835,10 +4263,7 @@ fn maic_login(
         let required_ok: u32 = 6;
         let stable_deadline = settle_start + Duration::from_secs(13);
         while std::time::Instant::now() < stable_deadline && consecutive_ok < required_ok {
-            match check_http_ready(
-                "http://127.0.0.1:28789/",
-                Duration::from_millis(750),
-            ) {
+            match check_http_ready("http://127.0.0.1:28789/", Duration::from_millis(750)) {
                 Ok(_) => {
                     consecutive_ok += 1;
                 }
@@ -3905,7 +4330,10 @@ fn maic_login(
     // Lesson 1425 (rc57.28): make sure memory recall works on first login.
     // Best-effort — never block login on it.
     if let Err(e) = ensure_memory_search_default() {
-        eprintln!("[miracle-claw] maic_login: WARNING — failed to seed memorySearch: {}", e);
+        eprintln!(
+            "[miracle-claw] maic_login: WARNING — failed to seed memorySearch: {}",
+            e
+        );
     }
 
     // Lesson 458 / v1.0.6: handle "Remember me" checkbox.
@@ -3922,11 +4350,9 @@ fn maic_login(
     // the failure and continue. The login still succeeds; they just won't
     // get silent relogin.
     if remember {
-        if let Err(e) = auto_relogin::stash_cached_credentials(
-            &resolved_email,
-            &password,
-            &endpoint,
-        ) {
+        if let Err(e) =
+            auto_relogin::stash_cached_credentials(&resolved_email, &password, &endpoint)
+        {
             eprintln!(
                 "[miracle-claw] maic_login: WARNING — failed to stash creds (silent relogin will not work): {}",
                 e
@@ -4076,9 +4502,7 @@ fn maic_logout(
 // ----------------------------------------------------------------------------
 
 #[tauri::command]
-fn silent_relogin(
-    state: tauri::State<'_, AppState>,
-) -> Result<Option<MaicLoginInfo>, String> {
+fn silent_relogin(state: tauri::State<'_, AppState>) -> Result<Option<MaicLoginInfo>, String> {
     log_to_file("silent_relogin: entered");
     // Determine the endpoint we'd be logging into: same resolution logic
     // as maic_login so a MAIC_API_URL override is honored.
@@ -4105,7 +4529,10 @@ fn silent_relogin(
                 "[miracle-claw] silent_relogin: failed to load cached creds: {}",
                 e
             );
-            log_to_file(&format!("silent_relogin: failed to load cached creds: {}", e));
+            log_to_file(&format!(
+                "silent_relogin: failed to load cached creds: {}",
+                e
+            ));
             return Err(format!("failed to load cached credentials: {}", e));
         }
     };
@@ -4126,7 +4553,10 @@ fn silent_relogin(
             log_to_file(&format!("silent_relogin: HTTP failed: {}", e));
             format!("silent relogin HTTP failed: {}", e)
         })?;
-    log_to_file(&format!("silent_relogin: HTTP response {} bytes", response_body.len()));
+    log_to_file(&format!(
+        "silent_relogin: HTTP response {} bytes",
+        response_body.len()
+    ));
 
     let parsed: serde_json::Value = serde_json::from_str(&response_body)
         .map_err(|e| format!("silent relogin response could not be parsed: {}", e))?;
@@ -4156,7 +4586,10 @@ fn silent_relogin(
     // for Free→Pro upgrades mid-session where the original bootstrap
     // wrote an empty tools array.
     let parsed_tier = crate::auth::tier::Tier::from_str(&tier);
-    log_to_file(&format!("silent_relogin: ensure_maic_provider_config_for_tier({:?})", parsed_tier));
+    log_to_file(&format!(
+        "silent_relogin: ensure_maic_provider_config_for_tier({:?})",
+        parsed_tier
+    ));
     let _ = ensure_maic_provider_config_for_tier(parsed_tier);
     log_to_file("silent_relogin: replace_secret_ref_with_literal starting");
     let _ = replace_secret_ref_with_literal();
@@ -4176,14 +4609,20 @@ fn silent_relogin(
     // path that upgrades existing installs, where memorySearch will still be
     // missing from a config written before rc57.28.
     if let Err(e) = ensure_memory_search_default() {
-        eprintln!("[miracle-claw] silent_relogin: WARNING — failed to seed memorySearch: {}", e);
+        eprintln!(
+            "[miracle-claw] silent_relogin: WARNING — failed to seed memorySearch: {}",
+            e
+        );
     }
 
     eprintln!(
         "[miracle-claw] silent_relogin: success — user={}, tier={}",
         resolved_email, tier
     );
-    log_to_file(&format!("silent_relogin: success — user={}, tier={}", resolved_email, tier));
+    log_to_file(&format!(
+        "silent_relogin: success — user={}, tier={}",
+        resolved_email, tier
+    ));
 
     // Lesson 1013 (2026-09-23, David): kill the launcher sidecar so the
     // gateway picks up the new JWT on next respawn. Same reasoning as
@@ -4219,11 +4658,7 @@ fn silent_relogin(
 /// Both HTTPS (https://maicserver.com) and plain HTTP (localhost self-hosted)
 /// endpoints are supported. Returns the response body as a String on 2xx,
 /// or an io::Error with the server's status + body excerpt on failure.
-fn http_post_json_with_tls_fallback(
-    base: &str,
-    path: &str,
-    body: &str,
-) -> io::Result<String> {
+fn http_post_json_with_tls_fallback(base: &str, path: &str, body: &str) -> io::Result<String> {
     let url = format!(
         "{}/{}",
         base.trim_end_matches('/'),
@@ -4245,15 +4680,19 @@ fn http_post_json_with_tls_fallback(
     match resp {
         Ok(r) => {
             let status = r.status();
-            let body = r
-                .into_string()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("read body: {e}")))?;
+            let body = r.into_string().map_err(|e| {
+                io::Error::new(io::ErrorKind::InvalidData, format!("read body: {e}"))
+            })?;
             if (200..300).contains(&status) {
                 Ok(body)
             } else {
                 Err(io::Error::new(
                     io::ErrorKind::Other,
-                    format!("HTTP {} — {}", status, body.chars().take(300).collect::<String>()),
+                    format!(
+                        "HTTP {} — {}",
+                        status,
+                        body.chars().take(300).collect::<String>()
+                    ),
                 ))
             }
         }
@@ -4263,7 +4702,11 @@ fn http_post_json_with_tls_fallback(
                 .unwrap_or_else(|_| "(no body)".to_string());
             Err(io::Error::new(
                 io::ErrorKind::Other,
-                format!("HTTP {} — {}", code, body.chars().take(300).collect::<String>()),
+                format!(
+                    "HTTP {} — {}",
+                    code,
+                    body.chars().take(300).collect::<String>()
+                ),
             ))
         }
         Err(e) => Err(io::Error::new(io::ErrorKind::Other, format!("{e}"))),
@@ -4302,7 +4745,8 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 None => "<non-string panic payload>".to_string(),
             },
         };
-        let location = info.location()
+        let location = info
+            .location()
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
             .unwrap_or_else(|| "<unknown location>".to_string());
         log_to_file(&format!(
@@ -4310,16 +4754,17 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         ));
     }));
 
-    eprintln!(
-        "[miracle-claw] setup: resources = {}",
-        resources.display()
-    );
+    eprintln!("[miracle-claw] setup: resources = {}", resources.display());
 
     // 1. Install MAIC plugin if needed.
     match copy_maic_plugin_if_needed(&resources) {
-        Ok((CopyResult::AlreadyPresent, _)) => eprintln!("[miracle-claw] maic plugin: present (no change)"),
+        Ok((CopyResult::AlreadyPresent, _)) => {
+            eprintln!("[miracle-claw] maic plugin: present (no change)")
+        }
         Ok((CopyResult::Installed, _)) => eprintln!("[miracle-claw] maic plugin: installed fresh"),
-        Ok((CopyResult::SourceMissing, _)) => eprintln!("[miracle-claw] maic plugin: source missing in bundle (skipping)"),
+        Ok((CopyResult::SourceMissing, _)) => {
+            eprintln!("[miracle-claw] maic plugin: source missing in bundle (skipping)")
+        }
         Err(e) => eprintln!("[miracle-claw] maic plugin install error: {}", e),
     }
 
@@ -4348,7 +4793,10 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         migration::MigrationOutcome::NoOp { active } => {
-            eprintln!("[miracle-claw] user config: no migration needed ({})", active.display());
+            eprintln!(
+                "[miracle-claw] user config: no migration needed ({})",
+                active.display()
+            );
         }
         migration::MigrationOutcome::RolledBack { reason, from } => {
             eprintln!(
@@ -4386,7 +4834,18 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     //     We pass `Tier::Free` here (the conservative default).
     //     `maic_login` re-runs this with the user's actual tier on
     //     successful login, so a Free default is correct: paid users
-    //     will get their tier's chain overwritten on first login.
+    //     WILL get their tier's chain overwritten on first login.
+    //
+    //     Lesson 1432 (2026-10-23, David): that promise is now TRUE.
+    //     It used to be false — the old `needs_seed` guard treated any
+    //     existing primary as a deliberate user choice, so the Free
+    //     seed written here survived login and left customers on the
+    //     wrong model (see the `existing_primary_is_app_seeded`
+    //     decision table in `ensure_agents_default_model_for_tier`).
+    //     The seed marker (`_milagroTierSeed`) now distinguishes an
+    //     APP-seeded primary from a USER-chosen one, so this startup
+    //     seed migrates to Nemotron on paid login while a genuine
+    //     manual pick is preserved.
     //
     //     This function is idempotent (Lesson 517): if the user
     //     already has `agents.defaults.model` set, we leave it alone
@@ -4407,7 +4866,11 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     //    config; openclaw 2026.7.1+ auto-discovers plugins from <stateDir>/extensions).
     match check_openclaw_json() {
         Ok(()) => eprintln!("[miracle-claw] {}: ok", openclaw_json_path().display()),
-        Err(e) => eprintln!("[miracle-claw] {} read error: {}", openclaw_json_path().display(), e),
+        Err(e) => eprintln!(
+            "[miracle-claw] {} read error: {}",
+            openclaw_json_path().display(),
+            e
+        ),
     }
 
     // 4a. Lesson 713 (2026-08-28, David): restore BYO provider keys
@@ -4451,19 +4914,14 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(e) => {
                 eprintln!("[miracle-claw] gateway NOT ready: {}", e);
-                log_to_file(&format!(
-                    "setup(): spawn_launcher_and_wait Err — {}",
-                    e
-                ));
+                log_to_file(&format!("setup(): spawn_launcher_and_wait Err — {}", e));
             }
         }
     } else {
         eprintln!(
             "[miracle-claw] LoginRequired — deferring launcher spawn until maic_login completes"
         );
-        log_to_file(
-            "setup(): LoginRequired — deferring launcher spawn until maic_login completes",
-        );
+        log_to_file("setup(): LoginRequired — deferring launcher spawn until maic_login completes");
     }
 
     // 6. Create the main dashboard window programmatically (Lesson 491,
@@ -4487,9 +4945,7 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     //    We embed the bridge JS via `include_str!` so it ships in the
     //    binary (no runtime file lookup, no path resolution).
     if let Err(e) = create_main_window(&app_handle) {
-        log_to_file(&format!(
-            "setup(): create_main_window FAILED: {e}"
-        ));
+        log_to_file(&format!("setup(): create_main_window FAILED: {e}"));
         eprintln!("[miracle-claw] main window creation failed: {}", e);
         // Not fatal — Tauri might still have created it via a fallback.
         // setup() continues so the user at least sees a launcher process.
@@ -4553,10 +5009,7 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         // so the registered Tauri state type is Arc<PairingCommands>.
         // Pull the Arc out (cloned) to share with the HTTP server thread
         // and the heartbeat thread.
-        let cmds: Arc<PairingCommands> = app_handle
-            .state::<Arc<PairingCommands>>()
-            .inner()
-            .clone();
+        let cmds: Arc<PairingCommands> = app_handle.state::<Arc<PairingCommands>>().inner().clone();
         // Phase 2.4 (NEW 2026-09-08, Home Claw): if this desktop has been
         // registered before, rehydrate the saved identity (instance_id +
         // X25519 keypair) so the next heartbeat advertises the same
@@ -4571,12 +5024,10 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-
-        let bind_addr: std::net::SocketAddr =
-            std::env::var("MC_PAIRING_BIND")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
+        let bind_addr: std::net::SocketAddr = std::env::var("MC_PAIRING_BIND")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
         match crate::pairing_server::start(0, cmds.clone(), bind_addr) {
             Ok(server_state_arc) => {
                 let port = server_state_arc.bound_port();
@@ -4589,10 +5040,8 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 // Spawn the heartbeat with a clone of the Arc. The
                 // heartbeat reads the server's bound_port each tick to
                 // build the endpoint URL advertised to MAIC.
-                let hb_state = crate::pairing_heartbeat::start(
-                    cmds.clone(),
-                    Arc::clone(&server_state_arc),
-                );
+                let hb_state =
+                    crate::pairing_heartbeat::start(cmds.clone(), Arc::clone(&server_state_arc));
                 *state.pairing_heartbeat.lock().unwrap() = Some(hb_state);
                 *state.pairing_server.lock().unwrap() = Some(server_state_arc);
             }
@@ -4685,108 +5134,103 @@ fn create_main_window(app_handle: &tauri::AppHandle) -> Result<(), String> {
     // the same instant they opened the chat window). Most builds will
     // overwrite the fallback with the on_page_load value.
     let app_handle_for_load = app_handle.clone();
-    let builder = WebviewWindowBuilder::new(
-        app_handle,
-        "main",
-        WebviewUrl::App("index.html".into()),
-    )
-    .title("MiracleClaw")
-    .inner_size(1200.0, 820.0)
-    .min_inner_size(800.0, 560.0)
-    .resizable(true)
-    .center()
-    .visible(true)
-    .decorations(true)
-    .initialization_script(bridge_js);
+    let builder =
+        WebviewWindowBuilder::new(app_handle, "main", WebviewUrl::App("index.html".into()))
+            .title("MiracleClaw")
+            .inner_size(1200.0, 820.0)
+            .min_inner_size(800.0, 560.0)
+            .resizable(true)
+            .center()
+            .visible(true)
+            .decorations(true)
+            .initialization_script(bridge_js);
     let window = builder
         .on_page_load(move |_webview, payload| {
-        // Lesson 538 (rc32): `on_page_load` fires for EVERY page-load,
-        // not just the first one. That includes when the user navigates
-        // from the dashboard INTO the chat (URL becomes
-        // `http://127.0.0.1:28789/chat?...`). If we kept overwriting,
-        // the chat-page URL would clobber the dashboard URL, and the
-        // next ← Dashboard click would navigate BACK to the chat URL
-        // (causing the login flicker David reported 2026-08-22 11:27 MDT).
-        //
-        // Fix: only capture URLs whose host is `tauri.localhost` (the
-        // bundled dashboard). Anything else (chat gateway at
-        // `127.0.0.1:28789`, `about:blank`, future pages) is ignored.
-        // Once captured, lock the value so chat navigations don't
-        // overwrite it.
-        let url = payload.url().to_string();
+            // Lesson 538 (rc32): `on_page_load` fires for EVERY page-load,
+            // not just the first one. That includes when the user navigates
+            // from the dashboard INTO the chat (URL becomes
+            // `http://127.0.0.1:28789/chat?...`). If we kept overwriting,
+            // the chat-page URL would clobber the dashboard URL, and the
+            // next ← Dashboard click would navigate BACK to the chat URL
+            // (causing the login flicker David reported 2026-08-22 11:27 MDT).
+            //
+            // Fix: only capture URLs whose host is `tauri.localhost` (the
+            // bundled dashboard). Anything else (chat gateway at
+            // `127.0.0.1:28789`, `about:blank`, future pages) is ignored.
+            // Once captured, lock the value so chat navigations don't
+            // overwrite it.
+            let url = payload.url().to_string();
 
-        // Defensive: skip about:blank so the immediate-post-build race
-        // doesn't poison the captured value (Lesson 537 anti-pattern).
-        if url == "about:blank" {
-            return;
-        }
+            // Defensive: skip about:blank so the immediate-post-build race
+            // doesn't poison the captured value (Lesson 537 anti-pattern).
+            if url == "about:blank" {
+                return;
+            }
 
-        // Only capture URLs from the bundled dashboard asset server.
-        // Both Windows (http://tauri.localhost/...) and Linux/macOS
-        // (tauri://localhost/...) variants accepted. Chat URLs
-        // (http://127.0.0.1:28789/...) and anything else are ignored.
-        let is_dashboard_url = url.starts_with("http://tauri.localhost")
-            || url.starts_with("https://tauri.localhost")
-            || url.starts_with("tauri://localhost")
-            || url.starts_with("http://localhost")
-            || url.starts_with("https://localhost");
-        if !is_dashboard_url {
-            log_to_file(&format!(
-                "create_main_window: on_page_load: ignoring non-dashboard URL = {url}"
-            ));
-            return;
-        }
+            // Only capture URLs from the bundled dashboard asset server.
+            // Both Windows (http://tauri.localhost/...) and Linux/macOS
+            // (tauri://localhost/...) variants accepted. Chat URLs
+            // (http://127.0.0.1:28789/...) and anything else are ignored.
+            let is_dashboard_url = url.starts_with("http://tauri.localhost")
+                || url.starts_with("https://tauri.localhost")
+                || url.starts_with("tauri://localhost")
+                || url.starts_with("http://localhost")
+                || url.starts_with("https://localhost");
+            if !is_dashboard_url {
+                log_to_file(&format!(
+                    "create_main_window: on_page_load: ignoring non-dashboard URL = {url}"
+                ));
+                return;
+            }
 
-        if let Some(state) = app_handle_for_load.try_state::<AppState>() {
-            // Two-step: check the lock first (cheap), then take the
-            // dashboard_url lock to update. Use the lock flag to avoid
-            // a race where two `on_page_load` events arrive concurrently.
-            let already_locked = match state.dashboard_url_locked.lock() {
-                Ok(g) => *g,
-                Err(_) => {
-                    log_to_file(
+            if let Some(state) = app_handle_for_load.try_state::<AppState>() {
+                // Two-step: check the lock first (cheap), then take the
+                // dashboard_url lock to update. Use the lock flag to avoid
+                // a race where two `on_page_load` events arrive concurrently.
+                let already_locked = match state.dashboard_url_locked.lock() {
+                    Ok(g) => *g,
+                    Err(_) => {
+                        log_to_file(
                         "create_main_window: on_page_load: dashboard_url_locked mutex poisoned; \
                          skipping (treating as locked)",
                     );
-                    true
-                }
-            };
-            if already_locked {
-                return;
-            }
-            match state.dashboard_url.lock() {
-                Ok(mut guard) => {
-                    *guard = Some(url.clone());
-                    log_to_file(&format!(
-                        "create_main_window: on_page_load: saved dashboard URL = {url} \
-                         (locked, future page-loads will not overwrite)"
-                    ));
-                }
-                Err(_) => {
-                    log_to_file(
-                        "create_main_window: on_page_load: dashboard_url mutex poisoned; skipping",
-                    );
+                        true
+                    }
+                };
+                if already_locked {
                     return;
                 }
-            }
-            // Set the lock AFTER successfully writing the URL.
-            match state.dashboard_url_locked.lock() {
-                Ok(mut g) => *g = true,
-                Err(_) => {
-                    log_to_file(
-                        "create_main_window: on_page_load: dashboard_url_locked mutex \
-                         poisoned on lock-set; URL saved but lock flag may not be set",
+                match state.dashboard_url.lock() {
+                    Ok(mut guard) => {
+                        *guard = Some(url.clone());
+                        log_to_file(&format!(
+                            "create_main_window: on_page_load: saved dashboard URL = {url} \
+                         (locked, future page-loads will not overwrite)"
+                        ));
+                    }
+                    Err(_) => {
+                        log_to_file(
+                        "create_main_window: on_page_load: dashboard_url mutex poisoned; skipping",
                     );
+                        return;
+                    }
                 }
+                // Set the lock AFTER successfully writing the URL.
+                match state.dashboard_url_locked.lock() {
+                    Ok(mut g) => *g = true,
+                    Err(_) => {
+                        log_to_file(
+                            "create_main_window: on_page_load: dashboard_url_locked mutex \
+                         poisoned on lock-set; URL saved but lock flag may not be set",
+                        );
+                    }
+                }
+            } else {
+                log_to_file("create_main_window: on_page_load: AppState not yet managed; skipping");
             }
-        } else {
-            log_to_file(
-                "create_main_window: on_page_load: AppState not yet managed; skipping",
-            );
-        }
-    })
-    .build()
-    .map_err(|e| format!("WebviewWindowBuilder::build() failed for main window: {e}"))?;
+        })
+        .build()
+        .map_err(|e| format!("WebviewWindowBuilder::build() failed for main window: {e}"))?;
 
     // Lesson 834 (NEW 2026-09-08 17:56 MDT, David): set the window icon
     // AFTER build via `WebviewWindow::set_icon(&self, ...)` because the
@@ -5047,10 +5491,7 @@ fn kill_orphan_holding_port(port: u16) -> Result<(), String> {
                     );
                 }
                 Err(e) => {
-                    log_to_file(&format!(
-                        "Lesson 462: taskkill invocation failed: {}",
-                        e
-                    ));
+                    log_to_file(&format!("Lesson 462: taskkill invocation failed: {}", e));
                     eprintln!(
                         "[miracle-claw] Lesson 462: taskkill invocation failed: {}",
                         e
@@ -5066,9 +5507,7 @@ fn kill_orphan_holding_port(port: u16) -> Result<(), String> {
         // v1.0.9-rc2 (David 13:32 MDT): verify the kill actually worked.
         // If the port is STILL bound after the kill+sleep, the kill failed
         // and we should report that loudly instead of silently proceeding.
-        let verify = Command::new("netstat")
-            .args(["-ano"])
-            .output();
+        let verify = Command::new("netstat").args(["-ano"]).output();
         if let Ok(out) = verify {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let still_bound: Vec<&str> = stdout
@@ -5116,14 +5555,20 @@ fn check_http_ready(url: &str, timeout: std::time::Duration) -> Result<u16, Stri
         Some(idx) => (&host_port[..idx], &host_port[idx + 1..]),
         None => (host_port, "80"),
     };
-    let host = if host == "localhost" { "127.0.0.1" } else { host };
+    let host = if host == "localhost" {
+        "127.0.0.1"
+    } else {
+        host
+    };
     let port: u16 = port.parse().map_err(|e| format!("invalid port: {e}"))?;
 
     // Connect TCP with timeout.
     use std::io::{Read, Write};
     use std::net::TcpStream;
     let stream = TcpStream::connect_timeout(
-        &format!("{host}:{port}").parse().map_err(|e| format!("invalid addr: {e}"))?,
+        &format!("{host}:{port}")
+            .parse()
+            .map_err(|e| format!("invalid addr: {e}"))?,
         timeout,
     )
     .map_err(|e| format!("TCP connect failed: {e}"))?;
@@ -5136,9 +5581,7 @@ fn check_http_ready(url: &str, timeout: std::time::Duration) -> Result<u16, Stri
     let mut stream = stream;
 
     // Send a minimal HTTP/1.1 GET. No Host header tricks, no body.
-    let req = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
-    );
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
     stream
         .write_all(req.as_bytes())
         .map_err(|e| format!("write failed: {e}"))?;
@@ -5245,23 +5688,23 @@ fn spawn_launcher_and_wait(
     // post-mortem debugging. Tagged lines like "[launcher.stderr] <msg>"
     // make it trivial to filter the log for gateway-side failures.
     let log_path = log_file_path(); // captured before move into thread
-    // Lesson 1140 (2026-10-08, David): tap the sidecar's stderr for
-    // `[MC-401]` markers and fire `silent_relogin` when we see one.
-    // The openclaw gateway (which the Tauri MC chat webview is
-    // pointed at) embeds the same MAIC plugin the embedded
-    // `mc-terminal` TUI uses, so the plugin emits the same markers
-    // on the same kind of 401. Until this fix the sidecar's stderr
-    // was piped to eprintln! + log file only — the marker went to
-    // /dev/null and the user had to manually re-auth when their
-    // JWT expired.
-    //
-    // We use a per-line accumulator (the launcher's stderr comes as
-    // raw byte chunks via `CommandEvent::Stderr`, not as a `Read`
-    // we can `BufRead::read_line` on) and pass each complete line
-    // through `scan_stderr_for_mc401`. The non-marker line still
-    // gets printed to eprintln! and written to the log file
-    // exactly as before — we don't change the visible stderr
-    // behavior, only tap it for the marker.
+                                    // Lesson 1140 (2026-10-08, David): tap the sidecar's stderr for
+                                    // `[MC-401]` markers and fire `silent_relogin` when we see one.
+                                    // The openclaw gateway (which the Tauri MC chat webview is
+                                    // pointed at) embeds the same MAIC plugin the embedded
+                                    // `mc-terminal` TUI uses, so the plugin emits the same markers
+                                    // on the same kind of 401. Until this fix the sidecar's stderr
+                                    // was piped to eprintln! + log file only — the marker went to
+                                    // /dev/null and the user had to manually re-auth when their
+                                    // JWT expired.
+                                    //
+                                    // We use a per-line accumulator (the launcher's stderr comes as
+                                    // raw byte chunks via `CommandEvent::Stderr`, not as a `Read`
+                                    // we can `BufRead::read_line` on) and pass each complete line
+                                    // through `scan_stderr_for_mc401`. The non-marker line still
+                                    // gets printed to eprintln! and written to the log file
+                                    // exactly as before — we don't change the visible stderr
+                                    // behavior, only tap it for the marker.
     let stderr_acc: std::sync::Arc<std::sync::Mutex<Vec<u8>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let stderr_log_path = log_path.clone();
@@ -5312,39 +5755,33 @@ fn spawn_launcher_and_wait(
                     let detected_line: Option<String> = {
                         let mut acc = acc_clone.lock().unwrap();
                         let mut found: Option<String> = None;
-                        scan_stdout_for_maic_401(
-                            &mut acc,
-                            &bytes,
-                            |line| {
-                                // Rate-limit: only fire
-                                // silent_relogin if it's been
-                                // >=30s since the last one.
-                                let now_ms = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_millis() as i64)
-                                    .unwrap_or(0);
-                                let last_ms = last_clone.load(
-                                    std::sync::atomic::Ordering::Relaxed,
-                                );
-                                if now_ms - last_ms < 30_000 {
-                                    return; // too soon
-                                }
-                                // Try to claim the slot: only one
-                                // thread can win the CAS. If we
-                                // lose, someone else already
-                                // fired within 30s.
-                                let prev = last_clone.compare_exchange(
-                                    last_ms,
-                                    now_ms,
-                                    std::sync::atomic::Ordering::Relaxed,
-                                    std::sync::atomic::Ordering::Relaxed,
-                                );
-                                if prev.is_err() {
-                                    return; // race lost
-                                }
-                                found = Some(line.to_string());
-                            },
-                        );
+                        scan_stdout_for_maic_401(&mut acc, &bytes, |line| {
+                            // Rate-limit: only fire
+                            // silent_relogin if it's been
+                            // >=30s since the last one.
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as i64)
+                                .unwrap_or(0);
+                            let last_ms = last_clone.load(std::sync::atomic::Ordering::Relaxed);
+                            if now_ms - last_ms < 30_000 {
+                                return; // too soon
+                            }
+                            // Try to claim the slot: only one
+                            // thread can win the CAS. If we
+                            // lose, someone else already
+                            // fired within 30s.
+                            let prev = last_clone.compare_exchange(
+                                last_ms,
+                                now_ms,
+                                std::sync::atomic::Ordering::Relaxed,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                            if prev.is_err() {
+                                return; // race lost
+                            }
+                            found = Some(line.to_string());
+                        });
                         found
                     };
                     if let Some(line) = detected_line {
@@ -5389,7 +5826,9 @@ fn spawn_launcher_and_wait(
                                     ));
                                 }
                             }
-                            log_to_file("MAIC 401 detector: silent_relogin() returned, thread exiting");
+                            log_to_file(
+                                "MAIC 401 detector: silent_relogin() returned, thread exiting",
+                            );
                         });
                     }
                     let s = String::from_utf8_lossy(&bytes);
@@ -5397,7 +5836,9 @@ fn spawn_launcher_and_wait(
                     let _ = std::io::stderr().flush();
                     if let Some(p) = &stdout_log_path {
                         if let Ok(mut f) = std::fs::OpenOptions::new()
-                            .create(true).append(true).open(p)
+                            .create(true)
+                            .append(true)
+                            .open(p)
                         {
                             use std::io::Write as _;
                             let _ = writeln!(f, "[launcher.stdout] {}", s);
@@ -5450,7 +5891,9 @@ fn spawn_launcher_and_wait(
                     let _ = std::io::stderr().flush();
                     if let Some(p) = &stderr_log_path {
                         if let Ok(mut f) = std::fs::OpenOptions::new()
-                            .create(true).append(true).open(p)
+                            .create(true)
+                            .append(true)
+                            .open(p)
                         {
                             use std::io::Write as _;
                             let _ = writeln!(f, "[launcher.stderr] {}", s);
@@ -5541,7 +5984,8 @@ fn start_gateway_after_login(
     let tcp_open = std::net::TcpStream::connect_timeout(
         &"127.0.0.1:28789".parse().unwrap(),
         std::time::Duration::from_millis(300),
-    ).is_ok();
+    )
+    .is_ok();
     if tcp_open {
         match check_http_ready(
             "http://127.0.0.1:28789/",
@@ -5580,15 +6024,11 @@ fn start_gateway_after_login(
     // defensive against repeated calls), kill it before spawning a new one.
     if let Some(prev) = state.launcher_child.lock().unwrap().take() {
         eprintln!("[miracle-claw] killing previous launcher before respawn");
-        log_to_file(
-            "start_gateway_after_login: killing previous launcher handle before respawn",
-        );
+        log_to_file("start_gateway_after_login: killing previous launcher handle before respawn");
         let _ = prev.kill();
     }
 
-    log_to_file(
-        "start_gateway_after_login: spawn_launcher_and_wait start (after login)",
-    );
+    log_to_file("start_gateway_after_login: spawn_launcher_and_wait start (after login)");
     let result = spawn_launcher_and_wait(&app_handle, OPENCLAW_PORT, Duration::from_secs(30));
     log_to_file(&format!(
         "start_gateway_after_login: spawn_launcher_and_wait returned {:?}",
@@ -5657,9 +6097,7 @@ fn mc_refresh_gateway(
 /// Returns Ok("created") if a new window was spawned, Ok("focused") if
 /// an existing one was brought to front, Err(msg) on failure.
 #[tauri::command]
-fn openclaw_open_window(
-    app_handle: tauri::AppHandle,
-) -> Result<&'static str, String> {
+fn openclaw_open_window(app_handle: tauri::AppHandle) -> Result<&'static str, String> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // Lesson 491 (rc13): navigate the existing main webview to the chat
@@ -5727,7 +6165,10 @@ fn openclaw_open_window(
     let mut last_err: Option<String> = None;
     let mut http_ok = false;
     for attempt in 1..=6 {
-        match check_http_ready("http://127.0.0.1:28789/", std::time::Duration::from_millis(2000)) {
+        match check_http_ready(
+            "http://127.0.0.1:28789/",
+            std::time::Duration::from_millis(2000),
+        ) {
             Ok(status) => {
                 eprintln!(
                     "[miracle-claw] openclaw-chat: gateway HTTP / returned {} (attempt {})",
@@ -5804,9 +6245,11 @@ fn openclaw_open_window(
     // `window.location.host === '127.0.0.1:28789'` and overlays a
     // "← Dashboard" pill in the top-left that calls back into
     // `openclaw_back_to_dashboard` to restore the dashboard.
-    if let Err(e) = main_window.navigate(chat_url.parse().map_err(|err| {
-        format!("invalid chat_url {chat_url:?}: {err}")
-    })?) {
+    if let Err(e) = main_window.navigate(
+        chat_url
+            .parse()
+            .map_err(|err| format!("invalid chat_url {chat_url:?}: {err}"))?,
+    ) {
         log_to_file(&format!(
             "openclaw_open_window: main_window.navigate() failed: {e}"
         ));
@@ -5923,9 +6366,7 @@ fn openclaw_back_to_dashboard(
             log_to_file(&format!(
                 "openclaw_back_to_dashboard: invalid dashboard URL {dashboard_url:?}: {err}"
             ));
-            return Err(format!(
-                "invalid dashboard URL {dashboard_url:?}: {err}"
-            ));
+            return Err(format!("invalid dashboard URL {dashboard_url:?}: {err}"));
         }
     };
 
@@ -6027,11 +6468,13 @@ fn mc_open_overlay(
             // page if close fires before any other navigation. And don't
             // stash the dashboard itself — that would create a no-op
             // round trip (close → dashboard → click overlay again).
-            if s == "about:blank" || s.starts_with("tauri://localhost")
+            if s == "about:blank"
+                || s.starts_with("tauri://localhost")
                 || s.starts_with("http://tauri.localhost")
                 || s.starts_with("https://tauri.localhost")
                 || s.starts_with("http://localhost")
-                || s.starts_with("https://localhost") {
+                || s.starts_with("https://localhost")
+            {
                 log_to_file(&format!(
                     "mc_open_overlay: skip stash for already-dashboard URL {s:?}"
                 ));
@@ -6050,9 +6493,7 @@ fn mc_open_overlay(
     if let Some(ref url) = return_url {
         if let Ok(mut guard) = state.overlay_return_url.lock() {
             *guard = Some(url.clone());
-            log_to_file(&format!(
-                "mc_open_overlay: stashed return_url = {url:?}"
-            ));
+            log_to_file(&format!("mc_open_overlay: stashed return_url = {url:?}"));
         }
     }
 
@@ -6091,9 +6532,7 @@ fn mc_open_overlay(
             log_to_file(&format!(
                 "mc_open_overlay: invalid target URL {target:?}: {err}"
             ));
-            return Err(format!(
-                "invalid target URL {target:?}: {err}"
-            ));
+            return Err(format!("invalid target URL {target:?}: {err}"));
         }
     };
 
@@ -6198,9 +6637,7 @@ fn mc_close_overlay(
             log_to_file(&format!(
                 "mc_close_overlay: invalid return URL {base:?}: {err}"
             ));
-            return Err(format!(
-                "invalid return URL {base:?}: {err}"
-            ));
+            return Err(format!("invalid return URL {base:?}: {err}"));
         }
     };
 
@@ -6327,8 +6764,7 @@ fn open_register_url(url: String) -> Result<(), String> {
         let mut cmd = Command::new("open");
         #[cfg(not(target_os = "macos"))]
         let mut cmd = Command::new("xdg-open");
-        cmd
-            .arg(&url)
+        cmd.arg(&url)
             .spawn()
             .map_err(|e| format!("browser open failed: {e}"))?;
         Ok(())
@@ -6536,7 +6972,9 @@ fn mc_open_checkout_url(plan_code: String) -> Result<(), String> {
         #[cfg(not(target_os = "macos"))]
         let mut cmd = Command::new("xdg-open");
         cmd.arg(&checkout_url);
-        let status = cmd.status().map_err(|e| format!("browser launch failed: {e}"))?;
+        let status = cmd
+            .status()
+            .map_err(|e| format!("browser launch failed: {e}"))?;
         if !status.success() {
             return Err(format!("browser exited with {:?}", status.code()));
         }
@@ -6673,16 +7111,28 @@ fn load_bundled_modules_catalog(app: &tauri::AppHandle) -> Vec<serde_json::Value
         match std::fs::read_to_string(path) {
             Ok(s) => match serde_json::from_str::<Vec<serde_json::Value>>(&s) {
                 Ok(arr) => {
-                    eprintln!("[miracle-claw] modules catalog: loaded {} from {}", arr.len(), path.display());
+                    eprintln!(
+                        "[miracle-claw] modules catalog: loaded {} from {}",
+                        arr.len(),
+                        path.display()
+                    );
                     return arr;
                 }
                 Err(e) => {
-                    eprintln!("[miracle-claw] modules catalog: parse failed at {}: {}", path.display(), e);
+                    eprintln!(
+                        "[miracle-claw] modules catalog: parse failed at {}: {}",
+                        path.display(),
+                        e
+                    );
                 }
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => {
-                eprintln!("[miracle-claw] modules catalog: read failed at {}: {}", path.display(), e);
+                eprintln!(
+                    "[miracle-claw] modules catalog: read failed at {}: {}",
+                    path.display(),
+                    e
+                );
             }
         }
     }
@@ -6704,10 +7154,7 @@ fn merge_catalog_with_registry(
 ) -> Vec<CatalogEntry> {
     let installed = registry.list();
     let installed_by_id: std::collections::HashMap<String, crate::modules::registry::ModuleInfo> =
-        installed
-            .into_iter()
-            .map(|m| (m.id.clone(), m))
-            .collect();
+        installed.into_iter().map(|m| (m.id.clone(), m)).collect();
 
     catalog
         .into_iter()
@@ -7049,18 +7496,30 @@ mod mcp_http_error_tests {
     fn status_401_includes_detail() {
         // Build a fake 401 response with a JSON body, then verify
         // the helper surfaces both the status and the body.
-        let resp = ureq::Response::new(401, "Unauthorized",
-            r#"{"detail":"Session expired or revoked"}"#).unwrap();
+        let resp = ureq::Response::new(
+            401,
+            "Unauthorized",
+            r#"{"detail":"Session expired or revoked"}"#,
+        )
+        .unwrap();
         let err = Error::Status(401, resp);
         let mapped = map_ureq_http_error(err);
         assert!(mapped.contains("HTTP 401"), "status code: {}", mapped);
-        assert!(mapped.contains("Session expired or revoked"), "body: {}", mapped);
+        assert!(
+            mapped.contains("Session expired or revoked"),
+            "body: {}",
+            mapped
+        );
     }
 
     #[test]
     fn status_422_includes_detail() {
-        let resp = ureq::Response::new(422, "Unprocessable Entity",
-            r#"{"detail":"url: required field missing"}"#).unwrap();
+        let resp = ureq::Response::new(
+            422,
+            "Unprocessable Entity",
+            r#"{"detail":"url: required field missing"}"#,
+        )
+        .unwrap();
         let err = Error::Status(422, resp);
         let mapped = map_ureq_http_error(err);
         assert!(mapped.contains("HTTP 422"));
@@ -7077,7 +7536,10 @@ mod mcp_http_error_tests {
         // 512 chars of body + "…" suffix should appear; full 2048
         // should NOT (Lesson 198: this is the regression check).
         assert!(!mapped.contains(&"x".repeat(600)), "must truncate");
-        assert!(mapped.contains('…') || mapped.contains("…"), "ellipsis marker");
+        assert!(
+            mapped.contains('…') || mapped.contains("…"),
+            "ellipsis marker"
+        );
     }
 
     #[test]
@@ -7127,18 +7589,27 @@ fn mc_refresh_tier() -> Result<crate::auth::tier::TierInfo, String> {
     // Lesson 517 / rc20: re-route default model on tier refresh (handles
     // upgrades from Free → Pro that happen mid-session without a re-login).
     if let Err(e) = ensure_agents_default_model_for_tier(info.tier) {
-        eprintln!("[miracle-claw] mc_refresh_tier: WARNING — failed to write tier defaults: {}", e);
+        eprintln!(
+            "[miracle-claw] mc_refresh_tier: WARNING — failed to write tier defaults: {}",
+            e
+        );
     }
     // Lesson 1425 (rc57.28): best-effort memorySearch backfill.
     if let Err(e) = ensure_memory_search_default() {
-        eprintln!("[miracle-claw] mc_refresh_tier: WARNING — failed to seed memorySearch: {}", e);
+        eprintln!(
+            "[miracle-claw] mc_refresh_tier: WARNING — failed to seed memorySearch: {}",
+            e
+        );
     }
     // Lesson 523 (NEW): re-stamp `params.tools` so the model sees the
     // new entitlement immediately on the next chat. Without this, the
     // user would have to log out and back in to pick up the new tools
     // (or hit "Refresh tier" — which now also fixes tools).
     if let Err(e) = ensure_maic_provider_config_for_tier(info.tier) {
-        eprintln!("[miracle-claw] mc_refresh_tier: WARNING — failed to re-stamp tool schemas: {}", e);
+        eprintln!(
+            "[miracle-claw] mc_refresh_tier: WARNING — failed to re-stamp tool schemas: {}",
+            e
+        );
     }
     Ok(info)
 }
@@ -7155,11 +7626,17 @@ fn mc_apply_tier_change(new_tier_str: String) -> Result<(), String> {
     crate::auth::nudge::invalidate_quota_cache();
     // Lesson 517 / rc20: re-route default model on tier change.
     if let Err(e) = ensure_agents_default_model_for_tier(tier) {
-        eprintln!("[miracle-claw] mc_apply_tier_change: WARNING — failed to write tier defaults: {}", e);
+        eprintln!(
+            "[miracle-claw] mc_apply_tier_change: WARNING — failed to write tier defaults: {}",
+            e
+        );
     }
     // Lesson 523 (NEW): re-stamp `params.tools` for the new tier.
     if let Err(e) = ensure_maic_provider_config_for_tier(tier) {
-        eprintln!("[miracle-claw] mc_apply_tier_change: WARNING — failed to re-stamp tool schemas: {}", e);
+        eprintln!(
+            "[miracle-claw] mc_apply_tier_change: WARNING — failed to re-stamp tool schemas: {}",
+            e
+        );
     }
     Ok(())
 }
@@ -7190,9 +7667,7 @@ fn mc_set_tier_defaults(force: Option<bool>) -> Result<bool, String> {
             // Clear the primary string in-place so the writer below
             // stamps the tier default. Tolerate the old object schema
             // too so a force-reset works during the migration window.
-            if let Some(model_val) = cfg
-                .pointer_mut("/agents/defaults/model")
-            {
+            if let Some(model_val) = cfg.pointer_mut("/agents/defaults/model") {
                 match model_val {
                     serde_json::Value::String(_) => {
                         *model_val = serde_json::Value::String(String::new());
@@ -7210,8 +7685,7 @@ fn mc_set_tier_defaults(force: Option<bool>) -> Result<bool, String> {
             }
         }
     }
-    ensure_agents_default_model_for_tier(tier)
-        .map_err(|e| format!("set_tier_defaults: {}", e))
+    ensure_agents_default_model_for_tier(tier).map_err(|e| format!("set_tier_defaults: {}", e))
 }
 
 // ============================================================================
@@ -7470,10 +7944,7 @@ fn make_entry(abs: &Path, root: &Path, core: bool) -> MemoryFileEntry {
             let secs = d.as_secs();
             // Days since 1970-01-01
             let (y, mo, day, h, mi, s) = epoch_to_ymdhms(secs);
-            format!(
-                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-                y, mo, day, h, mi, s
-            )
+            format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, day, h, mi, s)
         });
     MemoryFileEntry {
         name,
@@ -7528,8 +7999,7 @@ fn mc_write_memory_file(path: String, content: String) -> Result<(), String> {
         fs::create_dir_all(parent)
             .map_err(|e| format!("create dir {}: {}", parent.display(), e))?;
     }
-    fs::write(&abs, content.as_bytes())
-        .map_err(|e| format!("write {}: {}", abs.display(), e))?;
+    fs::write(&abs, content.as_bytes()).map_err(|e| format!("write {}: {}", abs.display(), e))?;
     Ok(())
 }
 
@@ -7545,10 +8015,7 @@ fn mc_write_memory_file(path: String, content: String) -> Result<(), String> {
 fn mc_open_data_folder() -> Result<(), String> {
     let root = workspace_root()?;
     if !root.exists() {
-        return Err(format!(
-            "workspace does not exist yet: {}",
-            root.display()
-        ));
+        return Err(format!("workspace does not exist yet: {}", root.display()));
     }
 
     let (cmd, args): (&str, Vec<String>) = if cfg!(windows) {
@@ -7679,27 +8146,27 @@ const MODEL_SPEC: &[(&str, u32, u32, bool)] = &[
     ("milagro-m1-t2", 8192, 32768, false),
     ("milagro-m1-t3", 8192, 32768, false),
     // Local 14B family — bigger context, no reasoning
-    ("milagro-dev",       16384, 131072, false),
+    ("milagro-dev", 16384, 131072, false),
     ("milagro-dev-coder", 16384, 131072, false),
     // Local base / chat / coder / stock
-    ("milagro-m1",    8192,  32768,  false),
-    ("milagro-chat",  8192,  32768,  false),
+    ("milagro-m1", 8192, 32768, false),
+    ("milagro-chat", 8192, 32768, false),
     ("milagro-coder", 16384, 131072, false),
-    ("milagro-stock", 8192,  32768,  false),
+    ("milagro-stock", 8192, 32768, false),
     // Cloud cascade (OpenChat wrappers — all reasoning models)
-    ("milagro-oc-minimax",  32768, 131072, true),
-    ("milagro-oc-glm",      16384, 131072, true),
-    ("milagro-oc-qwen",     32768, 131072, true),
+    ("milagro-oc-minimax", 32768, 131072, true),
+    ("milagro-oc-glm", 16384, 131072, true),
+    ("milagro-oc-qwen", 32768, 131072, true),
     ("milagro-oc-deepseek", 65536, 131072, true),
-    ("milagro-oc-kimi",     32768, 131072, true),
+    ("milagro-oc-kimi", 32768, 131072, true),
     // Direct chat (matches LiteLLM caps bumped in Lesson 1126 Task 2)
-    ("chat-glm",      16384, 131072, true),
-    ("chat-qwen",     32768, 131072, true),
+    ("chat-glm", 16384, 131072, true),
+    ("chat-qwen", 32768, 131072, true),
     ("chat-deepseek", 65536, 131072, true),
     // Nemotron 3 family — MoE, supports reasoning, big context
-    ("chat-nemotron-nano",  32768,  131072, true),
-    ("chat-nemotron-super", 65536,  262144, true),
-    ("chat-nemotron-ultra", 65536,  524288, true),
+    ("chat-nemotron-nano", 32768, 131072, true),
+    ("chat-nemotron-super", 65536, 262144, true),
+    ("chat-nemotron-ultra", 65536, 524288, true),
 ];
 
 /// Resolve the (cmd, args[]) tuple for a given shell label on this OS.
@@ -7834,9 +8301,7 @@ fn spawn_shell(
         }
     };
     #[cfg(not(windows))]
-    let (real_cmd, real_args): (String, Vec<String>) = {
-        (cmd.to_string(), args.to_vec())
-    };
+    let (real_cmd, real_args): (String, Vec<String>) = { (cmd.to_string(), args.to_vec()) };
 
     let mut command = std::process::Command::new(&real_cmd);
     for a in &real_args {
@@ -7944,11 +8409,7 @@ fn read_lines<R: std::io::Read + Send + 'static>(
 /// 401 stays as a 401 and they can re-login manually. If it succeeds,
 /// the launcher respawn kills+replaces the gateway within ~3-5 seconds
 /// and the user's NEXT chat turn goes through with the fresh JWT.
-fn handle_mc401_marker(
-    app_handle: &tauri::AppHandle,
-    rest: &str,
-    log_prefix: &str,
-) {
+fn handle_mc401_marker(app_handle: &tauri::AppHandle, rest: &str, log_prefix: &str) {
     // Lesson 1146 (2026-10-19, David): the previous behavior was to
     // fire `silent_relogin` here, which would re-authenticate from
     // the cached creds in Windows Credential Manager and respawn the
@@ -8014,14 +8475,13 @@ pub fn scan_stderr_for_mc401<FMarker, FLine>(
         match accumulator[start..].iter().position(|&b| b == b'\n') {
             Some(rel) => {
                 let end = start + rel; // index of the \n itself
-                // Strip trailing \r if present (Windows line endings).
+                                       // Strip trailing \r if present (Windows line endings).
                 let line_end = if end > start && accumulator[end - 1] == b'\r' {
                     end - 1
                 } else {
                     end
                 };
-                let line = std::str::from_utf8(&accumulator[start..line_end])
-                    .unwrap_or("");
+                let line = std::str::from_utf8(&accumulator[start..line_end]).unwrap_or("");
                 // Lesson 1140: only treat a line as a complete
                 // marker if it starts with `[MC-401] ` AND the
                 // payload (rest) ends with `}`. A partial JSON
@@ -8112,8 +8572,7 @@ pub fn scan_stdout_for_maic_401<FMatch>(
                 } else {
                     end
                 };
-                let line = std::str::from_utf8(&accumulator[start..line_end])
-                    .unwrap_or("");
+                let line = std::str::from_utf8(&accumulator[start..line_end]).unwrap_or("");
                 // Substring check is intentional, not strict regex.
                 // The gateway's log line format may change between
                 // openclaw versions and we don't want a log format
@@ -8201,8 +8660,7 @@ fn mc_terminal_start(
         (resolved, args.iter().map(|s| s.to_string()).collect())
     };
 
-    let mut extra_env: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut extra_env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     if shell == "mc-terminal" {
         let cfg_path = openclaw_json_path();
         // The state dir is the parent of the extensions dir, so the TUI
@@ -8222,7 +8680,15 @@ fn mc_terminal_start(
         extra_env.insert("OPENCLAW_NO_PLUGINS".to_string(), "1".to_string());
     }
 
-    let mut child = spawn_shell(&cmd_path, &real_args, if extra_env.is_empty() { None } else { Some(&extra_env) })?;
+    let mut child = spawn_shell(
+        &cmd_path,
+        &real_args,
+        if extra_env.is_empty() {
+            None
+        } else {
+            Some(&extra_env)
+        },
+    )?;
 
     let stdout = child
         .stdout
@@ -8266,16 +8732,15 @@ fn mc_terminal_start(
     // at fire-time so we don't have to refactor AppState to be Arc-wrapped
     // just for this single reader-thread callback.
     let stderr_handle = handle_arc.clone();
-    let marker_cb: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>> =
-        if shell == "mc-terminal" {
-            let app_handle_for_marker = app_handle.clone();
-            let log_prefix = format!("[miracle-claw][mc-terminal {}]", id);
-            Some(std::sync::Arc::new(move |rest: &str| {
-                handle_mc401_marker(&app_handle_for_marker, rest, &log_prefix);
-            }))
-        } else {
-            None
-        };
+    let marker_cb: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>> = if shell == "mc-terminal" {
+        let app_handle_for_marker = app_handle.clone();
+        let log_prefix = format!("[miracle-claw][mc-terminal {}]", id);
+        Some(std::sync::Arc::new(move |rest: &str| {
+            handle_mc401_marker(&app_handle_for_marker, rest, &log_prefix);
+        }))
+    } else {
+        None
+    };
     std::thread::spawn(move || read_lines(stderr, stderr_handle, "stderr", marker_cb));
 
     {
@@ -8331,10 +8796,7 @@ fn mc_terminal_poll(
 
     let chunks: Vec<OutputChunk> = {
         let buf = handle.buffer_arc.lock().unwrap();
-        buf.iter()
-            .filter(|c| c.seq > since_seq)
-            .cloned()
-            .collect()
+        buf.iter().filter(|c| c.seq > since_seq).cloned().collect()
     };
 
     Ok(TerminalPollResult {
@@ -8403,10 +8865,7 @@ fn mc_terminal_write(
 /// poll returns "session not found"; the frontend interprets that
 /// as "go back to dashboard" or "kill and re-start".
 #[tauri::command]
-fn mc_terminal_kill(
-    id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+fn mc_terminal_kill(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut map = state.terminals.lock().unwrap();
     if let Some(handle) = map.remove(&id) {
         if let Some(mut child) = handle.child.lock().unwrap().take() {
@@ -8487,12 +8946,10 @@ fn mc_ui_list_allowed_roots() -> Vec<String> {
 fn mc_ui_list_dir(path: String) -> Result<ListDirResult, String> {
     use crate::tools::exec;
 
-    let p = exec::normalize_user_path(&path)
-        .map_err(|e| format!("path error: {e}"))?;
+    let p = exec::normalize_user_path(&path).map_err(|e| format!("path error: {e}"))?;
     exec::assert_path_allowed(&p)?;
 
-    let read = std::fs::read_dir(&p)
-        .map_err(|e| format!("cannot read {p:?}: {e}"))?;
+    let read = std::fs::read_dir(&p).map_err(|e| format!("cannot read {p:?}: {e}"))?;
 
     let mut entries: Vec<DirEntry> = read
         .filter_map(|e| e.ok())
@@ -8547,20 +9004,21 @@ struct ReadFileResult {
 fn mc_ui_read_file(path: String, max_bytes: Option<u64>) -> Result<ReadFileResult, String> {
     use crate::tools::exec;
 
-    let p = exec::normalize_user_path(&path)
-        .map_err(|e| format!("path error: {e}"))?;
+    let p = exec::normalize_user_path(&path).map_err(|e| format!("path error: {e}"))?;
     exec::assert_path_allowed(&p)?;
 
     let cap = max_bytes.unwrap_or(1_048_576); // 1 MB
-    let metadata = std::fs::metadata(&p)
-        .map_err(|e| format!("cannot stat {p:?}: {e}"))?;
+    let metadata = std::fs::metadata(&p).map_err(|e| format!("cannot stat {p:?}: {e}"))?;
     if metadata.is_dir() {
         return Err(format!("{p:?} is a directory"));
     }
     let truncated = metadata.len() > cap;
-    let read_cap = if truncated { cap as usize } else { metadata.len() as usize };
-    let bytes = std::fs::read(&p)
-        .map_err(|e| format!("cannot read {p:?}: {e}"))?;
+    let read_cap = if truncated {
+        cap as usize
+    } else {
+        metadata.len() as usize
+    };
+    let bytes = std::fs::read(&p).map_err(|e| format!("cannot read {p:?}: {e}"))?;
     let slice = &bytes[..read_cap];
     let content = String::from_utf8_lossy(slice).to_string();
     Ok(ReadFileResult {
@@ -8602,12 +9060,10 @@ fn image_mime_for_ext(ext_lower: &str) -> Option<&'static str> {
 fn mc_ui_read_image(path: String) -> Result<ReadImageResult, String> {
     use crate::tools::exec;
 
-    let p = exec::normalize_user_path(&path)
-        .map_err(|e| format!("path error: {e}"))?;
+    let p = exec::normalize_user_path(&path).map_err(|e| format!("path error: {e}"))?;
     exec::assert_path_allowed(&p)?;
 
-    let metadata = std::fs::metadata(&p)
-        .map_err(|e| format!("cannot stat {p:?}: {e}"))?;
+    let metadata = std::fs::metadata(&p).map_err(|e| format!("cannot stat {p:?}: {e}"))?;
     if metadata.is_dir() {
         return Err(format!("{p:?} is a directory"));
     }
@@ -8626,8 +9082,7 @@ fn mc_ui_read_image(path: String) -> Result<ReadImageResult, String> {
     let mime = image_mime_for_ext(&ext)
         .ok_or_else(|| format!("unsupported image extension: .{ext}"))?
         .to_string();
-    let bytes = std::fs::read(&p)
-        .map_err(|e| format!("cannot read {p:?}: {e}"))?;
+    let bytes = std::fs::read(&p).map_err(|e| format!("cannot read {p:?}: {e}"))?;
     let data_base64 = base64_encode(&bytes);
     Ok(ReadImageResult {
         path: p.to_string_lossy().to_string(),
@@ -8640,8 +9095,7 @@ fn mc_ui_read_image(path: String) -> Result<ReadImageResult, String> {
 /// Tiny base64 encoder (standard alphabet, no padding). Avoids pulling in
 /// the `base64` crate just for one use site. Output is ASCII-safe.
 fn base64_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(((input.len() + 2) / 3) * 4);
     let mut i = 0;
     while i + 3 <= input.len() {
@@ -8677,12 +9131,10 @@ fn base64_encode(input: &[u8]) -> String {
 fn mc_ui_open_externally(path: String) -> Result<(), String> {
     use crate::tools::exec;
 
-    let p = exec::normalize_user_path(&path)
-        .map_err(|e| format!("path error: {e}"))?;
+    let p = exec::normalize_user_path(&path).map_err(|e| format!("path error: {e}"))?;
     exec::assert_path_allowed(&p)?;
 
-    let metadata = std::fs::metadata(&p)
-        .map_err(|e| format!("cannot stat {p:?}: {e}"))?;
+    let metadata = std::fs::metadata(&p).map_err(|e| format!("cannot stat {p:?}: {e}"))?;
     if metadata.is_dir() {
         return Err(format!("{p:?} is a directory"));
     }
@@ -8778,8 +9230,7 @@ fn inbox_dir() -> Result<PathBuf, String> {
     let root = workspace_root()?;
     let dir = root.join(INBOX_DIR);
     if !dir.exists() {
-        fs::create_dir_all(&dir)
-            .map_err(|e| format!("create {}: {}", dir.display(), e))?;
+        fs::create_dir_all(&dir).map_err(|e| format!("create {}: {}", dir.display(), e))?;
     }
     Ok(dir)
 }
@@ -8787,9 +9238,8 @@ fn inbox_dir() -> Result<PathBuf, String> {
 #[tauri::command]
 fn mc_stage_attachment(args: StageAttachmentArgs) -> Result<AttachmentMeta, String> {
     let src = PathBuf::from(&args.src_path);
-    let metadata = fs::metadata(&src).map_err(|e| {
-        format!("cannot stat {}: {}", args.src_path, e)
-    })?;
+    let metadata =
+        fs::metadata(&src).map_err(|e| format!("cannot stat {}: {}", args.src_path, e))?;
     if metadata.is_dir() {
         return Err(format!(
             "{} is a directory (drop a file, not a folder)",
@@ -8821,14 +9271,12 @@ fn mc_stage_attachment(args: StageAttachmentArgs) -> Result<AttachmentMeta, Stri
         .unwrap_or_else(|| "attachment".to_string());
     // Sanitize the suffix so the staged filename is portable across
     // tools that consume it (model chat, terminal paste, etc.).
-    let safe_name = raw_name
-        .replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_");
+    let safe_name = raw_name.replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_");
     let filename = format!("{}-{}", now, safe_name);
     let dst = dir.join(&filename);
 
-    fs::copy(&src, &dst).map_err(|e| {
-        format!("copy {} -> {}: {}", args.src_path, dst.display(), e)
-    })?;
+    fs::copy(&src, &dst)
+        .map_err(|e| format!("copy {} -> {}: {}", args.src_path, dst.display(), e))?;
 
     Ok(AttachmentMeta {
         id: now.to_string(),
@@ -8898,9 +9346,7 @@ fn mc_remove_attachment(id: String) -> Result<(), String> {
         if let Some((prefix, _)) = name.split_once('-') {
             if prefix == id {
                 let path = entry.path();
-                fs::remove_file(&path).map_err(|e| {
-                    format!("delete {}: {}", path.display(), e)
-                })?;
+                fs::remove_file(&path).map_err(|e| format!("delete {}: {}", path.display(), e))?;
                 return Ok(());
             }
         }
@@ -9097,7 +9543,11 @@ fn audit_log(app: &tauri::AppHandle, name: &str) {
 }
 
 #[tauri::command]
-fn mc_secret_set(app: tauri::AppHandle, name: String, value: String) -> Result<SecretSummary, String> {
+fn mc_secret_set(
+    app: tauri::AppHandle,
+    name: String,
+    value: String,
+) -> Result<SecretSummary, String> {
     validate_secret_name(&name)?;
     if value.is_empty() {
         return Err("secret value cannot be empty".to_string());
@@ -9528,8 +9978,7 @@ fn mc_initiate_pair(
     phone_pubkey_b64: String,
     device_name: String,
 ) -> Result<pairing_commands::HandshakeResponse, String> {
-    pairing_commands::initiate_pair(&cmds, phone_pubkey_b64, device_name)
-        .map_err(|e| e.to_string())
+    pairing_commands::initiate_pair(&cmds, phone_pubkey_b64, device_name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -9619,11 +10068,7 @@ fn mc_module_install_local(
     );
     let registry = state.modules.lock().unwrap();
 
-    match crate::modules::installer::install_from_local_dir(
-        &modules_root,
-        &registry,
-        &source_dir,
-    ) {
+    match crate::modules::installer::install_from_local_dir(&modules_root, &registry, &source_dir) {
         Ok(result) => {
             // Emit UI hook activation event so dormant buttons light up
             // without a page reload. Same pattern as Lesson 491.
@@ -9691,11 +10136,7 @@ fn mc_module_install_url(
     // tokio runtime that tauri maintains. If that ever changes and
     // we want the UI to stay responsive during large downloads,
     // this is the spot to switch to a spawn.
-    let install_fut = crate::modules::installer::install_from_url(
-        &modules_root,
-        &registry,
-        source,
-    );
+    let install_fut = crate::modules::installer::install_from_url(&modules_root, &registry, source);
     let result = tauri::async_runtime::block_on(install_fut);
 
     match result {
@@ -9789,8 +10230,7 @@ fn mc_module_call(
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let registry = state.modules.lock().unwrap();
-    crate::modules::dispatcher::dispatch(&registry, &command, params)
-        .map_err(|e| format!("{e}"))
+    crate::modules::dispatcher::dispatch(&registry, &command, params).map_err(|e| format!("{e}"))
 }
 
 // ----------------------------------------------------------------------------
@@ -9962,7 +10402,10 @@ mod tests {
         let has_default = models
             .iter()
             .any(|m| m.get("id").and_then(|v| v.as_str()) == Some("milagro-m1-t1"));
-        assert!(has_default, "default model id (m1-t1) should be present for Free");
+        assert!(
+            has_default,
+            "default model id (m1-t1) should be present for Free"
+        );
     }
 
     #[test]
@@ -9972,7 +10415,10 @@ mod tests {
         // No MAIC_API_KEY set.
 
         let result = ensure_maic_provider_config().expect("bootstrap ok");
-        assert!(!result.provider_configured, "Lesson 444: should NOT be configured (login required)");
+        assert!(
+            !result.provider_configured,
+            "Lesson 444: should NOT be configured (login required)"
+        );
         assert!(
             matches!(result.api_key_source, MaicKeySource::LoginRequired),
             "key_source should be LoginRequired, got {:?}",
@@ -10004,7 +10450,9 @@ mod tests {
         assert!(
             secrets_providers_default.is_none(),
             "LoginRequired path must not register secrets.providers.default, got: {}",
-            secrets_providers_default.map(|v| v.to_string()).unwrap_or_default()
+            secrets_providers_default
+                .map(|v| v.to_string())
+                .unwrap_or_default()
         );
     }
 
@@ -10100,10 +10548,15 @@ mod tests {
         // User's SecretRef preserved (not overwritten with a literal).
         let api_key = entry.get("apiKey").expect("apiKey");
         assert!(api_key.is_object(), "SecretRef should still be an object");
-        assert_eq!(api_key.get("id").and_then(|v| v.as_str()), Some("MAIC_API_KEY"));
+        assert_eq!(
+            api_key.get("id").and_then(|v| v.as_str()),
+            Some("MAIC_API_KEY")
+        );
         // User's custom model preserved.
         let models = entry.get("models").and_then(|m| m.as_array()).unwrap();
-        assert!(models.iter().any(|m| m.get("id").and_then(|v| v.as_str()) == Some("custom-model")));
+        assert!(models
+            .iter()
+            .any(|m| m.get("id").and_then(|v| v.as_str()) == Some("custom-model")));
     }
 
     #[test]
@@ -10202,7 +10655,10 @@ mod tests {
         // because env is set). The literal-replace helper is what migrates
         // legacy setups to the new shape.
         let replaced = replace_secret_ref_with_literal();
-        assert!(replaced, "replace_secret_ref_with_literal should report it wrote");
+        assert!(
+            replaced,
+            "replace_secret_ref_with_literal should report it wrote"
+        );
 
         // The SecretRef must have been replaced with the literal JWT.
         let cfg = read_maic_root();
@@ -10353,7 +10809,11 @@ mod tests {
             .and_then(|t| t.as_array())
             .map(|a| {
                 a.iter()
-                    .filter_map(|v| v.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))
+                    .filter_map(|v| {
+                        v.get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                    })
                     .map(str::to_string)
                     .collect()
             })
@@ -10442,8 +10902,14 @@ mod tests {
             }
             // Spot-check that all 7 names are present.
             for expected in [
-                "read_file", "write_file", "edit_file", "list_dir",
-                "bash_run", "apply_patch", "remember_fact", "web_fetch",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "list_dir",
+                "bash_run",
+                "apply_patch",
+                "remember_fact",
+                "web_fetch",
             ] {
                 assert!(
                     names.iter().any(|n| n == expected),
@@ -10478,8 +10944,7 @@ mod tests {
         cfg["models"]["providers"]["maic"]["params"]["tools"] = serde_json::json!([
             {"type":"function","function":{"name":"read_file"}}
         ]);
-        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap())
-            .expect("write");
+        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).expect("write");
 
         // Second call: any tier. The non-empty single-tool array
         // must be preserved (not re-stamped to 8).
@@ -10772,15 +11237,10 @@ mod tests {
             }
         });
         std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
-        std::fs::write(
-            &path,
-            serde_json::to_string_pretty(&existing).unwrap(),
-        )
-        .expect("write");
+        std::fs::write(&path, serde_json::to_string_pretty(&existing).unwrap()).expect("write");
 
         // Call with Pro tier. Must re-stamp tools from `[]` to 8 entries.
-        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro)
-            .expect("ok");
+        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro).expect("ok");
 
         let names = read_tools_names();
         assert_eq!(
@@ -10837,16 +11297,11 @@ mod tests {
             }
         });
         std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
-        std::fs::write(
-            &path,
-            serde_json::to_string_pretty(&existing).unwrap(),
-        )
-        .expect("write");
+        std::fs::write(&path, serde_json::to_string_pretty(&existing).unwrap()).expect("write");
 
         // Now call the Pro tier. Should hit the early-return path
         // (entry is complete) AND stamp tools via the helper.
-        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro)
-            .expect("ok");
+        ensure_maic_provider_config_for_tier(crate::auth::tier::Tier::Pro).expect("ok");
 
         let names = read_tools_names();
         assert_eq!(
@@ -10999,11 +11454,20 @@ mod tests {
     #[test]
     fn strip_trailing_v1_handles_both_forms() {
         // Already bare → unchanged.
-        assert_eq!(strip_trailing_v1("https://maicserver.com"), "https://maicserver.com");
+        assert_eq!(
+            strip_trailing_v1("https://maicserver.com"),
+            "https://maicserver.com"
+        );
         // /v1 suffix → stripped.
-        assert_eq!(strip_trailing_v1("https://maicserver.com/v1"), "https://maicserver.com");
+        assert_eq!(
+            strip_trailing_v1("https://maicserver.com/v1"),
+            "https://maicserver.com"
+        );
         // /v1/ trailing → stripped to bare (no trailing slash).
-        assert_eq!(strip_trailing_v1("https://maicserver.com/v1/"), "https://maicserver.com");
+        assert_eq!(
+            strip_trailing_v1("https://maicserver.com/v1/"),
+            "https://maicserver.com"
+        );
         // Mid-path /v1 → unchanged (not at the end).
         assert_eq!(
             strip_trailing_v1("https://proxy.example.com/v1/maic"),
@@ -11073,11 +11537,16 @@ mod tests {
             // CORRECT schema: object form.
             let mut model = serde_json::Map::new();
             if let Some(p) = primary {
-                model.insert("primary".to_string(), serde_json::Value::String(p.to_string()));
+                model.insert(
+                    "primary".to_string(),
+                    serde_json::Value::String(p.to_string()),
+                );
             }
             if let Some(fb) = fallbacks {
-                let arr: Vec<serde_json::Value> =
-                    fb.iter().map(|s| serde_json::Value::String(s.to_string())).collect();
+                let arr: Vec<serde_json::Value> = fb
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.to_string()))
+                    .collect();
                 model.insert("fallbacks".to_string(), serde_json::Value::Array(arr));
             }
             cfg["agents"] = serde_json::json!({
@@ -11160,7 +11629,11 @@ mod tests {
             .collect();
         assert_eq!(
             fallbacks,
-            vec!["maic/milagro-m1-t2", "maic/milagro-m1-t3", "maic/chat-nemotron-nano"],
+            vec![
+                "maic/milagro-m1-t2",
+                "maic/milagro-m1-t3",
+                "maic/chat-nemotron-nano"
+            ],
             "Free chain must be local 7B → local 14B → cloud nano (level 1)"
         );
         // Lesson 829: no top-level fallbacks allowed.
@@ -11273,7 +11746,10 @@ mod tests {
             second.pointer("/agents/defaults/memorySearch/provider"),
             Some(&serde_json::json!("none"))
         );
-        assert!(!second_wrote, "second run must be a no-op (already configured)");
+        assert!(
+            !second_wrote,
+            "second run must be a no-op (already configured)"
+        );
     }
 
     #[test]
@@ -11311,7 +11787,10 @@ mod tests {
     }
 
     #[test]
-    fn lesson_517_pro_writes_kimi_with_fallbacks() {
+    fn lesson_1432_paid_tiers_default_to_nemotron_super() {
+        // Lesson 1432 (2026-10-23, David): every paid tier defaults to
+        // `maic/chat-nemotron-super` with a Nemotron-first fallback
+        // chain. This replaces the stale `milagro-oc-glm` primary.
         let _env = lock_env();
         let _g = fresh_openclaw_with_model(None, None);
         let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
@@ -11322,10 +11801,9 @@ mod tests {
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         // Lesson 829: primary lives at /agents/defaults/model/primary.
-        // Lesson 795 (2026-08-30, David): primary swapped Kimi → GLM.
         assert_eq!(
             cfg.pointer("/agents/defaults/model/primary").unwrap(),
-            "maic/milagro-oc-glm"
+            "maic/chat-nemotron-super"
         );
         let fallbacks: Vec<String> = cfg
             .pointer("/agents/defaults/model/fallbacks")
@@ -11335,13 +11813,209 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
-        // Lesson 795: chain is MiniMax → Kimi → local 14B-distilled.
+        // Lesson 1432: chain is Nemotron ultra → Nemotron nano → local 14B.
         assert_eq!(
             fallbacks,
-            vec!["maic/milagro-oc-minimax", "maic/milagro-oc-kimi", "maic/milagro-m1-t3"]
+            vec![
+                "maic/chat-nemotron-ultra",
+                "maic/chat-nemotron-nano",
+                "maic/milagro-m1-t3"
+            ]
         );
         // Lesson 829: no top-level fallbacks allowed.
         assert!(cfg.pointer("/agents/defaults/fallbacks").is_none());
+    }
+
+    // ---------------------------------------------------------------------
+    // Lesson 1432 (2026-10-23, David): the Brent production bug.
+    //
+    // Brent (`brentwill42@gmail.com`, effective tier `pro`) was stuck on
+    // `milagro-dev` for 543 requests across 3 days while
+    // `championnm@yahoo.com` (same org, same tier) correctly used
+    // `chat-nemotron-super`.
+    //
+    // ROOT CAUSE (two layers):
+    //   1. App STARTUP seeds `Tier::Free` before the user logs in
+    //      (so the chat panel has something to pre-select). That writes
+    //      `maic/milagro-m1-t1`.
+    //   2. On LOGIN, `ensure_agents_default_model_for_tier(Pro)` saw an
+    //      existing primary and — because the old code treated "any
+    //      existing primary" as "a deliberate user choice" — returned
+    //      `Ok(false)` without writing. The Free seed survived, and the
+    //      chat panel's catalog-index-0 pre-selection (`milagro-dev`)
+    //      took over.
+    //
+    // THE FIX: track what the app seeded (`_milagroTierSeed` marker at
+    // the config root) so a stale APP-SEEDED primary migrates to the
+    // current tier default, while a genuine MANUAL pick is preserved.
+    // ---------------------------------------------------------------------
+
+    /// Read the on-disk `chat.json` for the current test env.
+    fn read_test_cfg() -> serde_json::Value {
+        let path = openclaw_json_path();
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn lesson_1432_startup_free_seed_then_paid_login_migrates_to_nemotron() {
+        // THE BRENT SCENARIO, end to end:
+        //   1. App starts before login → seeds Free default.
+        //   2. User logs in with a paid tier → must migrate to Nemotron.
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(None, None);
+
+        // --- Step 1: pre-login startup seed (Tier::Free) ---
+        let wrote_free = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
+            .expect("free seed should succeed");
+        assert!(wrote_free, "startup must seed the free default");
+        let cfg = read_test_cfg();
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary").unwrap(),
+            "maic/milagro-m1-t1",
+            "startup seeds the Free default before login"
+        );
+        // The seed marker must record what we wrote, so we can later
+        // tell "still ours" from "the user changed it".
+        assert_eq!(
+            cfg.pointer("/_milagroTierSeed/primary").unwrap(),
+            "maic/milagro-m1-t1",
+            "seed marker must record the seeded primary"
+        );
+
+        // --- Step 2: paid login migrates the stale Free seed ---
+        let wrote_paid = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("paid seed should succeed");
+        assert!(
+            wrote_paid,
+            "paid login MUST rewrite the stale free-seeded primary"
+        );
+        let cfg = read_test_cfg();
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary").unwrap(),
+            "maic/chat-nemotron-super",
+            "paid login must migrate the stale Free seed to Nemotron Super"
+        );
+        let fallbacks: Vec<String> = cfg
+            .pointer("/agents/defaults/model/fallbacks")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            fallbacks,
+            vec![
+                "maic/chat-nemotron-ultra",
+                "maic/chat-nemotron-nano",
+                "maic/milagro-m1-t3"
+            ],
+            "the whole fallback chain must follow the paid tier"
+        );
+    }
+
+    #[test]
+    fn lesson_1432_migrates_legacy_stale_paid_seeds() {
+        // A legacy install (pre-marker) sitting on one of the old paid
+        // seeds must migrate to Nemotron on the next paid run.
+        for stale in [
+            "maic/milagro-oc-glm",
+            "maic/milagro-oc-kimi",
+            "maic/milagro-dev",
+            "milagro-dev",
+        ] {
+            let _env = lock_env();
+            let _g = fresh_openclaw_with_model(Some(stale), None);
+            let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+                .expect("writer should succeed");
+            assert!(wrote, "stale seed {stale} must be migrated");
+            let cfg = read_test_cfg();
+            assert_eq!(
+                cfg.pointer("/agents/defaults/model/primary").unwrap(),
+                "maic/chat-nemotron-super",
+                "stale seed {stale} must migrate to Nemotron Super"
+            );
+        }
+    }
+
+    #[test]
+    fn lesson_1432_preserves_genuine_manual_selection() {
+        // A value the app NEVER seeded is the user's choice — never
+        // overwrite it, no matter which tier they are on.
+        for manual in [
+            "maic/milagro-dev-coder",
+            "maic/milagro-stock",
+            "maic/chat-nemotron-ultra",
+            "maic/chat-glm",
+            "maic/milagro-oc-deepseek",
+        ] {
+            let _env = lock_env();
+            let _g = fresh_openclaw_with_model(Some(manual), None);
+            let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+                .expect("writer should succeed");
+            assert!(!wrote, "manual pick {manual} must not be rewritten");
+            let cfg = read_test_cfg();
+            assert_eq!(
+                cfg.pointer("/agents/defaults/model/primary").unwrap(),
+                manual,
+                "manual pick {manual} must be preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn lesson_1432_manual_selection_is_preserved_across_tier_change() {
+        // The marker records the USER's value once we observe it, so a
+        // later tier change (Free → Pro) does not stomp it.
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(Some("maic/milagro-dev-coder"), None);
+
+        // First run: observe the manual pick and record it in the marker.
+        let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("writer should succeed");
+        assert!(!wrote, "manual pick must not be rewritten");
+        let cfg = read_test_cfg();
+        assert_eq!(
+            cfg.pointer("/_milagroTierSeed/primary").unwrap(),
+            "maic/milagro-dev-coder",
+            "the marker must record the user's own value"
+        );
+
+        // Second run at a different tier: still preserved.
+        let wrote2 = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Enterprise)
+            .expect("writer should succeed");
+        assert!(!wrote2, "manual pick must survive a tier change");
+        let cfg = read_test_cfg();
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary").unwrap(),
+            "maic/milagro-dev-coder"
+        );
+    }
+
+    #[test]
+    fn lesson_1432_seed_marker_lives_at_config_root_not_in_model() {
+        // `AgentModelSchema` is `.strict()` — only `primary` and
+        // `fallbacks` are allowed inside `agents.defaults.model`. If we
+        // put the marker there, openclaw would reject the ENTIRE config
+        // with `Invalid input` on boot.
+        let _env = lock_env();
+        let _g = fresh_openclaw_with_model(None, None);
+        ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
+            .expect("writer should succeed");
+        let cfg = read_test_cfg();
+        let model_obj = cfg
+            .pointer("/agents/defaults/model")
+            .unwrap()
+            .as_object()
+            .unwrap();
+        for key in model_obj.keys() {
+            assert!(
+                key == "primary" || key == "fallbacks",
+                "agents.defaults.model must stay strict-schema clean; found {key:?}"
+            );
+        }
+        // And the marker IS present at the root.
+        assert!(cfg.pointer("/_milagroTierSeed").is_some());
     }
 
     #[test]
@@ -11352,7 +12026,10 @@ mod tests {
         let _g = fresh_openclaw_with_model(Some("milagro-dev-coder"), None);
         let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Pro)
             .expect("writer should succeed");
-        assert!(!wrote, "writer must report 'already correct' when user has a primary");
+        assert!(
+            !wrote,
+            "writer must report 'already correct' when user has a primary"
+        );
 
         let path = openclaw_json_path();
         let cfg: serde_json::Value =
@@ -11379,29 +12056,27 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
             cfg.pointer("/agents/defaults/model/primary").unwrap(),
-            "maic/milagro-oc-glm"
+            "maic/chat-nemotron-super"
         );
     }
 
     #[test]
-    fn lesson_517_pro_plus_team_enterprise_share_routing() {
+    fn lesson_1432_pro_plus_team_enterprise_share_nemotron_routing() {
         let _env = lock_env();
-        // Sanity: ProPlus, Team, Enterprise all route to the same GLM +
-        // MiniMax + Kimi + local chain. Lesson 795 (2026-08-30, David):
-        // primary is GLM (not Kimi) because GLM is the only paid-tier
-        // model that reliably fires our plugin's local tools.
-        // Lesson 737 (2026-08-29, David): Starter/StarterPlus share the
-        // same routing as Pro. Token bucket is the only differentiator.
+        // Lesson 1432 (2026-10-23, David): every paid tier now routes to
+        // `maic/chat-nemotron-super` with a Nemotron-first fallback
+        // chain. Starter/StarterPlus/ProPlus/Team/Enterprise all share
+        // the same routing — the token bucket is the only differentiator.
         for tier in [
             crate::auth::tier::Tier::Starter,
             crate::auth::tier::Tier::StarterPlus,
+            crate::auth::tier::Tier::Pro,
             crate::auth::tier::Tier::ProPlus,
             crate::auth::tier::Tier::Team,
             crate::auth::tier::Tier::Enterprise,
         ] {
             let _g = fresh_openclaw_with_model(None, None);
-            let wrote = ensure_agents_default_model_for_tier(tier)
-                .expect("writer should succeed");
+            let wrote = ensure_agents_default_model_for_tier(tier).expect("writer should succeed");
             assert!(wrote, "{:?} should have written", tier);
 
             let path = openclaw_json_path();
@@ -11409,8 +12084,8 @@ mod tests {
                 serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             assert_eq!(
                 cfg.pointer("/agents/defaults/model/primary").unwrap(),
-                "maic/milagro-oc-glm",
-                "{:?} primary must be GLM (Lesson 795)",
+                "maic/chat-nemotron-super",
+                "{:?} primary must be Nemotron Super (Lesson 1432)",
                 tier,
             );
             let fallbacks: Vec<String> = cfg
@@ -11422,8 +12097,8 @@ mod tests {
                 .map(|v| v.as_str().unwrap().to_string())
                 .collect();
             assert_eq!(fallbacks.len(), 3, "{:?} should have 3 fallbacks", tier);
-            assert_eq!(fallbacks[0], "maic/milagro-oc-minimax");
-            assert_eq!(fallbacks[1], "maic/milagro-oc-kimi");
+            assert_eq!(fallbacks[0], "maic/chat-nemotron-ultra");
+            assert_eq!(fallbacks[1], "maic/chat-nemotron-nano");
             assert_eq!(fallbacks[2], "maic/milagro-m1-t3");
         }
     }
@@ -11501,10 +12176,16 @@ mod tests {
         // by starting with empty primary + paid fallbacks (OBJECT form,
         // Lesson 829), then calling the writer with Free.
         let _env = lock_env();
-        let _g = fresh_openclaw_with_model(Some(""), Some(vec!["maic/milagro-oc-minimax", "maic/milagro-dev"]));
+        let _g = fresh_openclaw_with_model(
+            Some(""),
+            Some(vec!["maic/milagro-oc-minimax", "maic/milagro-dev"]),
+        );
         let wrote = ensure_agents_default_model_for_tier(crate::auth::tier::Tier::Free)
             .expect("writer should succeed");
-        assert!(wrote, "empty primary + non-empty fallbacks must trigger write");
+        assert!(
+            wrote,
+            "empty primary + non-empty fallbacks must trigger write"
+        );
 
         let path = openclaw_json_path();
         let cfg: serde_json::Value =
@@ -11524,7 +12205,11 @@ mod tests {
             .collect();
         assert_eq!(
             fallbacks,
-            vec!["maic/milagro-m1-t2", "maic/milagro-m1-t3", "maic/chat-nemotron-nano"],
+            vec![
+                "maic/milagro-m1-t2",
+                "maic/milagro-m1-t3",
+                "maic/chat-nemotron-nano"
+            ],
             "Free downgrade must replace paid fallbacks with Free's m1-t chain"
         );
         // Lesson 829: no top-level fallbacks.
@@ -11565,6 +12250,14 @@ mod tests {
                             {"id": "milagro-oc-kimi", "name": "MAIC kimi"},
                             {"id": "milagro-oc-minimax", "name": "MAIC minimax"},
                             {"id": "milagro-oc-glm", "name": "MAIC glm"},
+                            // Lesson 1432 (2026-10-23): `milagro-stock` is
+                            // a catalog model the app NEVER used as a tier
+                            // seed. The Lesson 824 prefix tests use it as
+                            // their fixture so they exercise the PREFIX
+                            // path (not the seed-migration path) and so
+                            // the value is correctly treated as a manual
+                            // user pick.
+                            {"id": "milagro-stock", "name": "MAIC stock"},
                         ]
                     }
                 }
@@ -11607,7 +12300,7 @@ mod tests {
         // STRIP the top-level key.
         let _env = lock_env();
         let _g = fresh_openclaw_with_bad_top_level_fallbacks(
-            Some("maic/milagro-oc-kimi"),
+            Some("maic/milagro-stock"),
             Some(vec!["maic/milagro-oc-minimax", "maic/milagro-oc-glm"]),
         );
 
@@ -11634,7 +12327,10 @@ mod tests {
             .collect();
         assert_eq!(
             fb_in_obj,
-            vec!["maic/milagro-oc-minimax".to_string(), "maic/milagro-oc-glm".to_string()],
+            vec![
+                "maic/milagro-oc-minimax".to_string(),
+                "maic/milagro-oc-glm".to_string()
+            ],
             "Lesson 829: top-level fallbacks should be lifted into model.fallbacks"
         );
         let primary = cfg
@@ -11642,14 +12338,14 @@ mod tests {
             .and_then(|v| v.as_str());
         assert_eq!(
             primary,
-            Some("maic/milagro-oc-kimi"),
+            Some("maic/milagro-stock"),
             "primary preserved (already prefixed)"
         );
     }
 
     #[test]
     fn lesson_824_prefixes_bare_existing_primary() {
-        // David's bug: agents.defaults.model.primary = "milagro-oc-kimi"
+        // David's bug: agents.defaults.model.primary = "milagro-stock"
         // (bare). The writer must recognize that bare id, prefix it
         // with `maic/`, and persist the file. This is the fix for the
         // rc55.12 chat picker showing only 4 models (gateway
@@ -11657,7 +12353,7 @@ mod tests {
         // `openai/<id>` and MAIC rejected it).
         let _env = lock_env();
         let _g = fresh_openclaw_with_maic_models_and_primary(
-            Some("milagro-oc-kimi"),
+            Some("milagro-stock"),
             Some(vec!["milagro-oc-minimax"]),
         );
 
@@ -11674,7 +12370,7 @@ mod tests {
             .and_then(|v| v.as_str());
         assert_eq!(
             model,
-            Some("maic/milagro-oc-kimi"),
+            Some("maic/milagro-stock"),
             "bare primary must be prefixed with 'maic/'"
         );
         let fallbacks: Vec<String> = cfg
@@ -11699,7 +12395,7 @@ mod tests {
         // should be a no-op (the primary is valid and non-empty).
         let _env = lock_env();
         let _g = fresh_openclaw_with_maic_models_and_primary(
-            Some("maic/milagro-oc-kimi"),
+            Some("maic/milagro-stock"),
             Some(vec!["maic/milagro-oc-minimax"]),
         );
 
@@ -11781,11 +12477,15 @@ mod tests {
         });
         {
             let mut f = std::fs::File::create(&path).unwrap();
-            f.write_all(serde_json::to_string_pretty(&cfg).unwrap().as_bytes()).unwrap();
+            f.write_all(serde_json::to_string_pretty(&cfg).unwrap().as_bytes())
+                .unwrap();
         }
 
         let result = ensure_maic_provider_config().expect("rc18-style entry must rehydrate");
-        assert!(result.provider_configured, "literal key + url means configured");
+        assert!(
+            result.provider_configured,
+            "literal key + url means configured"
+        );
 
         let rehydrated: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -11803,7 +12503,12 @@ mod tests {
         // chat-nemotron-nano (Lesson 565 added t3 for better free
         // experience, 2026-08-24; Lesson 567 added chat-nemotron-nano
         // as a fast NVIDIA MoE option, 2026-08-24).
-        for id in ["milagro-m1-t1", "milagro-m1-t2", "milagro-m1-t3", "chat-nemotron-nano"] {
+        for id in [
+            "milagro-m1-t1",
+            "milagro-m1-t2",
+            "milagro-m1-t3",
+            "chat-nemotron-nano",
+        ] {
             assert!(ids.contains(id), "Free tier must include model {}", id);
         }
         // Total = 4 unique ids for Free tier (Lesson 567).
@@ -11834,8 +12539,10 @@ mod tests {
         // We don't check byte-for-byte because serde_json's pretty-printer
         // could vary on object key order, but the size delta is a good
         // smoke test.
-        assert_eq!(size1, size2,
-                   "second run should not grow the file (got {size1} → {size2})");
+        assert_eq!(
+            size1, size2,
+            "second run should not grow the file (got {size1} → {size2})"
+        );
 
         std::env::remove_var(ENV_VAR_NAME);
         std::env::remove_var("MAIC_API_URL");
@@ -11887,10 +12594,7 @@ mod tests {
             .pointer("/plugins/allow")
             .and_then(|v| v.as_array())
             .expect("plugins.allow must be an array");
-        let allow_strs: Vec<&str> = allow
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
+        let allow_strs: Vec<&str> = allow.iter().filter_map(|v| v.as_str()).collect();
         assert!(
             allow_strs.contains(&"maic"),
             "Lesson 535: plugins.allow must include 'maic' (got {allow_strs:?})"
@@ -11928,10 +12632,7 @@ mod tests {
             .pointer("/plugins/allow")
             .and_then(|v| v.as_array())
             .expect("plugins.allow must be an array");
-        let maic_count = allow
-            .iter()
-            .filter(|v| v.as_str() == Some("maic"))
-            .count();
+        let maic_count = allow.iter().filter(|v| v.as_str() == Some("maic")).count();
         assert_eq!(
             maic_count, 1,
             "Lesson 535: 'maic' must appear exactly once in plugins.allow (got {maic_count})"
@@ -11979,11 +12680,8 @@ mod tests {
             }
         });
         std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
-        std::fs::write(
-            &path,
-            serde_json::to_string_pretty(&existing).unwrap(),
-        )
-        .expect("write existing");
+        std::fs::write(&path, serde_json::to_string_pretty(&existing).unwrap())
+            .expect("write existing");
 
         // Run the bootstrap. It should hit the existing-entry early-return
         // path but STILL stamp plugins.entries.maic.enabled = true.
@@ -12114,12 +12812,16 @@ mod tests {
         // The config object the user set must survive the stamp.
         let user_config = entry_obj.get("config").expect("user config must persist");
         assert_eq!(
-            user_config.pointer("/default_model").and_then(|v| v.as_str()),
+            user_config
+                .pointer("/default_model")
+                .and_then(|v| v.as_str()),
             Some("milagro-dev"),
             "Lesson 833: user-customized config.default_model must survive stamp"
         );
         assert_eq!(
-            user_config.pointer("/max_parallel").and_then(|v| v.as_i64()),
+            user_config
+                .pointer("/max_parallel")
+                .and_then(|v| v.as_i64()),
             Some(5),
             "Lesson 833: user-customized config.max_parallel must survive stamp"
         );
@@ -12277,9 +12979,17 @@ mod tests {
         assert_eq!(epoch_to_ymdhms(0), (1970, 1, 1, 0, 0, 0), "epoch");
         assert_eq!(epoch_to_ymdhms(946684800), (2000, 1, 1, 0, 0, 0), "y2k");
         // 2024-02-29 = leap day
-        assert_eq!(epoch_to_ymdhms(1709164800), (2024, 2, 29, 0, 0, 0), "leap day 2024");
+        assert_eq!(
+            epoch_to_ymdhms(1709164800),
+            (2024, 2, 29, 0, 0, 0),
+            "leap day 2024"
+        );
         // 2026-08-22 00:00:00 UTC
-        assert_eq!(epoch_to_ymdhms(1787356800), (2026, 8, 22, 0, 0, 0), "rc35 ship date");
+        assert_eq!(
+            epoch_to_ymdhms(1787356800),
+            (2026, 8, 22, 0, 0, 0),
+            "rc35 ship date"
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -12313,7 +13023,8 @@ mod tests {
             assert!(resolve_shell_cmd("bash").is_ok());
             assert!(resolve_shell_cmd("sh").is_ok());
             assert!(resolve_shell_cmd("zsh").is_ok());
-            let mc = resolve_shell_cmd("mc-terminal").expect("mc-terminal must resolve on *nix too");
+            let mc =
+                resolve_shell_cmd("mc-terminal").expect("mc-terminal must resolve on *nix too");
             // Lesson 221 + 223: sentinel marker; mc_terminal_start
             // expands it to bundled miracle-claw-gateway.mjs. The full tuple is
             // validated by `mc_terminal_maps_to_openclaw_tui_local`.
@@ -12401,7 +13112,12 @@ mod tests {
     #[test]
     fn new_terminal_id_is_24_hex_chars() {
         let id = new_terminal_id();
-        assert_eq!(id.len(), 24, "session id must be 24 hex chars: got {:?}", id);
+        assert_eq!(
+            id.len(),
+            24,
+            "session id must be 24 hex chars: got {:?}",
+            id
+        );
         assert!(
             id.chars().all(|c| c.is_ascii_hexdigit()),
             "must be hex: {:?}",
@@ -12583,7 +13299,11 @@ mod tests {
         );
         assert_eq!(markers.len(), 1);
         assert!(markers[0].contains("chat/completions"));
-        assert_eq!(non_markers.len(), 0, "marker line should not be a non-marker");
+        assert_eq!(
+            non_markers.len(),
+            0,
+            "marker line should not be a non-marker"
+        );
         assert!(acc.is_empty(), "complete line should be drained from acc");
 
         // Case 2: multiple markers in one chunk.
@@ -12595,7 +13315,12 @@ mod tests {
             |rest| markers.push(rest.to_string()),
             |_| {},
         );
-        assert_eq!(markers.len(), 3, "expected 3 markers, got {}", markers.len());
+        assert_eq!(
+            markers.len(),
+            3,
+            "expected 3 markers, got {}",
+            markers.len()
+        );
         assert!(markers[0].contains("\"a\":1"));
         assert!(markers[1].contains("\"a\":2"));
         assert!(markers[2].contains("\"a\":3"));
@@ -12611,7 +13336,11 @@ mod tests {
         );
         assert_eq!(markers.len(), 2);
         assert!(markers[0].contains("crlf"));
-        assert!(!markers[0].ends_with('\r'), "trailing \\r leaked: {:?}", markers[0]);
+        assert!(
+            !markers[0].ends_with('\r'),
+            "trailing \\r leaked: {:?}",
+            markers[0]
+        );
         assert!(markers[1].contains("crlf2"));
 
         // Case 4: trailing partial line is preserved in the
@@ -12803,9 +13532,9 @@ mod tests {
         // sees it (defense in depth). v0: accept both. v1: maybe
         // tighten to uppercase only.
         assert!(validate_secret_name("lowercase").is_err()); // currently strict
-        // The above is the locked-in v0 behavior. If we want to
-        // accept lowercase, remove this assertion and update the
-        // docstring.
+                                                             // The above is the locked-in v0 behavior. If we want to
+                                                             // accept lowercase, remove this assertion and update the
+                                                             // docstring.
     }
 
     // =====================================================================
@@ -12828,7 +13557,8 @@ mod tests {
     // =====================================================================
 
     fn read_openclaw_json() -> serde_json::Value {
-        let raw = std::fs::read_to_string(openclaw_json_path()).expect("chat config must exist after bootstrap");
+        let raw = std::fs::read_to_string(openclaw_json_path())
+            .expect("chat config must exist after bootstrap");
         serde_json::from_str(&raw).expect("parse chat config")
     }
 
@@ -12849,9 +13579,7 @@ mod tests {
             .as_object()
             .expect("`update` must be an object");
         assert_eq!(
-            update
-                .get("checkOnStart")
-                .and_then(|v| v.as_bool()),
+            update.get("checkOnStart").and_then(|v| v.as_bool()),
             Some(false),
             "fresh install: update.checkOnStart must be false (AP-833-U)"
         );
@@ -12957,7 +13685,9 @@ mod tests {
         ensure_openclaw_json_minimal().expect("ok");
 
         let cfg = read_openclaw_json();
-        let update = cfg["update"].as_object().expect("`update` block must still exist");
+        let update = cfg["update"]
+            .as_object()
+            .expect("`update` block must still exist");
         assert_eq!(
             update.get("checkOnStart").and_then(|v| v.as_bool()),
             Some(true),
@@ -13161,7 +13891,11 @@ mod tests {
         scan_stdout_for_maic_401(&mut acc, chunk2a, |l| matches.push(l.to_string()));
         assert_eq!(matches.len(), 0, "no match yet (response is split)");
         scan_stdout_for_maic_401(&mut acc, chunk2b, |l| matches.push(l.to_string()));
-        assert_eq!(matches.len(), 1, "match should fire after split-across-chunks completes");
+        assert_eq!(
+            matches.len(),
+            1,
+            "match should fire after split-across-chunks completes"
+        );
         assert!(matches[0].contains("status=401"));
         assert!(acc.is_empty(), "no partial should remain");
     }
@@ -13193,6 +13927,10 @@ mod tests {
         scan_stdout_for_maic_401(&mut acc, line_a, |l| matches.push(l.to_string()));
         scan_stdout_for_maic_401(&mut acc, line_b, |l| matches.push(l.to_string()));
         scan_stdout_for_maic_401(&mut acc, line_c, |l| matches.push(l.to_string()));
-        assert_eq!(matches.len(), 3, "all 3 maic 401s in the failover cascade should fire");
+        assert_eq!(
+            matches.len(),
+            3,
+            "all 3 maic 401s in the failover cascade should fire"
+        );
     }
 }

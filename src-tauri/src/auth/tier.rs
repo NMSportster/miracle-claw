@@ -46,6 +46,26 @@ impl Tier {
             "pro" => Tier::Pro,
             "starter_plus" | "starterplus" => Tier::StarterPlus,
             "starter" => Tier::Starter,
+            // Lesson 1432 (2026-10-23, David): `customer` and `local` are
+            // canonical MAIC tiers on the SERVER (`api/tier.py`), but they
+            // were missing here. The old `_ => Tier::Free` arm silently
+            // demoted them to Free — which meant a customer account
+            // whose org tier was absent (or changed) would lose paid
+            // routing, paid-tier tool access, and the Nemotron primary.
+            //
+            // MAIC's server-side resolver (`resolve_effective_tier`)
+            // already normalizes these to `pro` before the client ever
+            // sees them, so this arm is a defense-in-depth fallback for
+            // stale/edge responses — e.g. an older server build, or a
+            // response that carries the raw `users.tier` value instead of
+            // the effective one.
+            //
+            // Mapping both to `Tier::Pro` is deliberate: `customer` and
+            // `local` are PAID-tier entitlements on the server, and every
+            // paid tier shares the same feature set + the same Nemotron
+            // routing (Lesson 737: the token bucket is the only
+            // differentiator).
+            "customer" | "local" => Tier::Pro,
             _ => Tier::Free,
         }
     }
@@ -257,7 +277,10 @@ pub fn publish_tier_env(tier: Tier) {
     unsafe {
         std::env::set_var("MC_USER_TIER", tier.as_str());
     }
-    eprintln!("[miracle-claw] tier: published MC_USER_TIER={}", tier.as_str());
+    eprintln!(
+        "[miracle-claw] tier: published MC_USER_TIER={}",
+        tier.as_str()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -285,21 +308,31 @@ pub fn publish_tier_env(tier: Tier) {
 ///
 /// Free: `milagro-m1-t1` (local Qwen3B-distilled — cheapest local path,
 /// zero Ollama usage, English-only but adequate for simple chat).
-/// Paid: `milagro-dev` (local 14B — best tool-use discipline of any local model;
+/// Paid: `chat-nemotron-super` (NVIDIA Nemotron 3 Super 120B-A12B MoE on
+/// Ollama Cloud).
 ///
-/// Lesson 793 (2026-08-30, David): switched Paid primary
-/// from `milagro-oc-kimi` back to `milagro-dev`. Reason: kimi (100B+ MoE)
-/// prefers OpenClaw built-ins (`web_search`/`web_fetch`) over the 7 paid-tier
-/// plugin tools (`bash_run`, `read_file`, etc.) — and those built-ins are
-/// broken because no Brave API key is configured. RC55.10 verified all 7
-/// paid-tier tools DO reach MAIC (DEBUG-760: caller_tools_count=7,
-/// final_tool_count=17) — the issue was 100% model behavior. 14B has
-/// shown better tool-call discipline than kimi. If kimi is needed later,
-/// add a stronger system prompt or disable built-ins at agent config level.
-/// Previously was `milagro-dev` per Lesson 566 before being changed to kimi.
+/// Lesson 1432 (2026-10-23, David): **Paid primary is now
+/// `chat-nemotron-super` FOR EVERY PAID TIER.** David moved Paid to
+/// Nemotron on 2026-10-07 (~42x cheaper, better across the board) and
+/// reaffirmed it on 2026-10-09 and again on 2026-10-23 — this time
+/// explicitly as a product decision: *"the chat-nemotron-super should be
+/// the primary for every paid tier user."*
 ///
-/// This is also what `mc_get_default_model` returns to the dashboard
-/// so the chat panel's pre-selected model matches the tier routing.
+/// Before this fix, Nemotron lived ONLY in David's personal
+/// `chat.json` — there was no code path in the product that could put
+/// ANY customer on Nemotron automatically. The seeding default for paid
+/// was still `milagro-oc-glm` (Lesson 795, 2026-08-30), and because
+/// `ensure_agents_default_model_for_tier` is non-destructive, the
+/// stale value won. Production symptom (2026-10-23): Brent
+/// (`brentwill42@gmail.com`, effective tier `pro` via org) was stuck on
+/// `milagro-dev` for 543 requests across 3 days, while
+/// `championnm@yahoo.com` (same org, same tier) correctly used
+/// `chat-nemotron-super`. Same entitlement, different `chat.json` —
+/// proof this was client-state, not a server-side routing bug.
+///
+/// This function is also what `mc_get_default_model` returns to the
+/// dashboard so the chat panel's pre-selected model matches the tier
+/// routing.
 ///
 /// Lesson 569 (2026-08-24 22:57 MDT, David): switched Free primary
 /// from `milagro-oc-deepseek` (Lesson 566) back to a local m1-t model.
@@ -318,46 +351,25 @@ pub fn tier_default_model_id(tier: Tier) -> &'static str {
     match tier {
         // Free tier keeps Lesson 737 + 781 default (local m1-t1, smallest).
         Tier::Free => "milagro-m1-t1",
-        // Lesson 795 (2026-08-30, David): Paid primary was
-        // `milagro-oc-glm`, chosen because Kimi preferred OpenClaw
-        // built-ins over plugin tools and GLM fired paid-tier tools
-        // reliably.
-        //
-        // ⚠️ THIS IS NO LONGER WHAT SHIPS. David moved Paid to
-        // `maic/chat-nemotron-super` on 2026-10-07 and reaffirmed it
-        // 2026-10-09: ~42x cheaper and better across the board. That
-        // choice lives in the user's own `chat.json`
-        // (`agents.defaults.model.primary`), NOT here.
-        //
-        // WHY THIS FUNCTION STILL SAYS GLM, AND WHY THAT ISN'T A BUG:
-        // this is the *seeding default* for
-        // `ensure_agents_default_model_for_tier()`, which is
-        // deliberately NON-DESTRUCTIVE — it skips writing when the
-        // user already has `agents.defaults.model`, or has a manual
-        // override that isn't the tier default. So a deliberate
-        // nemotron choice survives normal launches. Verified
-        // 2026-10-21: sidecar logged "agents.defaults.model: already
-        // configured, no change" and the gateway booted on
-        // `maic/chat-nemotron-super`.
-        //
-        // ⚠️ OPEN RISK: if chat.json is ever cleared or re-migrated,
-        // this re-seeds GLM and silently reverts the cost win.
-        // Proper fix = track an "explicitly chosen" flag, or make the
-        // tier default nemotron too. NOT DONE — David hasn't been
-        // asked yet. Tracked in memory/2026-10-21.md Lesson 1422.
+        // Lesson 1432 (2026-10-23, David): every paid tier defaults to
+        // `chat-nemotron-super`. This replaces the stale `milagro-oc-glm`
+        // seeding default (Lesson 795, 2026-08-30), which only ever
+        // applied to customers whose `chat.json` was empty — and which
+        // silently reverted Nemotron users whenever their config was
+        // cleared or re-migrated.
         //
         // NOTE: this value is bare. The writer in
-        // `ensure_agents_default_model_for_tier` (lib.rs:1576) prefixes
-        // `maic/` before writing to openclaw.json, so the on-disk
-        // value is `maic/<id>`. Tests against the openclaw.json file
-        // expect the prefixed form. Tests against THIS function expect
-        // the bare form.
+        // `ensure_agents_default_model_for_tier` (lib.rs) prefixes
+        // `maic/` before writing to chat.json, so the on-disk value is
+        // `maic/<id>`. Tests against the on-disk file expect the
+        // prefixed form. Tests against THIS function expect the bare
+        // form.
         //
         // Lesson 798 (2026-08-30, David): the picker-bug analysis
         // suggested prefixing here too, but the writer already does it,
         // so doing it twice would produce `maic/maic/<id>` (double
         // prefix — confirmed empirically by running tests).
-        _ => "milagro-oc-glm",
+        _ => "chat-nemotron-super",
     }
 }
 
@@ -365,15 +377,27 @@ pub fn tier_default_model_id(tier: Tier) -> &'static str {
 ///
 /// The chain is appended to `agents.defaults.model.fallbacks` (preserving
 /// openclaw's existing fallbacks if the caller has set any). It walks
-/// cheap → expensive models in order, so a transient Kimi outage degrades
-/// to MiniMax-M3 (still cloud, MAIC cascade), then GLM, then the local 14B.
+/// cheap → expensive models in order, so a transient primary outage
+/// degrades gracefully instead of erroring out.
 ///
-/// Why this order (David's 2026-08-20 16:59 MDT):
-///   1. `milagro-oc-minimax` (MiniMax M3) — second-best cloud reasoning at
-///      similar latency to Kimi. Drop-in for long-context chat/code.
-///   2. `milagro-oc-glm` — third cloud option; good for code completion.
-///   3. `milagro-dev` — local 14B fallback if ALL cloud routes fail. Slow
-///      but never returns a network error.
+/// Lesson 1432 (2026-10-23, David): the PAID chain is now
+/// Nemotron-first, matching the `chat-nemotron-super` primary:
+///
+///   1. `chat-nemotron-ultra` — the bigger Nemotron MoE. Same family,
+///      same provider, same billing path. First fallback.
+///   2. `chat-nemotron-nano` — the small/cheap Nemotron MoE (30B/3.5B
+///      active, usage level 1). Cheap insurance before we leave the
+///      Nemotron family.
+///   3. `milagro-m1-t3` — local 14B-distilled. Last resort when ALL
+///      cloud routes fail. Slow, but never returns a network error.
+///
+/// Rationale for keeping the chain inside the Nemotron family first:
+/// the whole point of the Nemotron switch was a ~42x cost reduction
+/// over the old GLM/Kimi cloud chain. Leaving `milagro-oc-glm` or
+/// `milagro-oc-kimi` at the head of the paid fallback chain would
+/// silently reintroduce the expensive routes the first failed request
+/// triggers — exactly when the user is least able to notice and most
+/// likely to be surprised by the bill.
 ///
 /// Free chain (Lesson 569, 2026-08-24 22:57 MDT, David):
 ///   1. `milagro-m1-t2` — local Qwen7B-distilled, higher quality for
@@ -396,25 +420,16 @@ pub fn tier_default_model_id(tier: Tier) -> &'static str {
 pub fn tier_default_fallbacks(tier: Tier) -> &'static [&'static str] {
     match tier {
         // Lesson 521: writer prefixes `maic/`, so we return bare.
-        Tier::Free => &[
-            "milagro-m1-t2",
-            "milagro-m1-t3",
-            "chat-nemotron-nano",
-        ],
-        // Lesson 795: Paid primary is `milagro-oc-glm`, chain stays
-        // MiniMax → kimi → local 14B (bare — writer prefixes).
+        Tier::Free => &["milagro-m1-t2", "milagro-m1-t3", "chat-nemotron-nano"],
+        // Lesson 1432 (2026-10-23, David): Nemotron-first paid chain.
+        // See the function doc comment for why GLM/Kimi/MiniMax were
+        // dropped from the head of the paid chain.
         //
-        // Lesson 1422 (2026-10-21, David): this GLM-primary comment
-        // was ~3 months stale and actively misled a later session
-        // into probing `milagro-oc-glm` when the live Paid model is
-        // `chat-nemotron-super`. Functionally unchanged; see
-        // `tier_default_model_id` for why GLM is only a seeding
-        // default and what the revert risk is.
-        _ => &[
-            "milagro-oc-minimax",
-            "milagro-oc-kimi",
-            "milagro-m1-t3",
-        ],
+        // (History: Lesson 795, 2026-08-30 — paid chain was
+        // MiniMax → Kimi → local 14B with a GLM primary. Lesson 1422,
+        // 2026-10-21 — that comment went stale and misled a later
+        // session. Both are now superseded by Lesson 1432.)
+        _ => &["chat-nemotron-ultra", "chat-nemotron-nano", "milagro-m1-t3"],
     }
 }
 
@@ -499,10 +514,22 @@ mod tests {
         // crate so it handles that form AND plain semver (1.0.0, 2.0.0)
         // AND pre-release ordering in one consistent way.
         use semver::Version;
-        assert_eq!(Version::parse("1.1.0-rc53.28").unwrap().to_string(), "1.1.0-rc53.28");
-        assert_eq!(Version::parse("1.1.0-rc54.1").unwrap().to_string(), "1.1.0-rc54.1");
-        assert_eq!(Version::parse("1.1.0-rc54.0").unwrap().to_string(), "1.1.0-rc54.0");
-        assert_eq!(Version::parse("1.1.0-rc1").unwrap().to_string(), "1.1.0-rc1");
+        assert_eq!(
+            Version::parse("1.1.0-rc53.28").unwrap().to_string(),
+            "1.1.0-rc53.28"
+        );
+        assert_eq!(
+            Version::parse("1.1.0-rc54.1").unwrap().to_string(),
+            "1.1.0-rc54.1"
+        );
+        assert_eq!(
+            Version::parse("1.1.0-rc54.0").unwrap().to_string(),
+            "1.1.0-rc54.0"
+        );
+        assert_eq!(
+            Version::parse("1.1.0-rc1").unwrap().to_string(),
+            "1.1.0-rc1"
+        );
         // Lesson 867's headline reason: 2.0.0 must parse.
         assert_eq!(Version::parse("2.0.0").unwrap().to_string(), "2.0.0");
         assert_eq!(Version::parse("1.0.0").unwrap().to_string(), "1.0.0");
@@ -607,7 +634,10 @@ mod tests {
         // version). We just check that the base version is *something* with
         // a 1.1.0-rc prefix to confirm both versions made it into the
         // message.
-        assert!(err.contains("2.0.0"), "error message should mention required version 2.0.0, got: {err}");
+        assert!(
+            err.contains("2.0.0"),
+            "error message should mention required version 2.0.0, got: {err}"
+        );
         // rc56.0: version is now 1.2.0-rc56.0 (still on the v1 cadence
         // until v2 ships). The test only pins the leading digits to keep
         // the version-bump ceremony from breaking it again.
@@ -628,7 +658,10 @@ mod tests {
         use semver::Version;
         let v2 = Version::parse("2.0.0").unwrap();
         let v1_legacy = Version::parse("1.0.0").unwrap();
-        assert!(v2 >= v1_legacy, "2.0.0 must be >= 1.0.0 (v1 module on v2 base)");
+        assert!(
+            v2 >= v1_legacy,
+            "2.0.0 must be >= 1.0.0 (v1 module on v2 base)"
+        );
     }
 
     #[test]
@@ -729,7 +762,10 @@ mod tests {
         // Free-tier experience (no mc_task_* tools, no priority routing).
         assert!(!Tier::Free.is_paid(), "Free is not paid");
         assert!(Tier::Starter.is_paid(), "Starter is paid (Lesson 737)");
-        assert!(Tier::StarterPlus.is_paid(), "StarterPlus is paid (Lesson 737)");
+        assert!(
+            Tier::StarterPlus.is_paid(),
+            "StarterPlus is paid (Lesson 737)"
+        );
         assert!(Tier::Pro.is_paid());
         assert!(Tier::ProPlus.is_paid());
         assert!(Tier::Team.is_paid());
@@ -779,14 +815,23 @@ mod tests {
         // writing openclaw.json — the bare values here get the
         // prefix added at the boundary.
         let chain = tier_default_fallbacks(Tier::Free);
-        assert_eq!(chain, &["milagro-m1-t2", "milagro-m1-t3", "chat-nemotron-nano"]);
+        assert_eq!(
+            chain,
+            &["milagro-m1-t2", "milagro-m1-t3", "chat-nemotron-nano"]
+        );
         // Defensive: chain must NOT include any usage-level-3+ cloud model.
-        for forbidden in ["milagro-oc-deepseek", "milagro-oc-glm",
-                          "milagro-oc-qwen", "milagro-oc-kimi",
-                          "milagro-oc-minimax"] {
-            assert!(!chain.contains(&forbidden),
-                    "Free fallback chain must not include {forbidden} (usage level 3+ model); \
-                     this would burn Free quota 3-4x faster than nemotron-nano");
+        for forbidden in [
+            "milagro-oc-deepseek",
+            "milagro-oc-glm",
+            "milagro-oc-qwen",
+            "milagro-oc-kimi",
+            "milagro-oc-minimax",
+        ] {
+            assert!(
+                !chain.contains(&forbidden),
+                "Free fallback chain must not include {forbidden} (usage level 3+ model); \
+                     this would burn Free quota 3-4x faster than nemotron-nano"
+            );
         }
     }
 
@@ -812,23 +857,27 @@ mod tests {
         ] {
             assert_eq!(
                 tier_default_model_id(tier),
-                "milagro-oc-glm",
-                "{:?} must default to milagro-oc-glm (Lesson 795)",
+                "chat-nemotron-super",
+                "{:?} must default to chat-nemotron-super (Lesson 1432)",
                 tier,
             );
         }
     }
 
     #[test]
-    fn paid_fallbacks_are_ordered_minimax_then_kimi_then_local() {
-        // Lesson 795 (2026-08-30, David): Paid primary is GLM
-        // (replaces `milagro-dev` from Lesson 793). GLM fires local
-        // tools reliably, but on its first failure we want cloud
-        // alternatives before falling back to local 14B. Kimi is
-        // restored as fallback[1] (was the Lesson 737 default) —
-        // it's fine as a SECONDARY fallback because the chat will
-        // already be running GLM-built context. Lesson 798: writer
-        // at lib.rs:1576 prefixes `maic/` — bare values here.
+    fn paid_fallbacks_are_ordered_nemotron_first() {
+        // Lesson 1432 (2026-10-23, David): the paid fallback chain is
+        // Nemotron-first — ultra → nano → local 14B.
+        //
+        // Rationale (why GLM/Kimi/MiniMax are NOT at the head): the
+        // whole point of the Nemotron switch was a ~42x cost reduction
+        // over the old GLM/Kimi cloud chain. Leaving `milagro-oc-glm` or
+        // `milagro-oc-kimi` at the head of the paid fallback chain would
+        // silently reintroduce the expensive routes on the FIRST failed
+        // request — exactly when the user is least likely to notice and
+        // most likely to be surprised by the bill.
+        //
+        // Lesson 798: writer at lib.rs prefixes `maic/` — bare values here.
         for tier in [
             Tier::Starter,
             Tier::StarterPlus,
@@ -839,10 +888,74 @@ mod tests {
         ] {
             let f = tier_default_fallbacks(tier);
             assert_eq!(f.len(), 3, "{:?} should have exactly 3 fallbacks", tier);
-            assert_eq!(f[0], "milagro-oc-minimax", "{:?} fallback[0] must be MiniMax-M3", tier);
-            assert_eq!(f[1], "milagro-oc-kimi",    "{:?} fallback[1] must be Kimi", tier);
-            assert_eq!(f[2], "milagro-m1-t3",      "{:?} fallback[2] must be local 14B-distilled", tier);
+            assert_eq!(
+                f[0], "chat-nemotron-ultra",
+                "{:?} fallback[0] must be Nemotron Ultra",
+                tier
+            );
+            assert_eq!(
+                f[1], "chat-nemotron-nano",
+                "{:?} fallback[1] must be Nemotron Nano",
+                tier
+            );
+            assert_eq!(
+                f[2], "milagro-m1-t3",
+                "{:?} fallback[2] must be local 14B-distilled",
+                tier
+            );
         }
+    }
+
+    #[test]
+    fn paid_chain_excludes_expensive_cascade_models() {
+        // Lesson 1432 (2026-10-23, David): none of the old paid cascade
+        // models may appear in the paid fallback chain. They'd only be
+        // reachable as an expensive last resort, which is precisely the
+        // bill-surprise the Nemotron switch was meant to eliminate.
+        for tier in [
+            Tier::Starter,
+            Tier::StarterPlus,
+            Tier::Pro,
+            Tier::ProPlus,
+            Tier::Team,
+            Tier::Enterprise,
+        ] {
+            for forbidden in [
+                "milagro-oc-glm",
+                "milagro-oc-kimi",
+                "milagro-oc-minimax",
+                "milagro-oc-qwen",
+                "milagro-oc-deepseek",
+            ] {
+                assert!(
+                    !tier_default_fallbacks(tier).contains(&forbidden),
+                    "{:?} paid fallback chain must not contain {forbidden}",
+                    tier,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn customer_tier_maps_to_paid_not_free() {
+        // Lesson 1432 (2026-10-23, David): `customer` and `local` are
+        // canonical MAIC server tiers (api/tier.py) that were missing
+        // from this client-side enum. The old `_ => Tier::Free` arm
+        // silently demoted them to Free — losing paid routing, paid
+        // tool access, and the Nemotron primary.
+        //
+        // Brent (`brentwill42@gmail.com`) is a `customer` on the users
+        // row and resolves to effective tier `pro` via his org, but a
+        // stale/edge server response carrying the raw `customer` value
+        // must still land on the paid path.
+        assert_eq!(Tier::from_str("customer"), Tier::Pro);
+        assert_eq!(Tier::from_str("CUSTOMER"), Tier::Pro);
+        assert_eq!(Tier::from_str("local"), Tier::Pro);
+        // And they must map to the Nemotron primary, not the Free one.
+        assert_eq!(
+            tier_default_model_id(Tier::from_str("customer")),
+            "chat-nemotron-super",
+        );
     }
 
     #[test]
@@ -852,7 +965,11 @@ mod tests {
         for tier in [Tier::Pro, Tier::ProPlus, Tier::Team, Tier::Enterprise] {
             let primary = tier_default_model_id(tier);
             for f in tier_default_fallbacks(tier) {
-                assert_ne!(*f, primary, "{:?}: fallback {} must differ from primary", tier, f);
+                assert_ne!(
+                    *f, primary,
+                    "{:?}: fallback {} must differ from primary",
+                    tier, f
+                );
             }
         }
     }
@@ -864,7 +981,8 @@ mod tests {
     fn auth_me_response_deserializes_maic_actual_schema() {
         // MAIC's actual response shape per /opt/maic/api/routes/dashboard.py:
         //   { id, name, is_master, tier, plan_code }
-        let maic_real = r#"{"id":12345,"name":"david","is_master":false,"tier":"pro","plan_code":"pro_plus"}"#;
+        let maic_real =
+            r#"{"id":12345,"name":"david","is_master":false,"tier":"pro","plan_code":"pro_plus"}"#;
         let parsed: AuthMeResponse = serde_json::from_str(maic_real)
             .expect("MAIC's actual /v1/auth/me shape must deserialize");
         assert_eq!(parsed.tier, "pro");
