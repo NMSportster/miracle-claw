@@ -9,6 +9,20 @@
 /// both files AND the CSP `connect-src` allowlist in tauri.conf.json.
 pub const OPENCLAW_PORT: u16 = 28789;
 
+/// Lesson 1439 (2026-10-23, David): maximum time we wait for the WebView2
+/// navigation to the chat URL before giving up and reporting a clean
+/// error.
+///
+/// On the cold-profile run that exposed Lesson 1439 the navigation took
+/// 164 seconds. That is not something we want to wait for silently, so we
+/// cap it. The worker thread is NOT killed on timeout (we cannot safely
+/// abort a WebView2 navigation) — it is allowed to finish in the
+/// background, and the navigation may well land after the timeout.
+///
+/// 120s is generous enough to cover a genuinely slow cold start while
+/// still being finite.
+pub const OPENCLAW_NAVIGATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// File name Tauri looks up in `bundle.externalBin`. The actual sidecar
 /// binary on disk is named `miracle-claw-launcher` for *nix and
 /// `miracle-claw-launcher.exe` on Windows — Tauri appends target-triple

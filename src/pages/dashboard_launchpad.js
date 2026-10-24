@@ -917,10 +917,28 @@ async function _onClick(ev) {
         toast("Could not start the OpenClaw gateway. Please wait a moment and try again.", { kind: "error" });
         break;
       }
+      // Lesson 1439 (2026-10-23, David): the WebView2 navigation to the
+      // chat URL can take a long time on a COLD profile — 164s on
+      // rc57.33. The Rust command is now async and does the blocking
+      // navigation off the UI thread, so the app stays responsive. But the
+      // user still needs to be told something is happening, otherwise the
+      // tile looks dead (no repaint, no feedback) and the app reads as
+      // "hung" even though it is fine.
+      //
+      // So: show an immediate "Opening chat…" toast before we await, and
+      // let the Rust side report the timeout if the navigation wedges.
+      toast("Opening chat…", { kind: "info" });
       try {
         await invoke("openclaw_open_window");
       } catch (err) {
-        toast(`Could not open chat window: ${String(err && err.message || err)}`, { kind: "error" });
+        const msg = String((err && err.message) || err);
+        // A navigation timeout is not a gateway failure — say so, so the
+        // user does not go hunting for a gateway problem that isn't there.
+        if (/too long to open/i.test(msg)) {
+          toast("The chat window is taking a while to open. The gateway is running — please wait a moment and try again.", { kind: "error" });
+        } else {
+          toast(`Could not open chat window: ${msg}`, { kind: "error" });
+        }
       }
       break;
     case "launch-terminal":

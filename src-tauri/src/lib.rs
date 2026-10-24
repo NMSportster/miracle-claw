@@ -48,7 +48,9 @@ use tauri::{Emitter, Manager, RunEvent};
 use tauri_plugin_shell::process::CommandEvent;
 
 mod launcher_info;
-use launcher_info::{launcher_binary_name, MAIC_PLUGIN_FILENAMES, OPENCLAW_PORT};
+use launcher_info::{
+    launcher_binary_name, MAIC_PLUGIN_FILENAMES, OPENCLAW_NAVIGATE_TIMEOUT, OPENCLAW_PORT,
+};
 
 // Lesson 458 / v1.0.6: silent-relogin via cached creds in OS keychain.
 // See src/auto_relogin.rs for the full design.
@@ -6493,8 +6495,35 @@ fn mc_refresh_gateway(
 ///
 /// Returns Ok("created") if a new window was spawned, Ok("focused") if
 /// an existing one was brought to front, Err(msg) on failure.
+/// Lesson 1439 (2026-10-23, David): this command MUST be `async`.
+///
+/// Symptom on rc57.33 (David, 18:25 MDT): clicking "Miracle Claw · Windows"
+/// hung the app for ~164 seconds before the chat UI finally appeared.
+///
+/// Root cause: this was a SYNCHRONOUS `#[tauri::command]`. In Tauri v2 a
+/// sync command body runs on the **main/UI thread** — the same thread that
+/// drives the WebView2 message pump. The blocking work in here is:
+///   1. the TCP + HTTP probe loop (bounded ~13s), and
+///   2. `main_window.navigate(chat_url)` — which blocks until WebView2
+///      finishes the navigation.
+///
+/// On a cold WebView2 profile the navigation took 164 seconds. Because the
+/// whole command ran on the UI thread, the entire app was frozen that whole
+/// time: no repaint, no input, no spinner — a true "hung" app. The gateway
+/// was perfectly healthy the entire time (it had been READY since 18:24:56,
+/// ~28s before the click).
+///
+/// Why this never showed up before: 13 of the 14 historical launch-chat
+/// runs navigated in **0 seconds**. Only the cold-profile run was slow.
+/// The bug was latent and only surfaced on the first launch after install.
+///
+/// THE FIX: make the command `async` and push every blocking operation onto
+/// a dedicated worker thread. The UI thread stays free to paint and accept
+/// input while the navigation proceeds. `navigate()` still blocks that
+/// worker thread, but the worker is not the UI thread — the app stays
+/// responsive and the webview repaints normally.
 #[tauri::command]
-fn openclaw_open_window(app_handle: tauri::AppHandle) -> Result<&'static str, String> {
+async fn openclaw_open_window(app_handle: tauri::AppHandle) -> Result<&'static str, String> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // Lesson 491 (rc13): navigate the existing main webview to the chat
@@ -6530,6 +6559,70 @@ fn openclaw_open_window(app_handle: tauri::AppHandle) -> Result<&'static str, St
         "openclaw_open_window: cache_buster v={cache_buster}, chat_url={chat_url}"
     ));
 
+    // Lesson 1439 (2026-10-23, David): run the ENTIRE blocking sequence
+    // (probes + WebView2 navigate) on a dedicated worker thread, and hand
+    // the result back over a channel so the async task can WAIT for it
+    // without blocking.
+    //
+    // Why a channel instead of `worker.join()`: `join()` blocks the calling
+    // thread. In an `async` command that would block a Tokio worker thread
+    // for the full navigation duration (164s on the cold-profile run),
+    // starving the async runtime of that thread. With a channel we can
+    // also apply a TIMEOUT: if WebView2 wedges, we return a clean error
+    // instead of hanging forever.
+    //
+    // The worker owns a clone of the AppHandle; the `navigate()` call
+    // marshals back onto the UI thread internally, but the *calling* code
+    // no longer holds it hostage.
+    let (tx, rx) = std::sync::mpsc::channel::<Result<&'static str, String>>();
+    let app_handle_for_worker = app_handle.clone();
+    let chat_url_for_worker = chat_url.clone();
+    std::thread::Builder::new()
+        .name("mc-openclaw-open-window".to_string())
+        .spawn(move || {
+            let result =
+                openclaw_open_window_blocking(&app_handle_for_worker, &chat_url_for_worker);
+            let _ = tx.send(result);
+        })
+        .map_err(|e| format!("could not start navigation worker: {e}"))?;
+
+    // Wait up to NAVIGATE_TIMEOUT for the navigation to complete. The
+    // gateway itself is already proven healthy by the probes inside the
+    // worker, so exceeding this budget means WebView2 is wedged — report
+    // it instead of hanging the caller forever.
+    match rx.recv_timeout(OPENCLAW_NAVIGATE_TIMEOUT) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            log_to_file(&format!(
+                "openclaw_open_window: navigation exceeded {:?} — reporting timeout, \
+                 but the worker thread is still running (the WebView2 navigation may \
+                 still complete on its own)",
+                OPENCLAW_NAVIGATE_TIMEOUT
+            ));
+            Err(format!(
+                "The chat window took too long to open (> {} seconds).                The gateway is running, so please wait a moment and click                OpenClaw again.",
+                OPENCLAW_NAVIGATE_TIMEOUT.as_secs()
+            ))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("navigation worker exited unexpectedly".to_string())
+        }
+    }
+}
+
+/// Lesson 1439 (2026-10-23, David): the blocking half of
+/// `openclaw_open_window`.
+///
+/// This runs on a dedicated worker thread, NEVER on the UI thread. It
+/// contains the bounded gateway probes and the WebView2 navigation, both
+/// of which can block for a long time on a cold WebView2 profile.
+///
+/// Split out from the command so the command body stays `async` and the
+/// blocking work is provably off the UI thread.
+fn openclaw_open_window_blocking(
+    app_handle: &tauri::AppHandle,
+    chat_url: &str,
+) -> Result<&'static str, String> {
     // Pre-flight: gateway must be reachable AND actually serving HTTP. If
     // the gateway is down, navigating the main webview to the URL would
     // just produce a blank "connection refused" page instead of a
@@ -9795,8 +9888,11 @@ fn build_attachment_message(attachments: &[AttachmentMeta], user_msg: Option<&st
 /// webview window, and return the payload so the JS can write it to
 /// the OS clipboard via navigator.clipboard.writeText. The dashboard
 /// is responsible for clearing the queue after a successful send.
+/// Lesson 1439 (2026-10-23, David): this command is now `async` because
+/// `openclaw_open_window` is async — and because the attachment-send path
+/// triggers the same WebView2 navigation that froze the UI on rc57.33.
 #[tauri::command]
-fn mc_send_attachments_to_chat(
+async fn mc_send_attachments_to_chat(
     app: tauri::AppHandle,
     user_message: Option<String>,
 ) -> Result<String, String> {
@@ -9808,7 +9904,7 @@ fn mc_send_attachments_to_chat(
 
     // Open (or focus) the OpenClaw webview window. Non-fatal if it
     // fails — the user can still paste from clipboard into any window.
-    if let Err(e) = crate::openclaw_open_window(app) {
+    if let Err(e) = crate::openclaw_open_window(app).await {
         eprintln!("[miracle-claw] openclaw_open_window failed: {e}");
     }
 
@@ -14970,6 +15066,193 @@ mod tests {
             matches.len(),
             3,
             "all 3 maic 401s in the failover cascade should fire"
+        );
+    }
+
+    // ========================================================================
+    // Lesson 1439 (2026-10-23, David): the launch-chat UI freeze.
+    //
+    // Symptom: on rc57.33, clicking the "Miracle Claw · Windows" tile
+    // froze the whole app for ~164 seconds before the chat UI appeared.
+    //
+    // Root cause: `openclaw_open_window` was a SYNCHRONOUS
+    // `#[tauri::command]`. In Tauri v2 a sync command body runs on the
+    // MAIN/UI THREAD — the same thread that pumps the WebView2 message
+    // loop. `main_window.navigate()` blocks until WebView2 finishes the
+    // navigation, so the entire UI was frozen for the duration.
+    //
+    // The gateway was healthy the whole time (READY at 18:24:56, click at
+    // 18:25:24, navigation finished 18:28:08). This was never a gateway
+    // or tier problem — it was a thread-affinity problem.
+    //
+    // These tests guard the FIX so nobody silently reverts the command to
+    // a sync fn (which would reintroduce the freeze).
+    // ========================================================================
+
+    /// Lesson 1439: `openclaw_open_window` MUST be an async command.
+    ///
+    /// A sync `#[tauri::command]` runs its body on the UI thread, which is
+    /// exactly the freeze we are fixing. This is the single most important
+    /// guard: if someone changes it back to `fn`, the whole app freezes
+    /// again on a cold WebView2 profile.
+    #[test]
+    fn lesson_1439_open_window_command_is_async() {
+        let src_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("lib.rs");
+        let src = std::fs::read_to_string(&src_path).unwrap_or_else(|e| {
+            panic!("could not read {}: {}", src_path.display(), e);
+        });
+
+        assert!(
+            src.contains("async fn openclaw_open_window("),
+            "openclaw_open_window MUST be an async command — a sync command \
+             body runs on the UI thread and freezes the app during the \
+             WebView2 navigation (Lesson 1439)"
+        );
+        assert!(
+            !src.contains("\nfn openclaw_open_window("),
+            "openclaw_open_window must not be a plain sync fn (Lesson 1439)"
+        );
+    }
+
+    /// Lesson 1439: the blocking navigation must run on a WORKER THREAD,
+    /// never on the UI thread.
+    ///
+    /// The blocking half is `openclaw_open_window_blocking`. The async
+    /// command must hand it to a dedicated thread and wait via a channel.
+    #[test]
+    fn lesson_1439_blocking_navigation_runs_off_the_ui_thread() {
+        let src_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("lib.rs");
+        let src = std::fs::read_to_string(&src_path).unwrap_or_else(|e| {
+            panic!("could not read {}: {}", src_path.display(), e);
+        });
+
+        assert!(
+            src.contains("fn openclaw_open_window_blocking("),
+            "the blocking half of the navigation must live in its own \
+             function so it can be proven to run off the UI thread (Lesson 1439)"
+        );
+        assert!(
+            src.contains("mc-openclaw-open-window"),
+            "the navigation worker thread must be named so it is identifiable \
+             in stack dumps and thread listings (Lesson 1439)"
+        );
+
+        // The worker must hand the result back over a channel, and the
+        // command must NOT join() the thread directly (join() would block
+        // the async runtime's worker thread for the whole navigation).
+        assert!(
+            src.contains("std::sync::mpsc::channel::<Result<&'static str, String>>()"),
+            "the navigation worker must return its result over a channel \
+             (Lesson 1439)"
+        );
+        assert!(
+            src.contains("rx.recv_timeout(OPENCLAW_NAVIGATE_TIMEOUT)"),
+            "the command must wait for the navigation with a TIMEOUT so a \
+             wedged WebView2 can never hang the caller forever (Lesson 1439)"
+        );
+    }
+
+    /// Lesson 1439: the navigation must have a finite timeout.
+    ///
+    /// 164 seconds is not something we want to wait for silently. The
+    /// timeout must be a real, finite, non-zero duration.
+    #[test]
+    fn lesson_1439_navigation_timeout_is_finite_and_non_zero() {
+        let dur = crate::launcher_info::OPENCLAW_NAVIGATE_TIMEOUT;
+        assert!(dur.as_secs() > 0, "the navigation timeout must be non-zero");
+        assert!(
+            dur.as_secs() <= 300,
+            "the navigation timeout must stay bounded (got {:?}) — an \
+             unbounded wait is the hang we are fixing (Lesson 1439)",
+            dur
+        );
+        assert!(
+            dur.as_secs() >= 30,
+            "the navigation timeout must be generous enough to cover a \
+             genuinely slow cold WebView2 start (got {:?}) (Lesson 1439)",
+            dur
+        );
+    }
+
+    /// Lesson 1439: the timeout error message must NOT blame the gateway.
+    ///
+    /// The whole point of the Lesson 1438 fix was to stop telling users
+    /// the gateway could not start when the gateway was fine. A navigation
+    /// timeout is a WebView2 problem, so the message must say so — and the
+    /// frontend must recognise it and phrase it accordingly.
+    #[test]
+    fn lesson_1439_timeout_error_does_not_blame_the_gateway() {
+        let src_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("lib.rs");
+        let src = std::fs::read_to_string(&src_path).unwrap_or_else(|e| {
+            panic!("could not read {}: {}", src_path.display(), e);
+        });
+
+        let idx = src
+            .find("navigation exceeded {:?}")
+            .expect("the timeout branch must log when the navigation exceeds its budget");
+        let window = &src[idx..];
+        let window = &window[..window.len().min(1_500)];
+
+        assert!(
+            !window.contains("gateway is not responding"),
+            "a navigation timeout must not report a gateway failure — the \
+             gateway is healthy in this scenario (Lesson 1439)"
+        );
+        assert!(
+            window.contains("The gateway is running"),
+            "the timeout message must state that the gateway is running \
+             (Lesson 1439)"
+        );
+    }
+
+    /// Lesson 1439: the frontend must give immediate feedback while the
+    /// navigation is in flight.
+    ///
+    /// Without this, a slow navigation looks like a dead click — which is
+    /// exactly what David experienced.
+    #[test]
+    fn lesson_1439_launchpad_shows_feedback_while_navigating() {
+        let js_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|root| {
+                root.join("src")
+                    .join("pages")
+                    .join("dashboard_launchpad.js")
+            })
+            .expect("could not locate the project root from CARGO_MANIFEST_DIR");
+        let js = std::fs::read_to_string(&js_path).unwrap_or_else(|e| {
+            panic!("could not read {}: {}", js_path.display(), e);
+        });
+
+        // Anchor on the ACTUAL invoke call — the string
+        // "openclaw_open_window" also appears in comments further up, so
+        // searching for the bare identifier would find a comment first.
+        let idx = js
+            .find("await invoke(\"openclaw_open_window\")")
+            .expect("the launchpad must invoke openclaw_open_window");
+        // Look a little BEFORE the invoke (the toast is emitted just
+        // above it) and a little after (the error handling).
+        let start = idx.saturating_sub(2_000);
+        let window = &js[start..];
+        let window = &window[..window.len().min(3_000)];
+
+        assert!(
+            window.contains("Opening chat"),
+            "the launchpad must show an immediate 'Opening chat…' toast \
+             before awaiting the navigation, otherwise a slow navigation \
+             looks like a dead click (Lesson 1439)"
+        );
+        assert!(
+            window.contains("too long to open"),
+            "the launchpad must recognise the navigation-timeout error and \
+             phrase it as a chat-window problem, not a gateway problem \
+             (Lesson 1439)"
         );
     }
 }
