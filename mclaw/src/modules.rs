@@ -42,7 +42,7 @@ use crate::client::{self, Client, RunJsonOut};
 
 /// Run a tool on an installed module.
 #[derive(Args, Debug)]
-#[command(about = "Run a tool on an installed module", long_about = "Run a tool on an installed first-party module. The module must be installed first via `mclaw marketplace install <id>`.\n\nThe `module.tool` shorthand is preferred; the explicit `--tool` form is for shells where `.` is awkward.\n\nEXAMPLES:\n  mclaw run firecrawl.fetch_url --input url=https://example.com\n  mclaw run firecrawl.fetch_url --input url=https://example.com --json\n  mclaw run data-analyzer --tool summarize --input dataset=customers --input rows=100\n  mclaw run brand-asset-kit --tool generate --input 'prompt=a calm blue logo'")]
+#[command(about = "Run a tool on an installed module", long_about = "Run a tool on an installed first-party module. The module must be installed first via `mclaw marketplace install <id>`.\n\nThe `module.tool` shorthand is preferred; the explicit `--tool` form is for shells where `.` is awkward.\n\nEXAMPLES:\n  mclaw run firecrawl.fetch_url --input url=https://example.com\n  mclaw run firecrawl.fetch_url --input url=https://example.com --json\n  mclaw run data-analyzer.summarize --input csv_url=https://example.com/data.csv --input focus=revenue\n  mclaw run brand-asset-kit.bio --input platform=linkedin --input 'keywords=auto repair, Albuquerque'")]
 pub struct RunArgs {
     /// Module ID (e.g. "firecrawl") OR `module.tool` shorthand.
     positional: Vec<String>,
