@@ -469,12 +469,29 @@ pub fn mc_secret_clear_all_ephemerals() -> Result<usize, String> {
 //
 // Run with: `cargo test --lib secrets_friendly`
 //
-// These don't touch disk or the static POOL — they exercise the pure
-// canonicalizer + dedup logic.
+// The pure-canonicalizer tests (canonicalize_*, kind_hint_round_trip,
+// lifetime_round_trip) don't touch disk or the static POOL.
+//
+// The three POOL-mutating tests DO share the global `POOL`, and the Rust test
+// harness runs them in parallel. `clear_all_removes_once_and_persession_keeps_vault`
+// calls `clear_all_ephemerals()`, which retains only Vault entries — i.e. it
+// wipes every Once/PerSession entry another test just inserted. That made
+// `take_removes_once_leaves_persession` and `clear_session_removes_only_persession`
+// fail intermittently (~2 failures per 22 parallel runs).
+//
+// Fix (Lesson 1445): serialize the POOL-mutating tests behind a dedicated
+// mutex, so they can never interleave with each other. This keeps the
+// default parallel `cargo test --lib` green without needing
+// `--test-threads=1` for the whole suite.
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serializes the tests that mutate the shared global `POOL`.
+    /// Deliberately separate from `POOL`'s own lock: this one is held for
+    /// the WHOLE test body, whereas `POOL`'s lock is only held per-operation.
+    static POOL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn canonicalize_strips_special_chars() {
@@ -532,6 +549,9 @@ mod tests {
 
     #[test]
     fn take_removes_once_leaves_persession() {
+        // Serialize with the other POOL-mutating tests (Lesson 1445).
+        let _serial = POOL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         // We don't use friendly_set here because it would touch disk for Vault.
         // Instead, mutate POOL directly via a helper closure.
         let mut pool = POOL.lock().unwrap();
@@ -566,6 +586,9 @@ mod tests {
 
     #[test]
     fn clear_session_removes_only_persession() {
+        // Serialize with the other POOL-mutating tests (Lesson 1445).
+        let _serial = POOL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         let mut pool = POOL.lock().unwrap();
         pool.insert("ONCE".into(), EphemeralEntry {
             name: "ONCE".into(), value: "v".into(),
@@ -585,6 +608,9 @@ mod tests {
 
     #[test]
     fn clear_all_removes_once_and_persession_keeps_vault() {
+        // Serialize with the other POOL-mutating tests (Lesson 1445).
+        let _serial = POOL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         // Don't insert a Vault entry (would touch disk in friendly_set).
         // Vault filtering is verified by inspection of the retain() clause.
         let mut pool = POOL.lock().unwrap();
