@@ -105,6 +105,10 @@ pub mod pairing_init;
 pub mod workspace_sync;
 mod workspace_init;
 pub mod workspace_commands;
+// Phase 5 (2026-10-29, Office Bot): persisted MAIC workspace event
+// cursor, so a desktop restart resumes where it left off instead of
+// skipping past notes the phone created while the app was closed.
+pub mod workspace_cursor;
 // Phase 2.3: tiny_http listener for phone-side pairing (POST /pair/initiate, GET /pair/health).
 // Spawned from setup(); heartbeat thread reads bound_port() to advertise the endpoint to MAIC.
 // Spec: docs/specs/mobile-desktop-pairing.md.
@@ -5185,6 +5189,19 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(workspace) =
         app_handle.try_state::<std::sync::Arc<workspace_sync::WorkspaceClient>>()
     {
+        // Phase 5 (2026-10-29, Office Bot): persist the MAIC workspace
+        // event cursor under app_data_dir/workspace/cursor.json, keyed by
+        // MAIC user id. Without this, a desktop restart while a
+        // phone-created note is still pending skips straight past that
+        // note — the user's task silently evaporates. See
+        // workspace_cursor.rs for the full story.
+        if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
+            workspace.set_cursor_dir(app_data_dir);
+        } else {
+            eprintln!(
+                "[miracle-claw] cannot resolve app_data_dir — workspace cursor will not persist"
+            );
+        }
         workspace.start();
         eprintln!("[miracle-claw] workspace sync loop started");
     } else {

@@ -74,6 +74,9 @@ struct Shared {
     last_event_id: AtomicI64,
     tasks_processed: AtomicI64,
     jwt: Mutex<String>,
+    /// Where to persist the event cursor across restarts. `None` disables
+    /// persistence (the pre-fix behaviour: re-drain on every start).
+    cursor_dir: Mutex<Option<std::path::PathBuf>>,
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -90,11 +93,26 @@ pub struct WorkspaceClient {
 
 impl WorkspaceClient {
     pub fn new(endpoint: String, jwt: String) -> Self {
+        Self::with_cursor_dir(endpoint, jwt, None)
+    }
+
+    /// Build a client that persists its event cursor under `dir`.
+    ///
+    /// Lesson (Office Bot, 2026-10-29): without a persisted cursor, a
+    /// desktop restart while a phone-created note is still pending means
+    /// the note is never seen — `drain_to_now()` skips straight past it.
+    /// See `workspace_cursor.rs`.
+    pub fn with_cursor_dir(
+        endpoint: String,
+        jwt: String,
+        cursor_dir: Option<std::path::PathBuf>,
+    ) -> Self {
         let shared = Arc::new(Shared {
             running: AtomicBool::new(false),
             last_event_id: AtomicI64::new(0),
             tasks_processed: AtomicI64::new(0),
             jwt: Mutex::new(jwt),
+            cursor_dir: Mutex::new(cursor_dir),
         });
         Self {
             endpoint,
@@ -107,6 +125,18 @@ impl WorkspaceClient {
     pub fn set_jwt(&self, jwt: String) {
         if let Ok(mut guard) = self.shared.jwt.lock() {
             *guard = jwt;
+        }
+    }
+
+    /// Point the client at a directory where it should persist its event
+    /// cursor. Must be called before `start()` to have any effect.
+    ///
+    /// The app data dir isn't available in the Tauri builder chain (the
+    /// client is `.manage()`d before `setup()` runs), so lib.rs calls
+    /// this from `setup()` where `app_handle.path().app_data_dir()` works.
+    pub fn set_cursor_dir(&self, dir: std::path::PathBuf) {
+        if let Ok(mut guard) = self.shared.cursor_dir.lock() {
+            *guard = Some(dir);
         }
     }
 
@@ -129,6 +159,11 @@ impl WorkspaceClient {
         }
         let endpoint = self.endpoint.clone();
         let shared = Arc::clone(&self.shared);
+        let cursor_dir = shared
+            .cursor_dir
+            .lock()
+            .ok()
+            .and_then(|g| g.clone());
 
         // Lesson (Office Bot, 2026-10-29): a FRESH desktop must not
         // replay the user's whole event history. MAIC's poll endpoint
@@ -144,21 +179,45 @@ impl WorkspaceClient {
         // notes created AFTER it launched, which is the intended
         // "phone sends a task, desktop picks it up" flow.
         //
+        // BUT the follow-up bug (same day): draining on *every* start
+        // means a desktop that restarts while a phone-created note is
+        // still pending will skip straight past that note — the user's
+        // task silently evaporates. So we now PERSIST the cursor:
+        //
+        //   - saved cursor exists → RESUME from it (pending notes from
+        //     before the shutdown are still picked up).
+        //   - no saved cursor → genuinely fresh install → drain to now.
+        //
         // If the drain fails (offline, MAIC down), we fall back to 0 and
         // replay — the per-note guard still protects real notes.
         let jwt = shared.jwt.lock().map(|g| g.clone()).unwrap_or_default();
         if !jwt.is_empty() {
-            match drain_to_now(&endpoint, &jwt) {
-                Ok(max_event_id) => {
-                    shared.last_event_id.store(max_event_id, Ordering::SeqCst);
+            let user_id = crate::workspace_cursor::user_id_from_jwt(&jwt);
+            let saved = cursor_dir
+                .as_ref()
+                .and_then(|dir| crate::workspace_cursor::load_cursor(dir, &user_id));
+
+            match saved {
+                Some(event_id) if event_id > 0 => {
+                    shared.last_event_id.store(event_id, Ordering::SeqCst);
                     eprintln!(
-                        "[workspace-sync] cursor seeded to event {max_event_id} (skipping history)"
+                        "[workspace-sync] resuming from persisted cursor (event {event_id})"
                     );
                 }
-                Err(e) => {
-                    eprintln!(
-                        "[workspace-sync] could not seed cursor ({e}); falling back to full replay"
-                    );
+                _ => {
+                    match drain_to_now(&endpoint, &jwt) {
+                        Ok(max_event_id) => {
+                            shared.last_event_id.store(max_event_id, Ordering::SeqCst);
+                            eprintln!(
+                                "[workspace-sync] cursor seeded to event {max_event_id} (skipping history)"
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[workspace-sync] could not seed cursor ({e}); falling back to full replay"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -166,7 +225,7 @@ impl WorkspaceClient {
         let handle = thread::Builder::new()
             .name("workspace-sync".into())
             .spawn(move || {
-                sync_loop(endpoint, shared);
+                sync_loop(endpoint, shared, cursor_dir);
             })
             .expect("failed to spawn workspace-sync thread");
 
@@ -193,7 +252,7 @@ pub struct WorkspaceStatus {
 // Sync loop (runs on its own thread)
 // ─────────────────────────────────────────────────────────────────────
 
-fn sync_loop(endpoint: String, shared: Arc<Shared>) {
+fn sync_loop(endpoint: String, shared: Arc<Shared>, cursor_dir: Option<std::path::PathBuf>) {
     let mut backoff_ms = 500u64;
 
     while shared.running.load(Ordering::SeqCst) {
@@ -210,11 +269,21 @@ fn sync_loop(endpoint: String, shared: Arc<Shared>) {
             continue;
         }
 
+        // Resolve the MAIC user id (from the JWT) so the persisted cursor
+        // is keyed per-account. Recomputed each iteration because
+        // silent_relogin can swap the JWT (and therefore the account).
+        let user_id = crate::workspace_cursor::user_id_from_jwt(&jwt_snapshot);
+
         match poll_once(&endpoint, &jwt_snapshot, shared.last_event_id.load(Ordering::SeqCst)) {
             Ok(events) => {
                 backoff_ms = 500; // reset backoff on success
                 for ev in events {
                     shared.last_event_id.store(ev.event_id, Ordering::SeqCst);
+                    // Persist the cursor as we go, so a crash or restart
+                    // doesn't lose our place in the event log.
+                    if let Some(dir) = cursor_dir.as_ref() {
+                        crate::workspace_cursor::save_cursor(dir, &user_id, ev.event_id);
+                    }
                     if let Some(note_id) = handle_event(&endpoint, &jwt_snapshot, &ev) {
                         shared.tasks_processed.fetch_add(1, Ordering::SeqCst);
                         eprintln!("[workspace-sync] processed note {}", note_id);
