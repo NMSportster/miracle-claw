@@ -103,6 +103,19 @@ permissions = [
   "allow-mc-task-delete",
   "allow-mc-task-sync",
   "allow-mc-task-login",
+  # Lesson 1013 (2026-09-23, David): force-respawn the openclaw gateway
+  # sidecar so a freshly-written MAIC JWT in chat.json is picked up.
+  # Was missing from the ACL entirely — the command existed in Rust but
+  # had no allow-* entry, so any JS invoke was rejected at runtime with
+  # "Command mc_refresh_gateway not allowed by ACL". Caught by
+  # tests/acl_command_coverage.rs.
+  "allow-mc-refresh-gateway",
+  # Phase 5 (2026-10-29): desktop workspace sync commands.
+  # Every custom Tauri command MUST be listed here AND in
+  # capabilities/main.json — adding it to one alone is NOT enough
+  # (Tauri 2 reads the JSON for the runtime ACL).
+  "allow-mc-workspace-status",
+  "allow-mc-workspace-refresh-jwt",
   # Lesson 836 (rc55.23 fix): MC Workflows / OpenProse backend commands
   # (Lesson 833). The 5 commands — prose_run / prose_compile / prose_poll
   # / prose_kill / prose_examples — were added to prose_host.rs in

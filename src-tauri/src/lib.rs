@@ -95,6 +95,16 @@ pub mod pairing_state;
 // resolution — those are still encapsulated in `build_pairing_state()`.
 pub mod pairing_commands;
 pub mod pairing_init;
+// Phase 5 (2026-10-29): MAIC workspace sync layer — the phone↔desktop
+// message bus. Replaces the pairing model: the desktop no longer needs
+// to be "paired", it just needs a valid MAIC JWT + endpoint and it
+// discovers work via the workspace feed.
+// Ported from origin/fix/workspace-sync-compile-gate (homebot's
+// 2026-10-28 compile-gate work) onto rc57.34. The pairing_* modules
+// stay in place (deprecated) so the history remains recoverable.
+pub mod workspace_sync;
+mod workspace_init;
+pub mod workspace_commands;
 // Phase 2.3: tiny_http listener for phone-side pairing (POST /pair/initiate, GET /pair/health).
 // Spawned from setup(); heartbeat thread reads bound_port() to advertise the endpoint to MAIC.
 // Spec: docs/specs/mobile-desktop-pairing.md.
@@ -5163,6 +5173,26 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         *state.modules.lock().unwrap() = discovered;
     }
 
+    // Phase 5 (2026-10-29): kick off the MAIC workspace sync loop.
+    //
+    // The loop polls MAIC for notes addressed to this user, claims them,
+    // executes them locally, and writes the result back. This is the
+    // phone↔desktop message bus that replaces the pairing model.
+    //
+    // Best-effort: if the client was never registered (e.g. the JWT was
+    // missing at boot) we skip the start rather than fail setup. The
+    // user can sign in and we re-init via mc_workspace_refresh_jwt.
+    if let Some(workspace) =
+        app_handle.try_state::<std::sync::Arc<workspace_sync::WorkspaceClient>>()
+    {
+        workspace.start();
+        eprintln!("[miracle-claw] workspace sync loop started");
+    } else {
+        eprintln!(
+            "[miracle-claw] workspace sync client not registered — sync loop not started"
+        );
+    }
+
     // 7. Phase 2.3 (rc55.19): spawn the phone-pairing HTTP server + 60s
     //    heartbeat ticker.
     //
@@ -9033,11 +9063,11 @@ pub fn scan_stderr_for_mc401<FMarker, FLine>(
 /// The fallback: the openclaw provider-transport DOES log the 401
 /// to stdout in a stable, recognizable format:
 ///
-/// ```
+/// ```text
 /// [provider-transport-fetch] [model-fetch] response provider=maic
 ///   api=openai-completions model=chat-nemotron-super status=401
 ///   elapsedMs=602 contentType=application/json
-/// ```
+/// ``` ```
 ///
 /// We tap that line out of stdout (the same way
 /// `scan_stderr_for_mc401` taps stderr) and fire `silent_relogin`
@@ -10224,6 +10254,11 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState::default())
         .manage(pairing_init::build_pairing_state())
+        // Phase 5 (2026-10-29): workspace sync client. Reads MAIC_API_KEY
+        // + endpoint from env; the loop polls MAIC for notes addressed to
+        // this user, claims them, executes locally, and writes results
+        // back. This is the phone↔desktop bus that replaces pairing.
+        .manage(workspace_init::build_workspace_state())
         .invoke_handler(tauri::generate_handler![
             first_run_report,
             // Lesson TBD (2026-08-27): on-demand voice diagnostics probe.
@@ -10358,6 +10393,11 @@ pub fn run() {
             mc_register_desktop_self,
             mc_restore_pairing_identity,
             mc_get_pairing_status,
+            // Phase 5 (2026-10-29): workspace sync commands. Thin status
+            // surface over the background sync loop — the claim/execute
+            // work runs on its own thread and needs no per-note command.
+            workspace_commands::mc_workspace_status,
+            workspace_commands::mc_workspace_refresh_jwt,
             // Lesson 833 (NEW 2026-09-08, David): MC subagents /
             // workflows. Five Tauri commands surface the bundled
             // open-prose plugin from chat / Terminal tile / Workflow
