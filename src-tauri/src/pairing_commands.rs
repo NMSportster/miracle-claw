@@ -92,7 +92,7 @@ pub struct PairingStatus {
 /// Returned by `mc_paired_devices` for the Settings UI.
 #[derive(Debug, Clone, Serialize)]
 pub struct PairedDeviceInfo {
-    pub device_id: i64,
+    pub device_id: Uuid,
     pub device_name: String,
     pub phone_pubkey_b64: String,
     pub paired_at_unix: u64,
@@ -140,6 +140,18 @@ pub trait MaicHttp: Send + Sync {
         instance_id: &str,
         body: &serde_json::Value,
     ) -> PairingResult<serde_json::Value>;
+    /// PUT /v1/users/me/desktops/{instance_id}/heartbeat
+    ///
+    /// 2026-10-28: this was missing from the trait. `pairing_heartbeat.rs`
+    /// has called `cmds.maic.put_heartbeat(...)` since the heartbeat loop was
+    /// written, but the method was never added to `MaicHttp` — so the crate
+    /// did not compile (E0599: no method named `put_heartbeat` found for
+    /// struct `Arc<(dyn MaicHttp + 'static)>`).
+    ///
+    /// The MAIC endpoint returns **204 No Content**, so it must NOT go
+    /// through `put_json` (which tries to parse a JSON body and would
+    /// fail on an empty response). It gets its own helper.
+    fn put_heartbeat(&self, instance_id: &str, body: &serde_json::Value) -> PairingResult<()>;
     fn delete_desktop(&self, instance_id: &str) -> PairingResult<()>;
     fn post_paired_device(
         &self,
@@ -150,7 +162,7 @@ pub trait MaicHttp: Send + Sync {
     fn delete_paired_device(
         &self,
         instance_id: &str,
-        device_id: i64,
+        device_id: Uuid,
     ) -> PairingResult<()>;
     fn post_drop_folder(
         &self,
@@ -188,6 +200,65 @@ impl LiveMaicHttp {
             .send_string(body)
         {
             Ok(resp) => resp.into_string().map_err(|e| PairingError::MaicRequest(format!("read body: {}", e))),
+            Err(ureq::Error::Status(code, response)) => Err(PairingError::MaicRequest(format!(
+                "PUT {} -> HTTP {}: {}",
+                url,
+                code,
+                response.into_string().unwrap_or_default()
+            ))),
+            Err(e) => Err(PairingError::MaicRequest(format!("PUT {} -> {}", url, e))),
+        }
+    }
+
+    /// POST a JSON body.
+    ///
+    /// 2026-10-28: `post_paired_device` was sending a **PUT** to
+    /// `/v1/users/me/desktops/{instance_id}/paired-devices`, but MAIC
+    /// registers that route as **POST**
+    /// (`@router.post(...)` in api/routes/pairing.py). The desktop's
+    /// request was silently mismatched with the backend's method.
+    fn post_json(&self, path: &str, body: &str) -> PairingResult<String> {
+        use std::time::Duration;
+        let url = self.url(path);
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(10))
+            .build();
+        match agent
+            .post(&url)
+            .set("Authorization", &format!("Bearer {}", self.jwt))
+            .set("Content-Type", "application/json")
+            .send_string(body)
+        {
+            Ok(resp) => resp.into_string().map_err(|e| PairingError::MaicRequest(format!("read body: {}", e))),
+            Err(ureq::Error::Status(code, response)) => Err(PairingError::MaicRequest(format!(
+                "POST {} -> HTTP {}: {}",
+                url,
+                code,
+                response.into_string().unwrap_or_default()
+            ))),
+            Err(e) => Err(PairingError::MaicRequest(format!("POST {} -> {}", url, e))),
+        }
+    }
+
+    /// PUT a request that is expected to return **204 No Content**.
+    ///
+    /// `put_json` cannot be used for these: it calls `resp.into_string()`
+    /// and then parses the result as JSON, which fails on an empty body.
+    /// MAIC's heartbeat endpoint returns 204, so it needs this variant.
+    fn put_no_content(&self, path: &str, body: &str) -> PairingResult<()> {
+        use std::time::Duration;
+        let url = self.url(path);
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(10))
+            .build();
+        match agent
+            .put(&url)
+            .set("Authorization", &format!("Bearer {}", self.jwt))
+            .set("Content-Type", "application/json")
+            .send_string(body)
+        {
+            // 204 (and any other 2xx) with no body is a success.
+            Ok(_) => Ok(()),
             Err(ureq::Error::Status(code, response)) => Err(PairingError::MaicRequest(format!(
                 "PUT {} -> HTTP {}: {}",
                 url,
@@ -253,6 +324,11 @@ impl MaicHttp for LiveMaicHttp {
         let resp = self.put_json(&path, &body.to_string())?;
         serde_json::from_str(&resp).map_err(|e| PairingError::MaicJson(e.to_string()))
     }
+    fn put_heartbeat(&self, instance_id: &str, body: &serde_json::Value) -> PairingResult<()> {
+        let path = format!("/v1/users/me/desktops/{}/heartbeat", instance_id);
+        // MAIC returns 204 No Content here — must not try to parse a body.
+        self.put_no_content(&path, &body.to_string())
+    }
     fn delete_desktop(&self, instance_id: &str) -> PairingResult<()> {
         let path = format!("/v1/users/me/desktops/{}", instance_id);
         self.delete_json(&path)?;
@@ -264,7 +340,8 @@ impl MaicHttp for LiveMaicHttp {
         body: &serde_json::Value,
     ) -> PairingResult<serde_json::Value> {
         let path = format!("/v1/users/me/desktops/{}/paired-devices", instance_id);
-        let resp = self.put_json(&path, &body.to_string())?;
+        // MAIC registers this route as POST, not PUT.
+        let resp = self.post_json(&path, &body.to_string())?;
         serde_json::from_str(&resp).map_err(|e| PairingError::MaicJson(e.to_string()))
     }
     fn get_paired_devices(&self, instance_id: &str) -> PairingResult<Vec<serde_json::Value>> {
@@ -282,7 +359,7 @@ impl MaicHttp for LiveMaicHttp {
     fn delete_paired_device(
         &self,
         instance_id: &str,
-        device_id: i64,
+        device_id: Uuid,
     ) -> PairingResult<()> {
         let path = format!(
             "/v1/users/me/desktops/{}/paired-devices/{}",
@@ -399,6 +476,112 @@ pub fn register_desktop(
     })
 }
 
+/// `mc_register_desktop_self` — register using the identity already on disk.
+///
+/// 2026-10-28: this function was referenced from `lib.rs` but never
+/// existed, so the crate did not compile (E0425: cannot find function
+/// `register_desktop_self` in module `pairing_commands`).
+///
+/// Behavior: load the persisted identity from `app_data_dir`. If one
+/// exists, re-register THAT identity (so the phone keeps seeing the same
+/// desktop); if not, mint a fresh one and persist it. Either way the
+/// `instance_id` in memory is set so subsequent heartbeats advertise the
+/// same identity MAIC knows about.
+///
+/// `frontend_fingerprint` is the fingerprint the frontend computed; the
+/// on-disk identity is authoritative for the keypair, but we keep the
+/// caller's fingerprint if the identity file does not carry one.
+pub fn register_desktop_self(
+    cmds: &PairingCommands,
+    app_data_dir: &std::path::Path,
+    frontend_fingerprint: String,
+) -> PairingResult<DesktopRegistration> {
+    // Load the existing identity, or create one if this is a fresh install.
+    let identity = match crate::pairing_identity::load(app_data_dir) {
+        Ok(Some(id)) => id,
+        Ok(None) => crate::pairing_identity::generate(app_data_dir).map_err(|e| {
+            PairingError::InvalidInput(format!("could not generate pairing identity: {e}"))
+        })?,
+        Err(e) => {
+            // A corrupt identity file should not brick the app. Fall back
+            // to generating a fresh identity; the phone will re-pair.
+            eprintln!(
+                "[miracle-claw] pairing identity unreadable ({e}) — generating a new one"
+            );
+            crate::pairing_identity::generate(app_data_dir).map_err(|e| {
+                PairingError::InvalidInput(format!("could not generate pairing identity: {e}"))
+            })?
+        }
+    };
+
+    let instance_id = identity.instance_id.to_string();
+    let fingerprint = if identity.fingerprint.is_empty() {
+        frontend_fingerprint
+    } else {
+        identity.fingerprint.clone()
+    };
+    // `Identity` implements `Drop` (it zeroizes the secret key on drop), so
+    // its fields cannot be moved out of. Clone the public key string.
+    let desktop_pubkey_b64 = identity.desktop_pubkey_b64.clone();
+
+    // Register with MAIC using the persisted keypair.
+    let body = json!({
+        "instance_name": hostname_or_default(),
+        "public_key": desktop_pubkey_b64,
+        "fingerprint": fingerprint,
+        "endpoint_kind": "lan_or_relay",
+    });
+
+    let response = cmds.maic.put_desktop(&instance_id, &body)?;
+    let drop_folder = response
+        .get("mobile_drop_folder")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    *cmds.instance_id.lock().unwrap() = Some(instance_id.clone());
+
+    Ok(DesktopRegistration {
+        instance_id,
+        desktop_pubkey_b64,
+        fingerprint,
+        capabilities: Capability::locked_v1_scope()
+            .iter()
+            .map(|c| c.as_str().to_string())
+            .collect(),
+        drop_folder,
+    })
+}
+
+/// `mc_restore_pairing_identity` — rehydrate the in-memory identity at startup.
+///
+/// 2026-10-28: this function was referenced from `lib.rs` (both the setup
+/// hook and the `mc_restore_pairing_identity` Tauri command) but never
+/// existed, so the crate did not compile (E0425: cannot find function
+/// `restore_identity` in module `pairing_commands`).
+///
+/// Returns the restored fingerprint (if any) so the caller can log it.
+/// A missing identity file is NOT an error — it just means this is a
+/// fresh install and the user has not registered yet.
+pub fn restore_identity(
+    cmds: &PairingCommands,
+    app_data_dir: &std::path::Path,
+) -> PairingResult<Option<String>> {
+    match crate::pairing_identity::load(app_data_dir) {
+        Ok(Some(identity)) => {
+            *cmds.instance_id.lock().unwrap() = Some(identity.instance_id.to_string());
+            // `Identity` implements `Drop` (zeroizes the secret key), so
+            // clone rather than move the fingerprint out of it.
+            Ok(Some(identity.fingerprint.clone()))
+        }
+        // Fresh install: nothing to restore. Not an error.
+        Ok(None) => Ok(None),
+        Err(e) => Err(PairingError::InvalidInput(format!(
+            "could not read pairing identity: {e}"
+        ))),
+    }
+}
+
 /// `mc_unregister_desktop` — DELETE on MAIC, revoke all sessions.
 pub fn unregister_desktop(cmds: &PairingCommands) -> PairingResult<()> {
     let instance_id = cmds.require_instance_id()?;
@@ -437,17 +620,36 @@ pub fn initiate_pair(
     }
 
     // Tell MAIC we have a new paired device. MAIC returns the device_id.
-    let phone_pubkey_fp = compute_fingerprint(&phone_pubkey_bytes);
+    //
+    // 2026-10-28: this body was wrong on two counts against MAIC's
+    // `PairedDeviceCreateIn` (api/routes/pairing.py):
+    //
+    //   1. Field name: sent `phone_pubkey_fp`, but MAIC requires
+    //      `device_pubkey_fp`. The old name was silently dropped and
+    //      MAIC's `min_length=16` validation would have 422'd.
+    //   2. Missing `device_id`. MAIC declares it as a client-generated
+    //      UUID v4 ("desktop_id is generated client-side (UUID v4) so the
+    //      desktop doesn't need a separate round-trip to learn its MAIC
+    //      identity"). We were relying on MAIC to mint it, which it
+    //      does not do.
+    let device_pubkey_fp = compute_fingerprint(&phone_pubkey_bytes);
+    let device_id = Uuid::new_v4();
     let body = json!({
+        "device_id": device_id.to_string(),
         "device_name": device_name,
-        "phone_pubkey_fp": phone_pubkey_fp,
+        "device_pubkey_fp": device_pubkey_fp,
     });
     let response = cmds.maic.post_paired_device(&instance_id, &body)?;
+    // MAIC returns `device_id` as a UUID **string** (see
+    // `PairedDeviceOut.device_id: UUID` in api/routes/pairing.py), NOT a
+    // number. Parsing with `as_i64()` silently yielded 0 for every
+    // device, so `revoke_device` could never match the right phone.
     let device_id = response
         .get("device_id")
-        .and_then(|v| v.as_i64())
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
         .ok_or_else(|| {
-            PairingError::MaicJson("MAIC did not return a device_id".into())
+            PairingError::MaicJson("MAIC did not return a valid device_id UUID".into())
         })?;
 
     // Mint session + handshake response.
@@ -502,8 +704,11 @@ pub fn paired_devices(
     for entry in raw {
         let device_id = entry
             .get("device_id")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .ok_or_else(|| {
+                PairingError::MaicJson("MAIC returned a paired device with no valid UUID device_id".into())
+            })?;
         let device_name = entry
             .get("device_name")
             .and_then(|v| v.as_str())
@@ -534,7 +739,7 @@ pub fn paired_devices(
 }
 
 /// `mc_revoke_device` — DELETE on MAIC + revoke local sessions.
-pub fn revoke_device(cmds: &PairingCommands, device_id: i64) -> PairingResult<()> {
+pub fn revoke_device(cmds: &PairingCommands, device_id: Uuid) -> PairingResult<()> {
     let instance_id = cmds.require_instance_id()?;
     cmds.maic.delete_paired_device(&instance_id, device_id)?;
     let _ = cmds.state.revoke_device(device_id);

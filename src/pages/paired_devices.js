@@ -91,7 +91,12 @@ export async function revokeDevice(deviceId, btn) {
     btn.textContent = "Revoking…";
   }
   try {
-    await invoke("mc_revoke_device", { deviceId: Number(deviceId) });
+    // 2026-10-28: was `Number(deviceId)`. MAIC's device_id is a UUID
+    // (`PairedDeviceOut.device_id: UUID`), so `Number(...)` produced
+    // `NaN` and the revoke call could never match the right phone.
+    // Tauri deserializes the `Uuid` arg from its string form, so pass
+    // the UUID through unchanged.
+    await invoke("mc_revoke_device", { deviceId: String(deviceId) });
     toast("Phone revoked", "success");
     await refresh();
   } catch (err) {

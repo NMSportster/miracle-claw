@@ -90,6 +90,8 @@
     "allow-mc-task-delete",
     "allow-mc-task-sync",
     "allow-mc-task-login",
+    "allow-mc-workspace-status",
+    "allow-mc-workspace-refresh-jwt",
     "allow-prose-run",
     "allow-prose-compile",
     "allow-prose-poll",

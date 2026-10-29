@@ -949,3 +949,35 @@ commands.allow = ["openclaw_back_to_dashboard"]
 identifier = "deny-openclaw-back-to-dashboard"
 description = "Denies the openclaw_back_to_dashboard command."
 commands.deny = ["openclaw_back_to_dashboard"]
+
+
+# ----------------------------------------------------------------------------
+# v1.2.0 (Phase 5): MC workspace sync commands.
+# ----------------------------------------------------------------------------
+# The desktop-side workspace_sync module (src/workspace_sync.rs) exposes
+# status + JWT refresh to the JS layer. These were missing from the ACL,
+# so `invoke("mc_workspace_status")` failed at runtime with
+# "Command mc_workspace_status not allowed by ACL".
+# Hand-added for the same reason as the other entries above (Lesson 219
+# sccache trap — tauri-build's autogeneration step is skipped on this host).
+# ----------------------------------------------------------------------------
+
+[[permission]]
+identifier = "allow-mc-workspace-status"
+description = "Enables the mc_workspace_status command without any pre-configured scope."
+commands.allow = ["mc_workspace_status"]
+
+[[permission]]
+identifier = "deny-mc-workspace-status"
+description = "Denies the mc_workspace_status command."
+commands.deny = ["mc_workspace_status"]
+
+[[permission]]
+identifier = "allow-mc-workspace-refresh-jwt"
+description = "Enables the mc_workspace_refresh_jwt command without any pre-configured scope."
+commands.allow = ["mc_workspace_refresh_jwt"]
+
+[[permission]]
+identifier = "deny-mc-workspace-refresh-jwt"
+description = "Denies the mc_workspace_refresh_jwt command."
+commands.deny = ["mc_workspace_refresh_jwt"]

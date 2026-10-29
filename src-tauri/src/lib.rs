@@ -8364,6 +8364,17 @@ fn mc_revoke_device(
     cmds: tauri::State<'_, pairing_commands::PairingCommands>,
     device_id: uuid::Uuid,
 ) -> Result<(), String> {
+    // 2026-10-28: this signature was `device_id: uuid::Uuid` and the
+    // `pairing_commands` module used `i64` for device IDs, so the crate
+    // did not compile (E0308: mismatched types, expected `i64`, found
+    // `Uuid`).
+    //
+    // Resolution: `Uuid` is correct and `i64` was the bug. MAIC's
+    // `PairedDeviceOut.device_id` is declared `UUID`
+    // (api/routes/pairing.py), and `PairedDeviceCreateIn.device_id` is
+    // client-generated as a UUID v4. The whole device-id chain is now
+    // `Uuid` end-to-end: MAIC API -> `MaicHttp` trait ->
+    // `PairingState` session entries -> this command.
     pairing_commands::revoke_device(&cmds, device_id).map_err(|e| e.to_string())
 }
 

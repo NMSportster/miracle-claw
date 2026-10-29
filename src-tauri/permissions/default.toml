@@ -114,6 +114,12 @@ permissions = [
   # Tauri 2's invoke error from a denied ACL is the literal string
   # "Command prose_examples not allowed by ACL" — our catch block
   # was swallowing it behind a friendly user message, hiding the cause.
+  # v1.2.0 (Phase 5): desktop workspace sync commands.
+  # Every custom Tauri command MUST be listed here AND in
+  # capabilities/main.json — adding it to one alone is NOT enough
+  # (Tauri 2 reads the JSON for the runtime ACL).
+  "allow-mc-workspace-status",
+  "allow-mc-workspace-refresh-jwt",
   "allow-prose-run",
   "allow-prose-compile",
   "allow-prose-poll",

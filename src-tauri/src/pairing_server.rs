@@ -467,7 +467,7 @@ mod tests {
         fn delete_paired_device(
             &self,
             _instance_id: &str,
-            _device_id: i64,
+            _device_id: uuid::Uuid,
         ) -> PairingResult<()> {
             unimplemented!()
         }
