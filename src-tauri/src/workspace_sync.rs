@@ -265,15 +265,33 @@ fn sync_loop(endpoint: String, shared: Arc<Shared>, cursor_dir: Option<std::path
     // loss of work: a phone-created task sits in the user's list
     // forever, unclaimed.
     //
-    // The server stores a per-device cursor
-    // (db/migrations/046_workspace_cursor.sql). Read it once at start;
-    // a device that has never synced gets 0, which correctly means
-    // "replay from the beginning".
-    let resume_from = fetch_cursor(&endpoint, &shared.jwt.lock().map(|g| g.clone()).unwrap_or_default())
-        .unwrap_or(0);
+    // There are now TWO persisted cursors, and they must not fight:
+    //
+    //   * `workspace_cursor` — a local file, keyed by MAIC user id
+    //     (Office Bot's Phase 5 work). Survives a restart, and is what
+    //     `start()` seeds from (or `drain_to_now()` on a fresh install).
+    //   * the server cursor — per-device, stored in MAIC
+    //     (db/migrations/046_workspace_cursor.sql). Survives a reinstall
+    //     and is shared across a user's devices.
+    //
+    // `start()` has already set `last_event_id` from the local file or
+    // the drain. The server cursor must only ever move it FORWARD, so
+    // take the max of the two: whichever source is further along wins.
+    // A stale server value must never rewind us, and a stale local file
+    // must never make us re-handle notes we already processed.
+    let server_cursor = fetch_cursor(
+        &endpoint,
+        &shared.jwt.lock().map(|g| g.clone()).unwrap_or_default(),
+    )
+    .unwrap_or(0);
+    let local_cursor = shared.last_event_id.load(Ordering::SeqCst);
+    let resume_from = local_cursor.max(server_cursor);
     if resume_from > 0 {
         shared.last_event_id.store(resume_from, Ordering::SeqCst);
-        eprintln!("[workspace-sync] resuming from event {}", resume_from);
+        eprintln!(
+            "[workspace-sync] resuming from event {resume_from} \
+             (local={local_cursor}, server={server_cursor})"
+        );
     }
 
     while shared.running.load(Ordering::SeqCst) {
