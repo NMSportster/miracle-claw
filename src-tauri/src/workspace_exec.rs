@@ -45,6 +45,7 @@ const MAX_TOOL_ITERATIONS: usize = 8;
 const MODEL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The result of executing a note.
+#[derive(Debug)]
 pub struct ExecutionOutcome {
     /// Short summary shown in the phone's task list.
     pub summary: String,
