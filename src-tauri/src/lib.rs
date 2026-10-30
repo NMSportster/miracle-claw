@@ -109,6 +109,11 @@ pub mod workspace_commands;
 // cursor, so a desktop restart resumes where it left off instead of
 // skipping past notes the phone created while the app was closed.
 pub mod workspace_cursor;
+// Real execution engine for workspace notes — replaces the v1 stub that
+// returned a fake "Acknowledged" receipt. Asks MAIC's model to fulfil the
+// task, runs any requested tools LOCALLY on this machine, and returns the
+// answer as the note's `result` subkey.
+pub mod workspace_exec;
 // Phase 2.3: tiny_http listener for phone-side pairing (POST /pair/initiate, GET /pair/health).
 // Spawned from setup(); heartbeat thread reads bound_port() to advertise the endpoint to MAIC.
 // Spec: docs/specs/mobile-desktop-pairing.md.

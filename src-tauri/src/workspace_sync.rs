@@ -15,7 +15,8 @@
 //!      execution.
 //!   4. Otherwise we claim the note by writing `status: in_progress`,
 //!      then run the "execute" step (stubbed in v1 — see
-//!      `execute_note()`), then write `result: {summary, details, ...}`
+//!      `crate::workspace_exec::execute_request()`), then write
+//!      `result: {summary, details, ...}`
 //!      and `status: done`.
 //!   5. Multiple-desktop safety: the executor is idempotent and writes
 //!      are last-writer-wins, so two desktops racing on the same note
@@ -255,6 +256,26 @@ pub struct WorkspaceStatus {
 fn sync_loop(endpoint: String, shared: Arc<Shared>, cursor_dir: Option<std::path::PathBuf>) {
     let mut backoff_ms = 500u64;
 
+    // Resume from where this device left off.
+    //
+    // Without this the cursor lives only in RAM (`last_event_id`), so
+    // every launch either replays the entire event history (cursor 0)
+    // or — if we "start at now" to avoid that — silently skips any note
+    // that was created while the desktop was closed. That is a real
+    // loss of work: a phone-created task sits in the user's list
+    // forever, unclaimed.
+    //
+    // The server stores a per-device cursor
+    // (db/migrations/046_workspace_cursor.sql). Read it once at start;
+    // a device that has never synced gets 0, which correctly means
+    // "replay from the beginning".
+    let resume_from = fetch_cursor(&endpoint, &shared.jwt.lock().map(|g| g.clone()).unwrap_or_default())
+        .unwrap_or(0);
+    if resume_from > 0 {
+        shared.last_event_id.store(resume_from, Ordering::SeqCst);
+        eprintln!("[workspace-sync] resuming from event {}", resume_from);
+    }
+
     while shared.running.load(Ordering::SeqCst) {
         let jwt_snapshot = match shared.jwt.lock() {
             Ok(g) => g.clone(),
@@ -287,6 +308,20 @@ fn sync_loop(endpoint: String, shared: Arc<Shared>, cursor_dir: Option<std::path
                     if let Some(note_id) = handle_event(&endpoint, &jwt_snapshot, &ev) {
                         shared.tasks_processed.fetch_add(1, Ordering::SeqCst);
                         eprintln!("[workspace-sync] processed note {}", note_id);
+                    }
+                }
+                // Persist the cursor so a restart resumes here rather
+                // than replaying history or skipping pending work.
+                //
+                // NOTE: we advance the cursor after handling the batch,
+                // not before fetching it. If the desktop crashes
+                // mid-handle, the cursor has NOT moved past that
+                // event, so the note is retried on the next launch
+                // instead of being silently dropped.
+                let cursor = shared.last_event_id.load(Ordering::SeqCst);
+                if cursor > 0 {
+                    if let Err(e) = persist_cursor(&endpoint, &jwt_snapshot, cursor) {
+                        eprintln!("[workspace-sync] persist_cursor({}) failed: {}", cursor, e);
                     }
                 }
             }
@@ -520,7 +555,7 @@ fn handle_event(endpoint: &str, jwt: &str, ev: &WorkspaceEvent) -> Option<String
     }
 
     // Claim: PUT status: in_progress. Last-writer-wins — concurrent
-    // desktops may both claim, but execute_note() is idempotent so
+    // desktops may both claim, but execution is idempotent enough so
     // duplicate result writes just produce identical output.
     let claim = write_subkey(
         endpoint,
@@ -538,10 +573,47 @@ fn handle_event(endpoint: &str, jwt: &str, ev: &WorkspaceEvent) -> Option<String
         return None;
     }
 
-    // Execute (stubbed in v1 — real work comes in Phase 5).
-    let result_value = execute_note(&note);
+    // Execute for real. If it fails, write a `failed` status so the
+    // phone shows the user WHAT went wrong instead of leaving the
+    // task stuck in `in_progress` forever.
+    let request_value = note
+        .subkeys
+        .get("request")
+        .map(|r| r.value.clone())
+        .unwrap_or_else(|| json!({}));
+
+    let execution = match crate::workspace_exec::execute_request(endpoint, jwt, &request_value) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            eprintln!("[workspace-sync] execute failed for {}: {}", ev.note_id, e);
+            let _ = write_subkey(
+                endpoint,
+                jwt,
+                &ev.note_id,
+                "status",
+                &json!({
+                    "state": "failed",
+                    "error": e,
+                    "failed_at": now_iso8601(),
+                }),
+            );
+            return None;
+        }
+    };
 
     // Write result + done status.
+    let result_value = json!({
+        "summary": execution.summary,
+        "details": execution.details,
+        "kind": note
+            .subkeys
+            .get("request")
+            .and_then(|r| r.value.get("kind"))
+            .and_then(|k| k.as_str())
+            .unwrap_or("message"),
+        "tools_used": execution.tools_used,
+        "completed_at": now_iso8601(),
+    });
     let _ = write_subkey(endpoint, jwt, &ev.note_id, "result", &result_value);
     let _ = write_subkey(
         endpoint,
@@ -586,6 +658,77 @@ fn fetch_note(endpoint: &str, jwt: &str, note_id: &str) -> WorkspaceResult<NoteA
         .map_err(|e| WorkspaceError::MaicJson(e.to_string()))
 }
 
+/// GET this device's stored cursor from MAIC.
+///
+/// Returns the last event id this device processed. `0` means "never
+/// synced" → replay from the beginning, which is correct for a new
+/// device.
+fn fetch_cursor(endpoint: &str, jwt: &str) -> WorkspaceResult<i64> {
+    let url = format!(
+        "{}/v1/users/me/workspace/cursor",
+        endpoint.trim_end_matches('/'),
+    );
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(15))
+        .build();
+    let resp = match agent
+        .get(&url)
+        .set("Authorization", &format!("Bearer {}", jwt))
+        .set("X-Miracle-Device-Id", &format!("desktop:{}", desktop_device_id()))
+        .call()
+    {
+        Ok(r) => r,
+        // A server that predates the cursor endpoint (not yet deployed)
+        // should not break the sync loop — fall back to "replay all".
+        Err(ureq::Error::Status(404, _)) => return Ok(0),
+        Err(ureq::Error::Status(401 | 403, _)) => return Err(WorkspaceError::NotLoggedIn),
+        Err(ureq::Error::Status(code, r)) => {
+            let body = r.into_string().unwrap_or_default();
+            return Err(WorkspaceError::MaicRequest(format!("HTTP {}: {}", code, body)));
+        }
+        Err(e) => return Err(WorkspaceError::MaicRequest(e.to_string())),
+    };
+    let body = resp
+        .into_string()
+        .map_err(|e| WorkspaceError::Other(format!("read body: {}", e)))?;
+    let parsed: Value = serde_json::from_str(&body)
+        .map_err(|e| WorkspaceError::MaicJson(e.to_string()))?;
+    Ok(parsed
+        .get("last_event_id")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0))
+}
+
+/// Store this device's cursor in MAIC so a restart resumes here.
+fn persist_cursor(endpoint: &str, jwt: &str, last_event_id: i64) -> WorkspaceResult<()> {
+    let url = format!(
+        "{}/v1/users/me/workspace/cursor",
+        endpoint.trim_end_matches('/'),
+    );
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(15))
+        .build();
+    let body = serde_json::to_string(&json!({ "last_event_id": last_event_id }))
+        .map_err(|e| WorkspaceError::Other(format!("serialize: {}", e)))?;
+    match agent
+        .put(&url)
+        .set("Authorization", &format!("Bearer {}", jwt))
+        .set("X-Miracle-Device-Id", &format!("desktop:{}", desktop_device_id()))
+        .set("Content-Type", "application/json")
+        .send_string(&body)
+    {
+        Ok(_) => Ok(()),
+        // Not deployed yet — the loop still works, it just won't resume.
+        Err(ureq::Error::Status(404, _)) => Ok(()),
+        Err(ureq::Error::Status(401 | 403, _)) => Err(WorkspaceError::NotLoggedIn),
+        Err(ureq::Error::Status(code, r)) => {
+            let body = r.into_string().unwrap_or_default();
+            Err(WorkspaceError::MaicRequest(format!("HTTP {}: {}", code, body)))
+        }
+        Err(e) => Err(WorkspaceError::MaicRequest(e.to_string())),
+    }
+}
+
 /// PUT one subkey.
 fn write_subkey(endpoint: &str, jwt: &str, note_id: &str, subkey: &str, value: &Value) -> WorkspaceResult<()> {
     let url = format!(
@@ -615,39 +758,6 @@ fn write_subkey(endpoint: &str, jwt: &str, note_id: &str, subkey: &str, value: &
         }
         Err(e) => Err(WorkspaceError::MaicRequest(e.to_string())),
     }
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Execution stub
-// ─────────────────────────────────────────────────────────────────────
-
-/// v1 stub: pretend to "execute" the note and return a result. Real
-/// execution hooks (search, file ops, MAIC tool calls, etc.) land in
-/// Phase 5 once the wire is proven end-to-end.
-fn execute_note(note: &NoteApiResponse) -> Value {
-    let req = note.subkeys.get("request");
-    let title = req
-        .and_then(|r| r.value.get("title"))
-        .and_then(|t| t.as_str())
-        .unwrap_or("(untitled)");
-    let text = req
-        .and_then(|r| r.value.get("text"))
-        .and_then(|t| t.as_str())
-        .unwrap_or("");
-    let kind = req
-        .and_then(|r| r.value.get("kind"))
-        .and_then(|t| t.as_str())
-        .unwrap_or("message");
-
-    json!({
-        "summary": format!("Acknowledged: {} ({})", title, kind),
-        "details": format!(
-            "Desktop received the task at {}.\n\nMessage:\n{}\n\n(execution is stubbed in v1; Phase 5 wires real handlers)",
-            now_iso8601(), text,
-        ),
-        "kind": kind,
-        "completed_at": now_iso8601(),
-    })
 }
 
 // ─────────────────────────────────────────────────────────────────────
