@@ -36,6 +36,24 @@
 import { invoke } from "@tauri-apps/api/core";
 import { navigate } from "../navigation.js";
 import { toast } from "../toast.js";
+// Lesson 1146 (2026-11-02, David): shared module-run helpers, so the
+// launchpad, the Terminal, and the OpenClaw chat toolbar parse MAIC
+// schemas identically and map the same failures to the same words.
+import {
+  formFieldsFromSchema,
+  propJsonSchemaTypeToUiType,
+  mapMclawError as sharedMapMclawError,
+  collectRunInputs,
+  isCheckboxField,
+  cssEscape,
+  moduleTools,
+  selectTool,
+  stripFences,
+} from "../module-run-shared.js";
+// Lesson 1146 (2026-11-02, David): the launchpad's Run modal can now
+// show the same module-level Help overlay the Modules settings page
+// and the Terminal dropdown show.
+import { openModuleHelp } from "./module-help.js";
 // Lesson 969 (2026-09-11, David): the new inline Modules dropdown in
 // the dashboard + terminal toolbars lives in src/modules-menu.js and
 // shares the same form_schema / result-modal logic. The launchpad's
@@ -67,81 +85,21 @@ function escapeHtml(s) {
 //
 // Returns { headline, detail, action } where action is a
 // `{ label, callback }` or null.
+// Lesson 1146 (2026-11-02, David): the error mapper now lives in
+// src/module-run-shared.js so the Terminal, the launchpad, and the
+// OpenClaw chat toolbar all say the same thing about the same failure.
+//
+// The launchpad's old copy was the most complete of the three, but it
+// was still missing 501 -- which matters, because
+// `calendar-companion.find_slot` returns a deliberate COMING_SOON 501
+// and the old mapper rendered that as a flat "MAIC returned 501."
+// instead of explaining the private-beta waitlist.
 function mapMclawError(err) {
-  const raw = String(err?.message || err || "");
-
-  // Parse the Rust-side `HTTP <code>: <body>` shape.
-  const m = raw.match(/^HTTP\s+(\d{3}):\s*(.*)$/s);
-  if (!m) {
-    // Non-HTTP error (network, timeout, etc.). Show as-is.
-    return { headline: raw || "Something went wrong.", detail: null, action: null };
-  }
-  const status = parseInt(m[1], 10);
-  const body = m[2].trim();
-
-  // Try to extract the MAIC `detail` field for the detail line.
-  let detailText = body;
-  try {
-    const parsed = JSON.parse(body);
-    if (parsed && typeof parsed.detail === "string") {
-      detailText = parsed.detail;
-    }
-  } catch {
-    // body wasn't JSON; use it as-is.
-  }
-
-  switch (status) {
-    case 401:
-      return {
-        headline: "Your session expired. Please sign in again.",
-        detail: detailText,
-        action: { label: "Sign in", callback: () => navigate("login") },
-      };
-    case 403:
-      return {
-        headline: "You don't have access to this module.",
-        detail: detailText,
-        action: null,
-      };
-    case 404:
-      return {
-        headline: "This module isn't installed. Try installing it again.",
-        detail: detailText,
-        action: { label: "Install", callback: null /* caller fills in */ },
-      };
-    case 409:
-      return {
-        headline: "This module is already installed.",
-        detail: detailText,
-        action: null,
-      };
-    case 422:
-      return {
-        headline: "Invalid input. Check the form fields and try again.",
-        detail: detailText,
-        action: null,
-      };
-    case 429:
-      return {
-        headline: "Too many requests. Wait a moment and try again.",
-        detail: detailText,
-        action: null,
-      };
-    case 502:
-    case 503:
-    case 504:
-      return {
-        headline: "MAIC is temporarily unavailable. Try again in a moment.",
-        detail: detailText,
-        action: null,
-      };
-    default:
-      return {
-        headline: `MAIC returned ${status}.`,
-        detail: detailText,
-        action: null,
-      };
-  }
+  return sharedMapMclawError(err, {
+    actions: {
+      signIn: { label: "Sign in", callback: () => navigate("login") },
+    },
+  });
 }
 
 
@@ -512,7 +470,19 @@ function openModuleModal(module, opts) {
     <div class="mc-modal-panel">
       <header class="mc-modal-header">
         <h3>${escapeHtml(module.name)} · ${escapeHtml(tool.name)}</h3>
-        <button class="mc-iconbtn" data-action="modal-close" title="Close">×</button>
+        <div class="mc-modal-header-actions">
+          <!-- Lesson 1146 (2026-11-02, David): module-level Help in the
+               Run modal, backed by the canonical catalog in
+               src/data/module-help.js. Until now only the Modules
+               settings page had a Help button, so launchpad users had
+               no in-context help for a module they were about to run. -->
+          <button class="mc-modal-help-btn" type="button"
+                  data-action="module-help"
+                  data-module-id="${escapeHtml(module.module_id)}"
+                  aria-label="Help for ${escapeHtml(module.name)}"
+                  title="Show usage help">❔ Help</button>
+          <button class="mc-iconbtn" data-action="modal-close" title="Close">×</button>
+        </div>
       </header>
       <p class="mc-modal-tool-desc">${escapeHtml(tool.description || "")}</p>
       ${instructions ? `
@@ -539,6 +509,18 @@ function openModuleModal(module, opts) {
     if (!target) return;
     if (target.dataset.action === "modal-close") {
       _closeModal();
+    } else if (target.dataset.action === "module-help") {
+      // Lesson 1146: open the canonical help overlay. Keep the run
+      // modal mounted underneath so the user can close Help and carry
+      // on with what they typed.
+      ev.preventDefault();
+      ev.stopPropagation();
+      openModuleHelp(module.module_id, {
+        name: module.name,
+        icon: module.icon || (module.client_manifest && module.client_manifest.icon) || "❔",
+        version:
+          module.version || (module.client_manifest && module.client_manifest.version) || "?",
+      });
     }
   });
 
@@ -562,53 +544,18 @@ function openModuleModal(module, opts) {
     // `required` (e.g. optional with min=0) where the user typed
     // something non-numeric. We can't do this until after the
     // form's input values are read.
-    const fd = new FormData(form);
-    const inputs = {};
-    for (const [k, v] of fd.entries()) {
-      // For checkboxes (Boolean) the absence means false; the form
-      // includes a hidden "" value first so we skip those empty
-      // entries. For number inputs the string is parsed below.
-      if (typeof v === "string" && v === "" && isCheckboxField(form, k)) continue;
-      inputs[k] = v;
-    }
-    // Coerce number fields from string → number so MAIC gets the
-    // typed value (the Rust side validates `integer`/`number` strictly).
-    for (const f of fields) {
-      if ((f.type === "number" || f.type === "integer") && k in inputs) {
-        const n = Number(inputs[k]);
-        if (!Number.isNaN(n)) inputs[k] = n;
-      }
-    }
-    // Apply defaults for fields the user left blank.
-    for (const f of fields) {
-      if (!(f.name in inputs) && f.default !== undefined) inputs[f.name] = f.default;
-    }
-    // Coerce booleans from checkbox presence.
-    for (const f of fields) {
-      if (f.type === "boolean") {
-        inputs[f.name] = !!form.querySelector(`input[name="${cssEscape(f.name)}"]:checked`);
-      }
-    }
-
-    // Re-check for number fields whose empty string failed the
-    // HTML5 check (because they weren't required) but would still
-    // produce a NaN when coerced. Treat this as "missing optional
-    // number" — the apply-defaults step above already filled in
-    // defaults, so any number field that survived to here is
-    // either valid (Number.isFinite) or genuinely broken. We
-    // surface the latter as a toast.
-    const broken = [];
-    for (const f of fields) {
-      if ((f.type === "number" || f.type === "integer") && inputs[f.name] !== undefined) {
-        if (typeof inputs[f.name] === "string" && inputs[f.name].trim() === "") {
-          // Empty string on a number field after HTML5 passed;
-          // strip the bad value so MAIC gets a clean absence.
-          delete inputs[f.name];
-        } else if (typeof inputs[f.name] === "number" && !Number.isFinite(inputs[f.name])) {
-          broken.push(f);
-        }
-      }
-    }
+    // Lesson 1146 (2026-11-02, David): input collection moved to
+    // src/module-run-shared.js.
+    //
+    // This block used to read `k in inputs` / `inputs[k]` inside the
+    // per-field loop, where `k` was the leftover FormData key from the
+    // enclosing loop -- a bug the Terminal had already fixed in Lesson
+    // 970 but the launchpad still carried. On a form with more than
+    // one field the last field's value was written under the WRONG
+    // key, so MAIC received e.g. `{limit: "5", q: 3}` instead of
+    // `{limit: 5, q: "3"}` -- the number coercion landed on the
+    // wrong field and the string never got coerced.
+    const { inputs, broken } = collectRunInputs(form, fields);
     if (broken.length > 0) {
       const result = modal.querySelector(".mc-modal-result");
       result.hidden = false;
@@ -632,7 +579,7 @@ function openModuleModal(module, opts) {
       // wrapped it in markdown ```json fences. Strip those for the
       // preview, but keep the original as a copy-to-clipboard action.
       const out = String(run.outputs ?? "");
-      const stripped = out.replace(/^```(?:json)?\n/, "").replace(/\n```$/, "").trim();
+      const stripped = stripFences(out);
       result.textContent = stripped || out || "(no output)";
       result.dataset.rawOutput = out;
     } catch (err) {
@@ -669,72 +616,14 @@ function openModuleModal(module, opts) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Week 3 (2026-09-09): form_schema → UI fields.
-// Mirrors src-tauri/src/form_schema.rs::parse_form_schema. Each surface
-// (launchpad, TUI, mclaw) calls its own renderer against the same
-// parsed structure. If you change this, change the Rust parser too.
-
-// Parse a MAIC form_schema (JSON Schema subset) into a list of fields
-// the launchpad's HTML renderer knows how to draw.
-function formFieldsFromSchema(schema) {
-  if (!schema || typeof schema !== "object") return [];
-  if (schema.type !== "object") return [];
-  const properties = schema.properties || {};
-  const required = Array.isArray(schema.required) ? schema.required : [];
-  const out = [];
-  let order = 0;
-  for (const [name, prop] of Object.entries(properties)) {
-    if (!prop || typeof prop !== "object") continue;
-    const label = prop.title || name;
-    const isRequired = required.includes(name);
-    const type = propJsonSchemaTypeToUiType(prop);
-    const field = {
-      name,
-      label,
-      type,
-      required: isRequired,
-      default: prop.default,
-      displayOrder: order++,
-    };
-    if (type === "select" && Array.isArray(prop.enum)) field.options = prop.enum;
-    if (type === "number" || type === "integer") {
-      if (prop.minimum !== undefined) field.min = prop.minimum;
-      if (prop.maximum !== undefined) field.max = prop.maximum;
-      if (prop.minLength !== undefined) field.minLength = prop.minLength;
-      if (prop.maxLength !== undefined) field.maxLength = prop.maxLength;
-    }
-    if (type === "text" || type === "textarea") {
-      if (prop.minLength !== undefined) field.minLength = prop.minLength;
-      if (prop.maxLength !== undefined) field.maxLength = prop.maxLength;
-    }
-    // rc57.11 (2026-10-07, David): per-field help text from the form
-    // schema's `description` field. Rendered under the input as a
-    // small muted line so users see what good input looks like
-    // without opening the "How to use" details block. Trimmed to a
-    // reasonable length so a runaway schema can't blow up the form.
-    if (typeof prop.description === "string" && prop.description.trim().length > 0) {
-      field.help = prop.description.trim().slice(0, 240);
-    }
-    if (typeof prop.placeholder === "string" && prop.placeholder.trim().length > 0) {
-      field.placeholder = prop.placeholder.trim().slice(0, 120);
-    }
-    out.push(field);
-  }
-  return out;
-}
-
-// Map a JSON Schema property type → launchpad UI type tag. The Rust
-// `FieldKind::type_tag` uses the same strings so JS and Rust agree.
-function propJsonSchemaTypeToUiType(prop) {
-  if (prop.type === "boolean") return "boolean";
-  if (prop.type === "integer" || prop.type === "number") return prop.type;
-  if (prop.type === "string") {
-    if (Array.isArray(prop.enum) && prop.enum.length > 0) return "select";
-    if (prop.format === "long-text" || prop.format === "textarea") return "textarea";
-    return "text";
-  }
-  return "text"; // fallback: treat unknown as plain text
-}
+// Lesson 1146 (2026-11-02, David): form_schema parsing moved to
+// src/module-run-shared.js. The launchpad's copy emitted
+// `displayOrder`/`options`/`min` while the Terminal's copy emitted
+// `order`/`enum`/`minimum`, and they used different type vocabularies
+// (text/select/textarea vs string/number/array/object). The same
+// MAIC schema therefore produced different forms on the two surfaces.
+// The shared parser emits the union of both shapes so neither renderer
+// loses information.
 
 // Render one parsed field as an HTML label + input pair. Mirrors the
 // snippet in openModuleModal but extracted for testability.
@@ -784,17 +673,6 @@ function renderField(f) {
 // Detect whether a field is a checkbox (the form has a hidden "" before
 // the real checkbox; if we see two inputs with the same name, the
 // second is the checkbox and absence means unchecked).
-function isCheckboxField(form, name) {
-  const els = form.querySelectorAll(`input[name="${cssEscape(name)}"]`);
-  return els.length >= 2 && els[1].type === "checkbox";
-}
-
-// Minimal CSS.escape polyfill for older Tauri webviews.
-function cssEscape(s) {
-  if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(s);
-  return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => `\\${c}`);
-}
-
 // --- mount ---------------------------------------------------------------
 
 async function mount(root, ctx) {

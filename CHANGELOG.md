@@ -5,6 +5,112 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.0-rc57.36] — 2026-11-02 (Lesson 1146: all three module toolbars fixed — tool picker, Help, and consistent errors)
+
+An audit of every module-toolbar surface in Miracle Claw found that **only 1 of 3
+was actually working**. The OpenClaw chat webview had been repaired in rc57.35,
+but the MC Terminal page and the MC Dashboard launchpad had never been
+audited — and both had real, user-visible breakage.
+
+| Surface | File | Before | After |
+|---|---|---|---|
+| OpenClaw chat webview | `depot/openclaw-patches/dist/control-ui/mc-toolbar.js` | multi-tool picker broken, no module Help | fixed (rc57.35) |
+| MC Terminal page | `src/modules-menu.js` | only `tools[0]` reachable, no Help, thin error mapping | fixed |
+| MC Dashboard launchpad | `src/pages/dashboard_launchpad.js` | no Help, latent input-key bug, thin error mapping | fixed |
+
+### The headline bug: 14 of Calendar's 15 tools were unreachable in the Terminal
+
+`openModuleModal()` hardcoded `const firstTool = tools[0];`. With no tool picker,
+the Terminal could only ever run `search_events` — the other **14** Calendar
+tools (create/update/delete/move/cancel, busy/tentative/free, free-slot search,
+ICS import, message extraction, and more) were completely unreachable from that
+surface. A full tool picker was added: picking a tool swaps the form in place and
+`opts.toolName` preselects a specific tool.
+
+### Bugs fixed
+
+1. **Terminal: no tool picker** — added; 15 Calendar tools now reachable.
+2. **Launchpad: latent input-key bug.** The input-collection loop wrote
+   `inputs[k]` inside a per-field loop where `k` was a leftover FormData key.
+   On any multi-field form the last field's value landed under the **wrong
+   key**, so MAIC received `{limit: "5", q: 3}` instead of `{limit: 5, q: "3"}`.
+   The Terminal had already fixed this in Lesson 970; the launchpad still
+   carried the original bug.
+3. **Blank optional INTEGER was sent as `0`.** `Number("")` is `0`, so
+   Calendar's optional `calendar_id` was submitted as `calendar_id: 0` ("calendar
+   id zero") instead of being omitted. Present in *both* pre-existing copies.
+4. **Divergent schema parsers.** The Terminal emitted
+   `order`/`enum`/`minimum` with types `string/number/array/object`; the
+   launchpad emitted `displayOrder`/`options`/`min` with types
+   `text/select/textarea/number`. The same MAIC schema produced two different
+   forms depending on which surface you opened it from.
+5. **Divergent error mappers.** The Terminal knew only 401/429/network; the
+   launchpad did not know **501**. `calendar-companion.find_slot` returns a
+   deliberate `501 COMING_SOON` (private beta) and rendered as a bare
+   "MAIC returned 501." instead of explaining itself.
+6. **Stale `_openMenu` module state.** `src/modules-menu.js` keeps `_openMenu`
+   at module scope. After a re-render the reference pointed at a detached node,
+   so `if (_openMenu) { closeMenu(); return; }` made the **first click a no-op**
+   and the dropdown appeared to do nothing. Fixed with `_openMenu.isConnected`.
+7. **No module-level Help** outside the Modules settings page.
+
+### Module-level Help added to both surfaces
+
+Every dropdown row in the Terminal and the Run modal in the launchpad now carry
+a `❔ Help` affordance that opens the **same canonical overlay** the Modules
+settings page uses, backed by `src/data/module-help.js` +
+`src/data/maic-module-help.js`. All 9 live MAIC modules and all 9 local modules
+have complete help (who it's for, why use it, what it does, Windows UI notes,
+examples, troubleshooting). The Help affordance is a sibling button rather than a
+nested one (nesting a button inside a button is invalid HTML and broke
+keyboard navigation), and it stops propagation so it never runs the module.
+
+The OpenClaw chat toolbar patch must stay self-contained (it cannot import from
+`src/`), so its help copy is a **generated** duplicate —
+`scripts/sync-toolbar-module-help.mjs` writes it and `--check` drift-tests it.
+
+### Consolidation: one shared module, three surfaces
+
+New `src/module-run-shared.js` is now the single source of truth for
+`formFieldsFromSchema`, `propJsonSchemaTypeToUiType`, `mapMclawError`,
+`collectRunInputs`, `isCheckboxField`, `cssEscape`, `moduleTools`, `selectTool`,
+and `stripFences`. The Terminal and the launchpad are thin adapters over it.
+The shared field parser emits the **union** of both previous field shapes
+(`order` *and* `displayOrder`, `enum` *and* `options`, `minimum` *and* `min`)
+so neither renderer loses information.
+
+`mapMclawError` keeps the launchpad's exact wording contract (its existing
+tests pin it) and adds the codes the Terminal was missing: 400, 403, 404, 409,
+422, 429, 501, 502, 503, 504, and every other 5xx. The 501 headline now reads
+"That tool is not available yet -- it is in private beta. The waitlist link is
+in the details below." The OpenClaw patch's `humanizeRunError()` wording was
+aligned to match, so all three surfaces say the same thing about the same
+failure.
+
+### Tests
+
+The Terminal and launchpad had **zero** DOM-level coverage — which is exactly
+why these bugs survived. New jsdom harness
+(`src/pages/mc_toolbar_surfaces_harness.mjs`) boots the real source modules
+against a real DOM and stubs only the Tauri IPC boundary, so the tests drive
+the actual dropdown → picker → form → Run flow rather than a reimplementation.
+
+`src/pages/mc_toolbar_surfaces_test.mjs` adds 17 regression tests covering tool
+selection and form swapping, optional-number omission, Help on both surfaces
+(including "Help must not run the module"), 501/422/404/raw error rendering,
+and launchpad requested-tool submission.
+
+**Tests: 188 passed, 0 failed** (`npm run test:js`), up from 168.
+
+### Files
+
+`src/module-run-shared.js` (new), `src/data/maic-module-help.js` (new),
+`src/modules-menu.js`, `src/pages/dashboard_launchpad.js`,
+`src/pages/module-help.js`, `src/data/module-help.js`, `src/styles.css`,
+`depot/openclaw-patches/dist/control-ui/mc-toolbar.{js,css}`,
+`depot/openclaw-patches/MANIFEST.md`, `scripts/sync-toolbar-module-help.mjs`
+(new), `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`.
+
 ## [v1.2.0-rc57.22] — 2026-10-19 (Lesson 1146: Disable auto-relogin on MAIC 401 — force manual re-login)
 
 When the MAIC JWT expires (7-day TTL), the openclaw chat plugin emits a `[MC-401]` marker to stderr. The Tauri parent (`src-tauri/src/lib.rs::handle_mc401_marker`) was set up in Lesson 1140 (rc57.14) to TAP that marker and fire `silent_relogin` — which decrypted cached `email|password` from Windows Credential Manager, POSTed to `/v1/users/login`, minted a fresh JWT, and respawned the gateway silently. The user never saw the 401.

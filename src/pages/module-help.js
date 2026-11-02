@@ -216,7 +216,7 @@ function attachHandlers(overlay, onClose) {
   };
 }
 
-export function openModuleHelp(id) {
+export function openModuleHelp(id, opts = {}) {
   // Close any existing overlay first.
   const existing = document.querySelector(".mhelp-overlay");
   if (existing) {
@@ -227,21 +227,35 @@ export function openModuleHelp(id) {
   const help = getModuleHelp(id);
   if (!help) {
     console.warn(`[mhelp] no help content for module id=${id}`);
-    return;
+    return null;
   }
 
   // Pull module metadata from the catalog card if present.
-  const card = document.querySelector(
-    `.modules-card[data-module-id="${CSS.escape(id)}"]`
-  );
+  //
+  // Lesson 1146 (2026-11-02, David): the Terminal toolbar and the
+  // dashboard launchpad now open this same overlay, and neither one
+  // has a `.modules-card` in the DOM to scrape. Callers can pass
+  // explicit metadata instead. The settings page keeps its scrape
+  // path unchanged.
+  // Fall back to the settings-page card only when the caller did NOT
+  // supply explicit metadata AND a card is actually present. The
+  // Terminal toolbar and the dashboard launchpad have no
+  // `.modules-card`, so without this guard they'd silently fall back
+  // to scraping whatever unrelated card happened to match.
+  const scraped = opts.name
+    ? null
+    : document.querySelector(`.modules-card[data-module-id="${CSS.escape(id)}"]`);
+  const card = scraped;
   const moduleMeta = {
     id,
-    name: card?.querySelector(".modules-card-name")?.textContent || id,
-    icon: card?.querySelector(".modules-icon")?.textContent || "❔",
+    name: opts.name || card?.querySelector(".modules-card-name")?.textContent || id,
+    icon: opts.icon || card?.querySelector(".modules-icon")?.textContent || "❔",
     version:
+      opts.version ||
       card?.querySelector(".modules-version")?.textContent?.replace(/^v/, "") ||
       "?",
     publisher:
+      opts.publisher ||
       card?.querySelector(".modules-card-publisher")?.textContent?.replace(
         /^by\s+/,
         ""
@@ -260,6 +274,7 @@ export function openModuleHelp(id) {
 
   // Focus the close button so Esc/Tab work naturally.
   overlay.querySelector(".mhelp-close")?.focus();
+  return overlay;
 }
 
 export function closeModuleHelp() {

@@ -28,6 +28,7 @@
 // All content is plain text — no markdown, no HTML. The renderer escapes
 // it for safety. Keep examples concrete (real commands, real expected
 // outputs) so the user can copy-paste-test.
+import { MAIC_MODULE_HELP } from "./maic-module-help.js";
 export const MODULE_HELP = {
   voice: {
     whoFor:
@@ -812,5 +813,10 @@ export const MODULE_HELP = {
 };
 
 export function getModuleHelp(id) {
-  return MODULE_HELP[id] || null;
+  // Lesson 1144 (2026-11-02, David): the MAIC-hosted catalog replaced
+  // the old local add-on set. Check BOTH maps so a module gets help
+  // regardless of whether it's installed from MAIC or bundled locally.
+  // MAIC wins on a collision (calendar/firecrawl exist in both) because
+  // the MAIC entry describes the tools that actually run today.
+  return MAIC_MODULE_HELP[id] || MODULE_HELP[id] || null;
 }

@@ -20,6 +20,15 @@ import { dirname, join } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(__dirname, "modules-menu.js"), "utf8");
+// Lesson 1146 (2026-11-02, David): the form_schema parsing and
+// input-coercion logic moved out of modules-menu.js into the shared
+// src/module-run-shared.js, so the Terminal, the launchpad, and (via
+// the generated copy) the OpenClaw chat toolbar all agree. The
+// coercion assertions below now belong to the shared file.
+const sharedSrc = readFileSync(
+  join(__dirname, "module-run-shared.js"),
+  "utf8"
+);
 
 test("openModuleModal renders panel as sibling of backdrop", () => {
   // Lesson 968 sibling rule: the modal panel must NOT be a child of
@@ -100,9 +109,35 @@ test("form_schema renderer handles URL + integer + boolean fields", () => {
   assert.match(src, /type="number"/);
   assert.match(src, /type="checkbox"/);
   assert.match(src, /type="text"/);
-  // Coercion rules for booleans and numbers are present
-  assert.match(src, /inputs\[f\.name\] = !!form\.querySelector/);
-  assert.match(src, /Number\(inputs\[f\.name\]\)/);
+  // Coercion rules for booleans and numbers are present in the
+  // SHARED module (Lesson 1146).
+  assert.match(
+    sharedSrc,
+    /inputs\[f\.name\] = !!form\.querySelector/,
+    "boolean coercion lives in module-run-shared.js"
+  );
+  assert.match(
+    sharedSrc,
+    /Number\(raw\)/,
+    "number coercion lives in module-run-shared.js"
+  );
+  // Lesson 1146: a blank optional integer must be OMITTED, not
+  // coerced to 0 -- `Number("")` is 0, which would send
+  // `calendar_id: 0` to MAIC when the user left it empty.
+  assert.match(
+    sharedSrc,
+    /delete inputs\[f\.name\]/,
+    "blank optional numbers are deleted, not zeroed"
+  );
+  // The Terminal must USE the shared helpers rather than keeping its
+  // own divergent copies.
+  assert.match(
+    src,
+    /from "\.\/module-run-shared\.js"/,
+    "modules-menu.js imports the shared helpers"
+  );
+  assert.match(src, /collectRunInputs\(/);
+  assert.match(src, /formFieldsFromSchema\(/);
 });
 
 test("mountModulesMenu click handler uses cached module, not re-fetch (Lesson 980)", () => {

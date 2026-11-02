@@ -30,6 +30,26 @@ import { listInstalledModules, isModuleInstalled, invokeModule } from "./modules
 // it needs to.
 import { navigate } from "./navigation.js";
 import { toast } from "./toast.js";
+// Lesson 1146 (2026-11-02, David): the Terminal dropdown now has a
+// per-module ❔ Help chip that opens the SAME help overlay the Modules
+// settings page uses, backed by the canonical catalog in
+// src/data/module-help.js.
+import { openModuleHelp } from "./pages/module-help.js";
+// Lesson 1146 (2026-11-02, David): shared module-run helpers, extracted
+// from the two diverging copies (this file + dashboard_launchpad.js) so
+// the Terminal, the launchpad, and the OpenClaw chat toolbar all agree
+// on form parsing, error messages, and tool selection.
+import {
+  formFieldsFromSchema,
+  propJsonSchemaTypeToUiType,
+  mapMclawError,
+  collectRunInputs,
+  isCheckboxField,
+  cssEscape,
+  moduleTools,
+  selectTool,
+  stripFences,
+} from "./module-run-shared.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // helpers
@@ -43,11 +63,6 @@ function escapeHtml(s) {
     '"': "&quot;",
     "'": "&#39;",
   })[c]);
-}
-
-function cssEscape(s) {
-  if (window.CSS && CSS.escape) return CSS.escape(s);
-  return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => `\\${c}`);
 }
 
 // Module ID aliases (Lesson 1136, 2026-10-08, David). MAIC tracks
@@ -176,54 +191,14 @@ export async function sendResultToChat(text) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// form_schema parsing — same rules as src/pages/dashboard_launchpad.js
-// and src-tauri/src/form_schema.rs. If you change this, change them.
-// ─────────────────────────────────────────────────────────────────────
-
-function propJsonSchemaTypeToUiType(prop) {
-  if (!prop || typeof prop !== "object") return "string";
-  if (Array.isArray(prop.type)) {
-    if (prop.type.includes("boolean")) return "boolean";
-    if (prop.type.includes("number") || prop.type.includes("integer")) return "number";
-    if (prop.type.includes("string")) return "string";
-  }
-  switch (prop.type) {
-    case "boolean": return "boolean";
-    case "integer":
-    case "number":  return "number";
-    case "array":   return "array";
-    case "object":  return "object";
-    default:        return "string";
-  }
-}
-
-function formFieldsFromSchema(schema) {
-  if (!schema || typeof schema !== "object") return [];
-  if (schema.type !== "object") return [];
-  const properties = schema.properties || {};
-  const required = Array.isArray(schema.required) ? schema.required : [];
-  const out = [];
-  let order = 0;
-  for (const [name, prop] of Object.entries(properties)) {
-    if (!prop || typeof prop !== "object") continue;
-    const label = prop.title || name;
-    const isRequired = required.includes(name);
-    const type = propJsonSchemaTypeToUiType(prop);
-    const field = {
-      name, label, type, required: isRequired, order: order++,
-      description: prop.description || "",
-      default: prop.default,
-      minimum: typeof prop.minimum === "number" ? prop.minimum : null,
-      maximum: typeof prop.maximum === "number" ? prop.maximum : null,
-      enum: Array.isArray(prop.enum) ? prop.enum : null,
-      pattern: typeof prop.pattern === "string" ? prop.pattern : null,
-    };
-    out.push(field);
-  }
-  out.sort((a, b) => a.order - b.order);
-  return out;
-}
+// Lesson 1146 (2026-11-02, David): form_schema parsing now lives in
+// src/module-run-shared.js so the Terminal, the launchpad, and the
+// OpenClaw chat toolbar all parse MAIC schemas identically. The local
+// copy here used to emit a DIFFERENT field shape than the launchpad's
+// copy (`order`/`enum`/`minimum` vs `displayOrder`/`options`/`min`) and
+// a DIFFERENT type vocabulary (string/number/array/object vs
+// text/select/textarea/number), so the two surfaces rendered
+// different fields from the same schema.
 
 function renderField(f) {
   const id = `mc-modal-field-${cssEscape(f.name)}`;
@@ -291,23 +266,11 @@ function renderField(f) {
   `;
 }
 
-function isCheckboxField(form, name) {
-  const el = form.querySelector(`input[type="checkbox"][name="${cssEscape(name)}"]`);
-  return !!el;
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Result formatting — strips markdown ```json fences from the model's
 // outputs so the preview is clean, but keeps the original string on a
 // data attribute so Copy / Send-to-Chat can use the raw output.
 // ─────────────────────────────────────────────────────────────────────
-
-function stripFences(s) {
-  return String(s ?? "")
-    .replace(/^```(?:json)?\n/, "")
-    .replace(/\n```$/, "")
-    .trim();
-}
 
 // ─────────────────────────────────────────────────────────────────────
 // Module modal
@@ -378,7 +341,7 @@ export function openModuleModal(module, opts = {}) {
     `surface=${opts.surface || "tauri"}`
   );
   closeModuleModal();
-  const tools = (module.client_manifest && module.client_manifest.tools) || [];
+  const tools = moduleTools(module);
   if (tools.length === 0) {
     // Lesson 976 (2026-09-11 18:05 MDT, David): clicking a module with
     // no tools used to just toast a 1-line "has no tools to run" and
@@ -388,21 +351,16 @@ export function openModuleModal(module, opts = {}) {
     openModuleInfoModal(module);
     return;
   }
-  const firstTool = tools[0];
-  const fields = formFieldsFromSchema(firstTool.form_schema);
-  const fieldsHtml = fields.map(renderField).join("");
-  // rc57.20: surface module-level "How to use" instructions + tool
-  // description in the modal, matching the launchpad's openModuleModal
-  // (dashboard_launchpad.js:511-525). Before this, the toolbar dropdown
-  // modal only showed a one-line fallback in <p class="mc-modal-empty">
-  // when there were no fields, so users with form fields never saw the
-  // tool's description or the expandable instructions panel that
-  // launchpad users got in rc57.11. The data is already in
-  // `module.client_manifest.instructions` (the click handler at line
-  // ~781 unwraps `_raw` which carries the full client_manifest), so we
-  // just need to render it.
-  const instructions =
-    (module.client_manifest && module.client_manifest.instructions) || "";
+
+  // Lesson 1146 (2026-11-02, David): the Terminal hardcoded
+  // `tools[0]`, so of Calendar's 15 tools the Terminal could only ever
+  // reach `search_events` -- there was no picker at all. The OpenClaw
+  // chat toolbar got one in Lesson 1144; the launchpad got one in
+  // rc57.9 via `opts.toolName`. The Terminal now gets the same choice:
+  // a tool picker is shown when a module has more than one tool, and
+  // `opts.toolName` still selects a specific one directly.
+  const selected = (opts.toolName ? selectTool(module, opts.toolName) : null) || tools[0];
+  const multiTool = tools.length > 1;
 
   const modal = document.createElement("div");
   modal.className = "mc-modal";
@@ -410,24 +368,13 @@ export function openModuleModal(module, opts = {}) {
     <div class="mc-modal-backdrop" data-action="modal-close"></div>
     <div class="mc-modal-panel">
       <header class="mc-modal-header">
-        <h3>${escapeHtml(module.name)} · ${escapeHtml(firstTool.name)}</h3>
+        <h3>${escapeHtml(module.name)}${multiTool ? " · <span class=\"mc-modal-tool-picker-label\">Choose a tool</span>" : ` · ${escapeHtml(selected.name)}`}</h3>
         <button class="mc-iconbtn" data-action="modal-close" title="Close">×</button>
       </header>
-      <p class="mc-modal-tool-desc">${escapeHtml(firstTool.description || "")}</p>
-      ${instructions ? `
-        <details class="mc-modal-instructions">
-          <summary>How to use ${escapeHtml(module.name)}</summary>
-          <p>${escapeHtml(instructions)}</p>
-        </details>
-      ` : ""}
-      <form class="mc-modal-form" data-module="${escapeHtml(module.module_id)}" data-tool="${escapeHtml(firstTool.name)}">
-        ${fieldsHtml || `<p class="mc-modal-empty">${escapeHtml(firstTool.description || "No inputs needed.")}</p>`}
-        <footer class="mc-modal-footer">
-          <button type="button" data-action="modal-close">Cancel</button>
-          <button type="submit" class="mc-primary">Run</button>
-        </footer>
-      </form>
-      <div class="mc-modal-result" hidden></div>
+      ${multiTool ? renderToolPicker(tools, selected) : ""}
+      <div class="mc-modal-tool-body" data-tool-body>
+        ${renderToolBody(module, selected)}
+      </div>
     </div>
   `;
   document.body.appendChild(modal);
@@ -435,51 +382,104 @@ export function openModuleModal(module, opts = {}) {
 
   modal.addEventListener("click", (ev) => {
     const target = ev.target.closest("[data-action]");
-    if (!target) return;
-    if (target.dataset.action === "modal-close") {
-      closeModuleModal();
+    if (target) {
+      if (target.dataset.action === "modal-close") {
+        closeModuleModal();
+      }
+      return;
     }
+    // Tool picker: swap the form body in place when a different tool
+    // is chosen. No re-open, no flicker -- the modal stays mounted.
+    const row = ev.target.closest("[data-tool-name]");
+    if (!row || !modal.contains(row)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const name = row.dataset.toolName;
+    const tool = tools.find((t) => t && (t.name === name || t.id === name));
+    if (!tool) return;
+    modal.querySelectorAll("[data-tool-name]").forEach((r) => {
+      r.classList.toggle("is-active", r === row);
+      r.setAttribute("aria-pressed", r === row ? "true" : "false");
+    });
+    const body = modal.querySelector("[data-tool-body]");
+    if (body) body.innerHTML = renderToolBody(module, tool);
+    wireToolForm(modal, module, tool, opts);
   });
 
+  wireToolForm(modal, module, selected, opts);
+}
+
+/**
+ * Render the "choose a tool" list shown for multi-tool modules.
+ *
+ * Lesson 1146 (2026-11-02, David): Calendar exposes 15 tools and
+ * Marketing Suite 2. Without a picker the Terminal silently ran the
+ * first one, which looked like "the Terminal only does one thing".
+ */
+function renderToolPicker(tools, selected) {
+  const rows = tools
+    .map((t) => {
+      if (!t) return "";
+      const name = t.name || t.id || "?";
+      const active = selected && (selected.name === name || selected.id === name);
+      return `
+        <button type="button" class="mc-modal-tool-row${active ? " is-active" : ""}"
+                data-tool-name="${escapeHtml(name)}"
+                aria-pressed="${active ? "true" : "false"}">
+          <span class="mc-modal-tool-row-name">${escapeHtml(name)}</span>
+          ${t.description ? `<span class="mc-modal-tool-row-desc">${escapeHtml(t.description)}</span>` : ""}
+        </button>
+      `;
+    })
+    .join("");
+  return `
+    <div class="mc-modal-tool-picker" role="group" aria-label="Choose a tool">
+      ${rows}
+    </div>
+  `;
+}
+
+/**
+ * Render the description + instructions + form for ONE tool.
+ */
+function renderToolBody(module, tool) {
+  const fields = formFieldsFromSchema(tool.form_schema);
+  const fieldsHtml = fields.map(renderField).join("");
+  const instructions =
+    (module.client_manifest && module.client_manifest.instructions) || "";
+  return `
+    <p class="mc-modal-tool-desc">${escapeHtml(tool.description || "")}</p>
+    ${instructions ? `
+      <details class="mc-modal-instructions">
+        <summary>How to use ${escapeHtml(module.name)}</summary>
+        <p>${escapeHtml(instructions)}</p>
+      </details>
+    ` : ""}
+    <form class="mc-modal-form" data-module="${escapeHtml(module.module_id)}" data-tool="${escapeHtml(tool.name || tool.id || "")}">
+      ${fieldsHtml || `<p class="mc-modal-empty">${escapeHtml(tool.description || "No inputs needed.")}</p>`}
+      <footer class="mc-modal-footer">
+        <button type="button" data-action="modal-close">Cancel</button>
+        <button type="submit" class="mc-primary">Run</button>
+      </footer>
+    </form>
+    <div class="mc-modal-result" hidden></div>
+  `;
+}
+
+/**
+ * Wire the submit handler for the currently-rendered tool form.
+ *
+ * Called once at open time and again after every tool-picker swap.
+ */
+function wireToolForm(modal, module, tool, opts = {}) {
   const form = modal.querySelector("form.mc-modal-form");
+  if (!form) return;
+  const fields = formFieldsFromSchema(tool.form_schema);
+
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     if (!form.reportValidity()) return;
-    const fd = new FormData(form);
-    const inputs = {};
-    for (const [k, v] of fd.entries()) {
-      if (typeof v === "string" && v === "" && isCheckboxField(form, k)) continue;
-      inputs[k] = v;
-    }
-    // Coerce number/integer inputs to JS numbers before sending. Use
-    // the FIELD's name (f.name), not the FormData key from the outer
-    // loop — the original had a stray `k` here that mostly worked
-    // because the type guard short-circuited, but it was wrong (Lesson
-    // 970, 2026-09-11 09:51 MDT).
-    for (const f of fields) {
-      if ((f.type === "number" || f.type === "integer") && f.name in inputs) {
-        const n = Number(inputs[f.name]);
-        if (!Number.isNaN(n)) inputs[f.name] = n;
-      }
-    }
-    for (const f of fields) {
-      if (!(f.name in inputs) && f.default !== undefined) inputs[f.name] = f.default;
-    }
-    for (const f of fields) {
-      if (f.type === "boolean") {
-        inputs[f.name] = !!form.querySelector(`input[name="${cssEscape(f.name)}"]:checked`);
-      }
-    }
-    const broken = [];
-    for (const f of fields) {
-      if ((f.type === "number" || f.type === "integer") && inputs[f.name] !== undefined) {
-        if (typeof inputs[f.name] === "string" && inputs[f.name].trim() === "") {
-          delete inputs[f.name];
-        } else if (typeof inputs[f.name] === "number" && !Number.isFinite(inputs[f.name])) {
-          broken.push(f);
-        }
-      }
-    }
+    const { inputs, broken } = collectRunInputs(form, fields);
     if (broken.length > 0) {
       const result = modal.querySelector(".mc-modal-result");
       result.hidden = false;
@@ -493,15 +493,15 @@ export function openModuleModal(module, opts = {}) {
     try {
       const run = await invoke("mc_run_module", {
         moduleId: module.module_id,
-        tool: firstTool.name,
+        tool: tool.name || tool.id,
         inputs,
         surface: opts.surface || "tauri",
       });
       // Lesson 1138 (2026-10-08, David): MAIC returns
       // `{outputs: {client_side: true, message: "..."}}` for modules
       // that run locally (firecrawl, voice-memo, calendar-companion,
-      // etc. — anything that has a sidecar on disk instead of a
-      // server-side handler). The old code just JSON.stringified
+      // etc. -- anything that has a sidecar on disk instead of a
+      // server-side handler). The old code just JSON.stringify
       // outputs and showed it as "the result", which David read as
       // "errors out" because the only text was "This module runs
       // locally. Please use the Your Tools tile in the launchpad to
@@ -527,33 +527,10 @@ export function openModuleModal(module, opts = {}) {
       result.dataset.rawOutput = out;
       renderResultActions(result, out, opts);
     } catch (err) {
-      const mapped = mapMclawError(err);
-      result.hidden = false;
-      result.classList.add("mc-modal-result-error");
-      result.textContent = mapped.headline;
-      result.dataset.rawError = String(err?.message || err);
-      if (mapped.detail && mapped.detail !== mapped.headline) {
-        const details = document.createElement("details");
-        details.className = "mc-modal-result-detail";
-        const summary = document.createElement("summary");
-        summary.textContent = "Show details";
-        details.appendChild(summary);
-        const pre = document.createElement("pre");
-        pre.textContent = mapped.detail;
-        details.appendChild(pre);
-        result.appendChild(details);
-      }
-      if (mapped.action && mapped.action.callback) {
-        const btn = document.createElement("button");
-        btn.className = "mc-link mc-modal-action";
-        btn.textContent = mapped.action.label;
-        btn.addEventListener("click", mapped.action.callback);
-        result.appendChild(btn);
-      }
+      renderRunError(result, err);
     }
   });
 }
-
 // Lesson 1138 (2026-10-08, David): show a "this module runs
 // locally — open the launchpad" panel when MAIC returns
 // outputs.client_side === true. The previous behavior was to dump
@@ -644,32 +621,57 @@ function renderResultActions(resultEl, rawOutput, opts) {
   });
 }
 
-// Friendly error mapper — same surface as dashboard_launchpad.js so
-// users see consistent messages across surfaces.
-function mapMclawError(err) {
-  const msg = String(err?.message || err || "");
-  if (/401|session.*expired|not logged in/i.test(msg)) {
-    return {
-      headline: "Your MAIC session expired. Sign in again and retry.",
-      detail: msg,
-      action: null,
-    };
+// Lesson 1146 (2026-11-02, David): the error mapper moved to
+// src/module-run-shared.js so every surface speaks the same language.
+// The old local copy handled only 401 / 429 / network, which meant a
+// 404 "Unknown module/tool", a 422 validation rejection, and a 501
+// COMING_SOON (calendar-companion.find_slot) all leaked raw ureq text
+// to the user.
+
+/**
+ * Render a run failure into the result panel: plain-language headline,
+ * with the raw error kept behind a "Show details" disclosure.
+ *
+ * Lesson 1146: the server's own `detail` (e.g. "q is required") is
+ * surfaced prominently, because that is the part that tells the user
+ * what to actually fix.
+ */
+function renderRunError(result, err) {
+  const mapped = mapMclawError(err);
+  result.hidden = false;
+  result.classList.add("mc-modal-result-error");
+  result.textContent = mapped.headline;
+  result.dataset.rawError = String(err?.message || err);
+
+  // The server's own detail (e.g. "q is required") is the part that
+  // tells the user what to fix, so it gets a readable line above the
+  // raw "Show details" disclosure.
+  if (mapped.serverDetail && mapped.serverDetail !== mapped.headline) {
+    const note = document.createElement("p");
+    note.className = "mc-modal-result-error-detail-line";
+    note.textContent = mapped.serverDetail;
+    result.appendChild(note);
   }
-  if (/429|quota|rate.?limit/i.test(msg)) {
-    return {
-      headline: "MAIC rate-limited this run. Wait a moment and try again.",
-      detail: msg,
-      action: null,
-    };
+  // The raw technical error (HTTP status + body) stays available.
+  if (mapped.raw && mapped.raw !== mapped.headline) {
+    const details = document.createElement("details");
+    details.className = "mc-modal-result-detail";
+    const summary = document.createElement("summary");
+    summary.textContent = "Show details";
+    details.appendChild(summary);
+    const pre = document.createElement("pre");
+    pre.textContent = mapped.raw;
+    details.appendChild(pre);
+    result.appendChild(details);
   }
-  if (/network|fetch|timeout/i.test(msg)) {
-    return {
-      headline: "Network error talking to MAIC. Check your connection.",
-      detail: msg,
-      action: null,
-    };
+  if (mapped.action && mapped.action.callback) {
+    const btn = document.createElement("button");
+    btn.className = "mc-link mc-modal-action";
+    btn.textContent = mapped.action.label;
+    btn.addEventListener("click", mapped.action.callback);
+    result.appendChild(btn);
   }
-  return { headline: msg || "Unknown error", detail: msg, action: null };
+  return mapped;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -721,9 +723,23 @@ export function mountModulesMenu(buttonEl, opts = {}) {
   buttonEl.addEventListener("click", async (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    if (_openMenu) {
+    // Lesson 1146 (2026-11-02, David): only treat the menu as "open"
+    // if it is still attached to the LIVE document.
+    //
+    // `_openMenu` is module-level state, so it survives a re-render of
+    // the host page (and it can outlive the DOM node that owned it).
+    // The old check was just `if (_openMenu)`, so a stale menu from a
+    // previous render made the FIRST click a no-op toggle: the handler
+    // closed the detached menu and returned, and the dropdown appeared
+    // to do nothing. Requiring `document.contains(_openMenu)` fixes it
+    // and matches what the user sees.
+    if (_openMenu && _openMenu.isConnected) {
       closeMenu();
       return;
+    }
+    // Stale reference from a previous render -- drop it.
+    if (_openMenu) {
+      _openMenu = null;
     }
     // Lesson 975 (2026-09-11 17:09 MDT, David): the toolbar Modules
     // dropdown was reading `listInstalledModules()` which only knows
@@ -749,19 +765,34 @@ export function mountModulesMenu(buttonEl, opts = {}) {
     const menu = document.createElement("div");
     menu.className = "mc-modules-menu";
     menu.setAttribute("role", "menu");
+    // Lesson 1146 (2026-11-02, David): each row now carries a ❔ Help
+    // chip alongside the run action.
+    //
+    // The row used to be a single <button>. A <button> cannot legally
+    // contain another <button>, and nesting one would break keyboard
+    // nav and screen readers -- so the row is now a wrapper <div> with
+    // TWO sibling buttons: the run button (the bulk of the row) and the
+    // Help chip. The click handler below checks for the chip FIRST so
+    // clicking ❔ opens help and never runs the module.
     menu.innerHTML = items
       .map((m) => {
         const r = (opts.renderItem || defaultRenderItem)(m);
         return `
-          <button class="mc-modules-menu-item" type="button" role="menuitem"
-                  data-module-id="${escapeHtml(m.id)}">
-            <span class="mc-modules-menu-icon">${escapeHtml(r.icon || "🧩")}</span>
-            <span class="mc-modules-menu-text">
-              <span class="mc-modules-menu-name">${escapeHtml(r.name)}</span>
-              ${r.subtitle ? `<span class="mc-modules-menu-sub">${escapeHtml(r.subtitle)}</span>` : ""}
-              ${r.meta ? `<span class="mc-modules-menu-meta">${escapeHtml(r.meta)}</span>` : ""}
-            </span>
-          </button>
+          <div class="mc-modules-menu-row" role="none">
+            <button class="mc-modules-menu-item" type="button" role="menuitem"
+                    data-module-id="${escapeHtml(m.id)}">
+              <span class="mc-modules-menu-icon">${escapeHtml(r.icon || "🧩")}</span>
+              <span class="mc-modules-menu-text">
+                <span class="mc-modules-menu-name">${escapeHtml(r.name)}</span>
+                ${r.subtitle ? `<span class="mc-modules-menu-sub">${escapeHtml(r.subtitle)}</span>` : ""}
+                ${r.meta ? `<span class="mc-modules-menu-meta">${escapeHtml(r.meta)}</span>` : ""}
+              </span>
+            </button>
+            <button class="mc-modules-menu-help" type="button"
+                    data-help-module-id="${escapeHtml(m.id)}"
+                    aria-label="Help for ${escapeHtml(r.name || m.id)}"
+                    title="Show usage help">❔</button>
+          </div>
         `;
       })
       .join("");
@@ -805,6 +836,27 @@ export function mountModulesMenu(buttonEl, opts = {}) {
     // returned undefined and nothing opened).
     menu._items = items;
     menu.addEventListener("click", async (itemEv) => {
+      // Lesson 1146 (2026-11-02, David): handle the ❔ Help chip FIRST.
+      // The chip lives inside the same row as the run button, so without
+      // this check a Help click would fall through to the module lookup
+      // and RUN the module instead of opening its help.
+      const helpBtn = itemEv.target.closest("[data-help-module-id]");
+      if (helpBtn) {
+        itemEv.preventDefault();
+        itemEv.stopPropagation();
+        const helpId = helpBtn.dataset.helpModuleId;
+        closeMenu();
+        const cachedHelp = (menu._items || []).find(
+          (m) => (m.id || m.module_id) === helpId
+        );
+        const cm = (cachedHelp && (cachedHelp._raw || cachedHelp).client_manifest) || {};
+        openModuleHelp(helpId, {
+          name: (cachedHelp && (cachedHelp.name || cm.name)) || helpId,
+          icon: (cachedHelp && (cachedHelp.icon || cm.icon)) || "❔",
+          version: (cachedHelp && cachedHelp.version) || cm.version || "?",
+        });
+        return;
+      }
       const item = itemEv.target.closest("[data-module-id]");
       if (!item) return;
       const moduleId = item.dataset.moduleId;

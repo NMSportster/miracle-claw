@@ -513,17 +513,55 @@ test("502/503/504 return MAIC-unavailable headline", () => {
   }
 });
 
-test("non-HTTP error returns the raw message as headline", () => {
+test("network errors get a friendly headline, not the raw message", () => {
+  // Lesson 1146 (2026-11-02, David): the mapper moved to
+  // src/module-run-shared.js so all three surfaces agree. The old
+  // launchpad copy returned the raw "network timeout" as the headline;
+  // the Terminal's copy returned "Network error talking to MAIC."
+  // The merged version keeps the friendlier wording while preserving
+  // the raw message in `raw` for the "Show details" disclosure.
   const out = mapMclawError(new Error("network timeout"));
-  assert.equal(out.headline, "network timeout");
+  assert.match(out.headline, /could not reach the MAIC server/i);
+  assert.equal(out.detail, null);
+  assert.equal(out.action, null);
+  assert.equal(out.raw, "network timeout");
+});
+
+test("non-HTTP, non-network errors still return the raw message as headline", () => {
+  const out = mapMclawError(new Error("something odd happened"));
+  assert.equal(out.headline, "something odd happened");
   assert.equal(out.detail, null);
   assert.equal(out.action, null);
 });
 
 test("non-JSON body is used as detail verbatim", () => {
+  // Lesson 1146: HTTP 500 used to fall through to the `default` branch
+  // ("MAIC returned 500.") because the switch only listed 502/503/504.
+  // Now every 5xx gets the "temporarily unavailable" headline, and the
+  // raw body is still available as `detail`.
   const out = mapMclawError(new Error("HTTP 500: <html>500 Internal Server Error</html>"));
-  assert.equal(out.headline, "MAIC returned 500.");
+  assert.match(out.headline, /temporarily unavailable/i);
   assert.match(out.detail, /html/);
+});
+
+test("501 COMING_SOON explains the private beta instead of showing a bare code", () => {
+  // Lesson 1146: `calendar-companion.find_slot` returns a deliberate
+  // 501 COMING_SOON. The old mapper had no 501 case, so users saw the
+  // flat "MAIC returned 501." with no explanation.
+  const out = mapMclawError(
+    new Error(
+      'HTTP 501: {"detail":"This module is in private beta. Join the waitlist at https://miracleclaw.com/waitlist/calendar-companion"}'
+    )
+  );
+  assert.match(out.headline, /not available yet/i);
+  assert.match(out.headline, /private beta/i);
+  assert.match(out.detail, /waitlist/i);
+});
+
+test("400 bad request gets its own headline", () => {
+  const out = mapMclawError(new Error('HTTP 400: {"detail":"bad input"}'));
+  assert.match(out.headline, /rejected that request/i);
+  assert.equal(out.detail, "bad input");
 });
 
 test("undefined/null errors are handled gracefully", () => {
