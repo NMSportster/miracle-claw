@@ -4997,6 +4997,11 @@ fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     //     literal from the config file, so we log and continue.
     publish_env_key_from_chat_json();
 
+    // Lesson 1147 (2026-11-02, David): check the key we just published
+    // BEFORE the gateway starts burning 401s across the whole fallback
+    // chain. Best-effort — a failed check must never block startup.
+    validate_maic_key_at_startup();
+
     // 3a. Lesson 970 (2026-09-11): seed `agents.defaults.model` on app
     //     start, not just on login. The bundled openclaw's gateway uses
     //     `agents.defaults.model.primary` + `.fallbacks` as the
@@ -6354,6 +6359,78 @@ fn publish_env_key_from_chat_json() -> bool {
     log_to_file("publish_env_key_from_chat_json: published MAIC_API_KEY from chat.json literal");
     eprintln!("[miracle-claw] MAIC_API_KEY: published from chat.json literal (env var was empty)");
     true
+}
+
+/// Lesson 1147 (2026-11-02, David): proactively validate the MAIC API key
+/// at startup and report clearly when it is dead.
+///
+/// Symptom (Windows rc57.36, reported by David):
+///   "All models failed (4): maic/milagro-m1-t1: 401 status code (no body)
+///    (auth) | maic/milagro-m1-t2: ... | maic/milagro-m1-t3: ... |
+///    maic/chat-nemotron-nano: ..."
+///
+/// The chain above is deeply unhelpful: it reads like "four models are
+/// broken" when in fact ONE expired token is being retried against four
+/// model names. The real cause — an expired/revoked JWT — is invisible to
+/// the user until they read the sidecar log.
+///
+/// Worse, the automatic recovery path could not help: the launcher fires
+/// `silent_relogin` on the first 401, but that needs cached CREDENTIALS
+/// (email+password). On this install there were none ("silent_relogin:
+/// no cached creds"), so recovery was impossible and the user was stuck
+/// with a cascade of identical 401s.
+///
+/// This function gives the user ONE clear line at startup instead of a
+/// four-model failover dump, and tells them the actual remedy.
+///
+/// Returns `true` if the key is valid (or could not be checked).
+fn validate_maic_key_at_startup() -> bool {
+    let jwt = match current_maic_jwt() {
+        Ok(j) if !j.trim().is_empty() => j,
+        _ => {
+            log_to_file("validate_maic_key_at_startup: no MAIC key present; skipping");
+            return true; // Nothing to validate — the login flow handles it.
+        }
+    };
+    let maic_base = resolve_maic_base_url();
+    let url = format!(
+        "{}/v1/auth/me",
+        crate::auth::tier::normalize_api_base(&maic_base)
+    );
+    match ureq::get(&url)
+        .set("Authorization", &format!("Bearer {jwt}"))
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(5))
+        .call()
+    {
+        Ok(resp) => {
+            let _ = resp.into_json::<serde_json::Value>();
+            log_to_file("validate_maic_key_at_startup: MAIC key is valid");
+            true
+        }
+        Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+            log_to_file(
+                "validate_maic_key_at_startup: MAIC key is EXPIRED or REVOKED (401/403)",
+            );
+            eprintln!(
+                "[miracle-claw] ⚠️  Your MAIC session has expired. Sign out and sign in again \
+                 in Miracle Claw to refresh it. Chat and account-synced features will not work \
+                 until you do."
+            );
+            eprintln!(
+                "[miracle-claw]    (Bundled modules and the Marketplace still work offline.)"
+            );
+            false
+        }
+        Err(e) => {
+            // Network blips, timeouts, 5xx — NOT an auth problem. Don't
+            // scare the user about their account over a flaky connection.
+            log_to_file(&format!(
+                "validate_maic_key_at_startup: check inconclusive ({e}); continuing"
+            ));
+            true
+        }
+    }
 }
 
 /// Tauri command: start_gateway_after_login (Lesson 449).
@@ -7814,49 +7891,129 @@ fn mc_list_marketplace_modules(
             // wired yet. Fall back to the bundled catalog rather than
             // returning an error to the UI. The JS side renders either
             // shape (array or {modules:[]}) the same way.
-            let raw = load_bundled_modules_catalog(&app);
-            let mut merged = merge_catalog_with_registry(raw, &state.modules.lock().unwrap());
-
-            if let Some(cat) = category.as_ref().filter(|s| !s.is_empty()) {
-                merged.retain(|m| m.category.eq_ignore_ascii_case(cat));
-            }
-            match sort.as_deref().unwrap_or("alphabetical") {
-                "recent" => merged.sort_by(|a, b| b.version.cmp(&a.version)),
-                "top_rated" | "alphabetical" => {
-                    merged.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-                }
-                _ => {}
-            }
-
-            Ok(serde_json::json!({
-                "modules": merged,
-                "source": "bundled",
-                "message": "Showing bundled catalog — MAIC marketplace is offline.",
-            }))
+            bundled_catalog_response(&app, &state, category, sort)
         }
-        Err(e) => Err(format!("/v1/marketplace/modules: {e}")),
+        // Lesson 1147 (2026-11-02, David): an expired/revoked API key
+        // returns 401, NOT 404 — so the bundled-catalog fallback above
+        // was never reached and the Marketplace rendered EMPTY instead
+        // of showing the 11 bundled modules. Observed on Windows
+        // rc57.36: "none of the Modules are showing up when I click
+        // Browse the Marketplace" while every model call 401'd.
+        //
+        // The bundled catalog is a static file on disk and needs NO auth,
+        // so an auth failure must NOT blank the page. Same for 403.
+        // The live install-state overlay still degrades gracefully:
+        // `merge_catalog_with_registry` reads the local on-disk module
+        // registry, which is populated by local module discovery.
+        Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+            let mut resp = bundled_catalog_response(&app, &state, category, sort)?;
+            // Flag the degradation so the UI can tell the user *why*
+            // the catalog may not reflect server-side state.
+            if let Some(obj) = resp.as_object_mut() {
+                obj.insert(
+                    "auth_degraded".to_string(),
+                    serde_json::json!(true),
+                );
+                obj.insert(
+                    "message".to_string(),
+                    serde_json::json!(
+                        "Showing bundled catalog — sign in to see your account's modules."
+                    ),
+                );
+            }
+            Ok(resp)
+        }
+        Err(e) => Err(format!("/v1/marketplace/modules: {}", map_ureq_http_error(e))),
     }
+}
+
+/// Lesson 1147 (2026-11-02, David): shared helper that builds the
+/// bundled-catalog marketplace response (filter + sort + live install
+/// state overlay). Extracted from the 404 arm of
+/// `mc_list_marketplace_modules` so the 401/403 arm can reuse it.
+fn bundled_catalog_response(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+    category: Option<String>,
+    sort: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let raw = load_bundled_modules_catalog(app);
+    let mut merged = merge_catalog_with_registry(raw, &state.modules.lock().unwrap());
+
+    if let Some(cat) = category.as_ref().filter(|s| !s.is_empty()) {
+        merged.retain(|m| m.category.eq_ignore_ascii_case(cat));
+    }
+    match sort.as_deref().unwrap_or("alphabetical") {
+        "recent" => merged.sort_by(|a, b| b.version.cmp(&a.version)),
+        "top_rated" | "alphabetical" => {
+            merged.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        }
+        _ => {}
+    }
+
+    Ok(serde_json::json!({
+        "modules": merged,
+        "source": "bundled",
+        "message": "Showing bundled catalog — MAIC marketplace is offline.",
+    }))
 }
 
 // GET /v1/modules/installed — authed.
 #[tauri::command]
-fn mc_list_installed_modules() -> Result<serde_json::Value, String> {
+fn mc_list_installed_modules(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
     let jwt = current_maic_jwt()?;
     let maic_base = resolve_maic_base_url();
     let url = format!(
         "{}/v1/modules/installed",
         crate::auth::tier::normalize_api_base(&maic_base)
     );
-    let resp = ureq::get(&url)
+    match ureq::get(&url)
         .set("Authorization", &format!("Bearer {jwt}"))
         .set("Accept", "application/json")
         .timeout(std::time::Duration::from_secs(10))
         .call()
-        .map_err(|e| format!("/v1/modules/installed: {e}"))?;
-    let body: serde_json::Value = resp
-        .into_json()
-        .map_err(|e| format!("parse /v1/modules/installed: {e}"))?;
-    Ok(body)
+    {
+        Ok(resp) => {
+            let body: serde_json::Value = resp
+                .into_json()
+                .map_err(|e| format!("parse /v1/modules/installed: {e}"))?;
+            Ok(body)
+        }
+        // Lesson 1147 (2026-11-02, David): an expired/revoked API key
+        // makes this endpoint 401. Before, that error propagated up and
+        // the Modules UI showed an empty list — even though the LOCAL
+        // module registry on disk was fully populated (11 modules were
+        // discovered on the affected Windows install). The local
+        // registry is the source of truth for what is actually installed
+        // on THIS machine, so serve it and let the UI degrade rather
+        // than claim nothing is installed.
+        Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+            let registry = state.modules.lock().unwrap();
+            let installed: Vec<serde_json::Value> = registry
+                .list()
+                .into_iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "module_id": m.id,
+                        "id": m.id,
+                        "name": m.name,
+                        "version": m.version,
+                        "installed": true,
+                        "source": "local_registry",
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({
+                "modules": installed,
+                "source": "local_registry",
+                "auth_degraded": true,
+                "message": "Showing locally installed modules — sign in to sync with your account.",
+            }))
+        }
+        Err(e) => Err(format!("/v1/modules/installed: {}", map_ureq_http_error(e))),
+    }
 }
 
 // POST /v1/modules/install — authed. Returns { success, client_manifest }.

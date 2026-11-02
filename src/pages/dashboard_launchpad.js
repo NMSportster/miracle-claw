@@ -696,8 +696,26 @@ async function mount(root, ctx) {
   // curated starters. This is one extra round-trip on the first
   // launchpad visit only; subsequent visits with installed modules
   // skip the marketplace fetch entirely.
-  const marketplacePromise = invoke("mc_list_marketplace", { category: null })
-    .catch(() => ({ modules: [] }));
+  // Lesson 1147 (2026-11-02, David): the command name was WRONG here.
+  // It called `mc_list_marketplace`, but the registered Tauri command is
+  // `mc_list_marketplace_modules`. The invoke therefore failed with
+  // "command not found" every single time, and the `.catch()` below
+  // silently swallowed it into an empty array — which is exactly why
+  // David saw NO modules in the launcher tiles / Marketplace even
+  // though the bundled catalog and the local module registry were
+  // both populated.
+  //
+  // Two bugs stacked here: the wrong command name, AND a catch that
+  // hid the failure. The correct command name fixes the fetch; the
+  // Rust side (Lesson 1147) now degrades to the bundled catalog on a
+  // 401 instead of erroring, so a dead key no longer blanks the page.
+  const marketplacePromise = invoke("mc_list_marketplace_modules", {
+    category: null,
+    sort: "alphabetical",
+  }).catch((err) => {
+    console.warn("[launchpad] marketplace fetch failed:", err);
+    return { modules: [] };
+  });
   const [tierRes, quotaRes, installedRes, userRes, marketplaceRes] = await Promise.allSettled([
     invoke("mc_refresh_tier").catch(() => null),
     invoke("mc_get_quota").catch(() => null),
