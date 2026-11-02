@@ -5,6 +5,74 @@ All notable changes to Miracle Claw are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.0-rc57.37] — 2026-11-02 (Lesson 1147: empty Marketplace + misleading "All models failed (4)" 401 cascade)
+
+A Windows user report (`MC-openclaw info.txt`) surfaced two symptoms on rc57.36:
+
+1. Chat failed with `All models failed (4): maic/milagro-m1-t1: 401 ... |
+   maic/milagro-m1-t2: 401 ... | maic/milagro-m1-t3: 401 ... |
+   maic/chat-nemotron-nano: 401 ...`
+2. "none of the Modules are showing up when I click 'Browse the Marketplace'"
+
+Both symptoms had **one dead MAIC JWT** at the root — but each also hid a
+separate, independent defect that would have surfaced again on the next
+expired session.
+
+### The "4 failed models" was really 1 dead token
+
+The error reads like four broken models. The sidecar log shows the true chain:
+
+```
+[model-fetch] response provider=maic model=milagro-m1-t1 status=401
+[model-fallback/decision] decision=candidate_failed
+    requested=maic/milagro-m1-t1 candidate=maic/milagro-m1-t1
+    reason=auth next=maic/milagro-m1-t2
+```
+
+One expired JWT was retried against four model names. MAIC, the endpoint, and
+model routing were all healthy. The real fix is re-authentication:
+
+```powershell
+openclaw models auth login --provider 'maic' --force
+```
+
+### Bugs fixed
+
+1. **Marketplace went blank on `401`.** `mc_list_marketplace_modules` fell back
+   to the bundled catalog **only on `404`** — meaning "endpoint missing". A dead
+   key returns `401`, so the fallback was never reached and the page rendered
+   empty even though 11 modules were bundled and 11 were installed locally.
+   The `401 | 403` arms now also serve the bundled catalog, tagged
+   `auth_degraded: true` with a "sign in to see your account's modules"
+   notice. Extracted `bundled_catalog_response()` so both arms share one
+   implementation.
+2. **The dashboard launchpad invoked a Tauri command that does not exist.**
+   It called `invoke("mc_list_marketplace", ...)`; the registered command is
+   **`mc_list_marketplace_modules`**. The invoke failed with "command not
+   found" on every launch, and a bare `.catch(() => ({ modules: [] }))`
+   swallowed it — so the launcher tiles were empty regardless of auth state.
+   Fixed the name and the catch now logs instead of hiding the failure.
+3. **Installed-modules list claimed nothing was installed on a dead key.**
+   `mc_list_installed_modules` now degrades to the **local module registry**
+   on `401 | 403`. That registry is ground truth for what is on the machine
+   and needs no auth.
+4. **No startup warning for an expired session.** Added
+   `validate_maic_key_at_startup()`, called right after the key is published
+   from `chat.json`. It checks `/v1/auth/me` and prints one clear line
+   instead of letting the user discover the problem through a chat failure.
+   A network blip or `5xx` is treated as **inconclusive** — only `401 | 403`
+   accuses the account, so a flaky connection never nags the user to re-auth.
+
+### New regression coverage
+
+- `src/pages/marketplace_auth_degradation.test.mjs` — 14 `node:test` cases
+  asserting the **real shipped source**, not a reimplementation (Lesson 245e).
+- Includes a **tripwire** that scans every `invoke("mc_*")` in the launchpad
+  and asserts each name is actually registered in the Rust `invoke_handler`.
+  That catches the whole class of "silent empty feature" bug, not just this
+  instance.
+- Suite total: **202 tests / 202 pass / 0 fail** (was 188).
+
 ## [v1.2.0-rc57.36] — 2026-11-02 (Lesson 1146: all three module toolbars fixed — tool picker, Help, and consistent errors)
 
 An audit of every module-toolbar surface in Miracle Claw found that **only 1 of 3
